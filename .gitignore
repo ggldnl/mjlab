@@ -17,3 +17,6 @@ benchmark_results/
 # Documentation outputs.
 **/_build/*
 **/generated/*
+
+# PyCharm
+.idea/*
