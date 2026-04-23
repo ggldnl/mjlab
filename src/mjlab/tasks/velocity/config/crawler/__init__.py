@@ -1,6 +1,7 @@
 from mjlab.tasks.registry import register_mjlab_task
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 
+"""
 from .task import (
     crawler_flat_env_cfg,
     crawler_rough_env_cfg,
@@ -22,3 +23,4 @@ register_mjlab_task(
     rl_cfg=crawler_ppo_cfg(),
     runner_cls=VelocityOnPolicyRunner,
 )
+"""
