@@ -2,6 +2,81 @@
 Changelog
 =========
 
+Upcoming version (not yet released)
+-----------------------------------
+
+Added
+^^^^^
+
+- Added ``ContactSensor.primary_names`` property to expose the resolved
+  primary names in the order they appear along the per-contact axis of the
+  output tensors. This makes it possible to map a contact-data column back
+  to the primary it belongs to (:issue:`914`).
+
+Changed
+^^^^^^^
+
+- Task package load failures during ``mjlab`` import now print the full
+  traceback (and the entry point's module path) to ``stderr`` instead of
+  just the exception message, making it easier to pinpoint the source of
+  import errors when running commands like ``list-envs`` (:issue:`910`).
+  Contribution by @saikishor.
+- Clarified ``ContactSensor`` shape conventions: per-contact fields
+  (``found``, ``force``, ``torque``, ``dist``, ``pos``, ``normal``,
+  ``tangent``) have shape ``[B, P * num_slots, ...]`` while per-primary
+  air-time fields (``current_air_time``, ``last_air_time``,
+  ``current_contact_time``, ``last_contact_time``) have shape ``[B, P]``,
+  where ``P`` is the number of resolved primaries (:issue:`914`).
+
+Fixed
+^^^^^
+
+- Fixed ``ContactSensor.compute_first_contact`` and ``compute_first_air``
+  occasionally missing events when a contact began or ended right at the
+  last physics substep of a control step. ``current_contact_time`` /
+  ``current_air_time`` accumulate in float32 and can drift a few ULPs past
+  ``dt``, but the default ``abs_tol`` of ``1e-8`` sat at the noise floor
+  and rejected the comparison. Raised the default to ``1e-6``, which stays
+  well below typical control ``dt`` while comfortably covering float32
+  accumulation noise (:issue:`933`). Contribution by @paLeziart.
+- Fixed ``out_of_terrain_bounds`` using stale terrain dimensions. It read
+  ``TerrainGeneratorCfg.num_cols`` directly, which is ignored in curriculum
+  mode (the generator uses ``len(sub_terrains)`` columns instead), and it
+  did not account for ``border_width``. The termination now reads the
+  effective grid shape from ``terrain.terrain_origins`` and includes the
+  border in the footprint, so robots no longer reset while still on valid
+  terrain (or fail to reset after running off it) (:issue:`923`).
+- ``ObservationManager`` now skips observation groups that end up with
+  zero active terms (e.g. all terms set to ``None``) with a log message,
+  instead of crashing later in ``torch.stack``/``torch.cat``. This lets
+  a shared runner config define groups that become empty under certain
+  runtime flags (e.g. model-specific terms all disabled for one variant).
+  The whole group can still be set to ``None`` to disable it explicitly.
+- Fixed a runtime broadcast error in ``ContactSensor`` when combining
+  ``num_slots > 1`` with ``track_air_time=True`` and more than one primary.
+  Air-time tracking now reduces ``found`` across slots so that a primary is
+  considered in contact when any of its slots reports a match (:issue:`914`).
+- Updated the ``create_new_task.ipynb`` Colab tutorial to import
+  ``XmlActuatorCfg`` instead of the removed ``XmlVelocityActuatorCfg``.
+  Added a regression test (``tests/test_notebooks.py``) that parses each
+  notebook cell and verifies that every ``from mjlab... import X``
+  reference resolves, so future renames in the mjlab public API can't
+  silently rot the tutorials (:issue:`913`).
+- Fixed ``ObservationManager`` silently sharing a single ``NoiseModelCfg``
+  instance across observation groups that declared terms with the same
+  name. ``_group_obs_class_instances`` was keyed by term name alone, so
+  the last group processed in ``_prepare_terms`` overwrote earlier
+  groups' instances. Symptoms included the wrong noise config being
+  applied, shared per-episode state for ``NoiseModelWithAdditiveBias``
+  (e.g. bias drawn from the wrong ``bias_noise_cfg``), and missed
+  ``reset()`` calls for overwritten instances. Instances are now keyed
+  by ``(group_name, term_name)`` so each group owns its own noise model.
+- Fixed ``CurriculumManager.get_active_iterable_terms`` raising
+  ``TypeError`` when a term's state was a dict. The dict branch indexed
+  the output list by term name instead of appending to the local ``data``
+  list. No in-tree caller currently invokes this method, so the bug was
+  latent.
+
 Version 1.3.0 (April 14, 2026)
 ------------------------------
 
