@@ -16,3 +16,13 @@ from mjlab.asset_zoo.robots.unitree_go1.go1_constants import (
 from mjlab.asset_zoo.robots.unitree_go1.go1_constants import (
   get_go1_robot_cfg as get_go1_robot_cfg,
 )
+
+from mjlab.asset_zoo.robots.crawler.actuators import (
+  CRAWLER_ACTION_SCALE as CRAWLER_ACTION_SCALE,
+)
+from mjlab.asset_zoo.robots.crawler.crawler_constants import (
+  CRAWLER_FOOT_SITE_NAMES as CRAWLER_FOOT_SITE_NAMES,
+  CRAWLER_FOOT_GEOM_NAMES as CRAWLER_FOOT_GEOM_NAMES,
+  CRAWLER_BASE_NAME as CRAWLER_BASE_NAME,
+  get_crawler_robot_cfg as get_crawler_robot_cfg,
+)

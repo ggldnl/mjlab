@@ -94,7 +94,7 @@ ACTION_FRACTION = 0.8  # The policy can only reach 80% of the URDF range when sa
 ACTION_SCALES = {joint: ACTION_FRACTION * rng for joint, rng in JOINT_RANGE.items()}
 
 # Per-joint action scales, looked up by joint type
-CRAWLER_ACTION_SCALES: dict[str, float] = {
+CRAWLER_ACTION_SCALE: dict[str, float] = {
     name: ACTION_SCALES[
         "coxa"  if name.endswith("coxa")  else
         "femur" if name.endswith("femur") else
