@@ -1,10 +1,13 @@
-"""Crawler constants."""
-
-from pathlib import Path
+"""Crawler config main entry point."""
 
 import mujoco
 from mjlab.entity import EntityCfg
-from mjlab.utils.os import update_assets
+
+from pathlib import Path
+
+from .actuators import CRAWLER_ARTICULATIONS
+from .collisions import FULL_COLLISION
+from .keyframes import INIT_STATE
 
 
 LOCAL_FOLDER = Path(__file__).parent
@@ -12,34 +15,9 @@ CRAWLER_DESCRIPTION_PATH: Path = LOCAL_FOLDER / "xml" / "crawler.xml"
 assert CRAWLER_DESCRIPTION_PATH.exists()
 
 
-def get_assets(meshdir: str) -> dict[str, bytes]:
-    assets: dict[str, bytes] = {}
-    update_assets(assets, CRAWLER_DESCRIPTION_PATH.parent / "assets", meshdir)
-    return assets
-
-
 def get_spec() -> mujoco.MjSpec:
-    spec = mujoco.MjSpec.from_file(str(CRAWLER_DESCRIPTION_PATH))
-    spec.assets = get_assets(spec.meshdir)
-    return spec
+    return mujoco.MjSpec.from_file(str(CRAWLER_DESCRIPTION_PATH))
 
-# Keyframes
-
-# Robot standing initially, no need to learn how to get up.
-# We need to manually tune the initial height. Using a kinematic
-# model to derive this will defy the sole purpose of using DRL:
-# it's difficult to have models for complex robots.
-INIT_STATE = EntityCfg.InitialStateCfg(
-    pos=(0.0, 0.0, 0.04),
-    joint_pos={
-        "base_leg_[1-4]_coxa": 0.0,
-        "leg_[1-4]_coxa_leg_[1-4]_femur": -0.25,
-        "leg_[1-4]_femur_leg_[1-4]_tibia": -1.75,
-    },
-    joint_vel={".*": 0.0},
-)
-
-# Constants
 
 # Indices for leg diagonal pairs, used for trot and fast gait.
 CRAWLER_LEG_DIAGONAL_PAIRS = [(0, 2), (1, 3)]
@@ -95,3 +73,23 @@ obs = scene["imu_ang_vel"]
 """
 CRAWLER_IMU_SITE_NAME = "robot/imu"
 CRAWLER_BASE_SITE_NAME = "robot/base"
+
+
+def get_crawler_robot_cfg() -> EntityCfg:
+    """Get a fresh Crawler robot configuration instance."""
+    return EntityCfg(
+        init_state=INIT_STATE,
+        collisions=(FULL_COLLISION,),
+        spec_fn=get_spec,
+        articulation=CRAWLER_ARTICULATIONS,
+    )
+
+
+if __name__ == "__main__":
+
+    import mujoco.viewer as viewer
+    from mjlab.entity.entity import Entity
+
+    robot = Entity(get_crawler_robot_cfg())
+    model = robot.spec.compile()
+    viewer.launch(model)

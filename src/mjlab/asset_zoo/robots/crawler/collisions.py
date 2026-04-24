@@ -6,23 +6,34 @@ from mjlab.utils.spec_config import CollisionCfg
 # Friction coefficient of the material tibias and feet are made of
 CRAWLER_FOOT_MATERIAL_FRICTION_COEFFICIENT = 0.45  # (I made up this value :) )
 
-# Foot geoms are expected to be the terminal contact surface
-_tibia_geom_regex = r"^leg_[1-4]_tibia_geom$"
-_foot_geom_regex  = r"^leg_[1-4]_foot_geom$"
+# This enables all collisions, including self collisions.
+# Self-collisions are given condim=1 while foot collisions
+# are given condim=3.
+# Note: in the URDF/MJCF we use a single _geom for both collision
+#       geoms and visual geoms
+FULL_COLLISION = CollisionCfg(
+    geom_names_expr=(".*_geom",),
+    condim={".*_foot_geom": 3, ".*_geom": 1},
+    priority={".*_foot_geom": 1},
+    friction={".*_foot_geom": (CRAWLER_FOOT_MATERIAL_FRICTION_COEFFICIENT,)},
+)
 
-# Which geoms do we want non-default contact parameters on?
-# The tibia regex should stay in geom_names_expr even when we have feet,
-# because tibias can still hit the ground if the robot falls or folds badly,
-# and we would want consistent friction on them.
-CRAWLER_COLLISIONS = CollisionCfg(
-    geom_names_expr=(
-        r".*_geom$",
-    ),  # match all the geometries to have consistent friction
-    condim=3,  # 3d contacts only, normally it would be 6D which is overkill for this robot
+FULL_COLLISION_WITHOUT_SELF = CollisionCfg(
+    geom_names_expr=(".*_geom",),
+    contype=0,
+    conaffinity=1,
+    condim={".*_foot_geom": 3, ".*_geom": 1},
+    priority={".*_foot_geom": 1},
+    friction={".*_foot_geom": (CRAWLER_FOOT_MATERIAL_FRICTION_COEFFICIENT,)},
+)
+
+# This disables all collisions except the feet.
+# Feet get condim=3, all other geoms are disabled.
+FEET_ONLY_COLLISION = CollisionCfg(
+    geom_names_expr=(".*_foot_geom",),
+    contype=0,
+    conaffinity=1,
+    condim=3,
     priority=1,
     friction=(CRAWLER_FOOT_MATERIAL_FRICTION_COEFFICIENT,),
-    solimp={
-        _foot_geom_regex: (0.9, 0.95, 0.005),  # soft landing on feet
-        _tibia_geom_regex: (0.9, 0.95, 0.01),  # stiffer, minimal softness on tibia
-    },
 )

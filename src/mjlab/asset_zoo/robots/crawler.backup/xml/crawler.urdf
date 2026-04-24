@@ -1,0 +1,418 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="URDF">
+    <link name="base">
+        <inertial>
+            <origin xyz="5.2041704279304066e-20 0.0 0.005" rpy="0.0 0.0 0.0" />
+            <mass value="0.23577787558266994" />
+            <inertia ixx="6.065105499097358e-05" iyy="6.065105499097412e-05" izz="0.00011737247872223647" ixy="0.0" iyz="0.0" ixz="5.903759120246965e-22" />
+        </inertial>
+        <visual name="base_visual">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="assets/base.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="base_collision">
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+            <geometry>
+                <mesh filename="assets/base.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_1_coxa">
+        <inertial>
+            <origin xyz="0.00607954930077514 0.006079557382004551 -0.0006464304048130887" rpy="0.0 -0.0 0.0" />
+            <mass value="0.012320734531554899" />
+            <inertia ixx="5.722976919083223e-07" iyy="5.722976919083223e-07" izz="5.637559421977018e-07" ixy="-2.3260825694208147e-07" iyz="1.5970073353431637e-07" ixz="1.597007335343151e-07" />
+        </inertial>
+        <visual name="leg_1_coxa_visual">
+            <origin xyz="0.009899490968672344 0.009899499049901754 0.0029999953173277796" rpy="-1.5707963267948966 7.359808400080176e-18 -2.356194490192345" />
+            <geometry>
+                <mesh filename="assets/coxa.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_1_coxa_collision">
+            <origin xyz="0.009899490968672344 0.009899499049901754 0.0029999953173277796" rpy="-1.5707963267948966 7.359808400080176e-18 -2.356194490192345" />
+            <geometry>
+                <mesh filename="assets/coxa.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_1_femur">
+        <inertial>
+            <origin xyz="0.016263457279522553 -0.012020813986513414 4.682672223310646e-09" rpy="0.0 -0.0 0.0" />
+            <mass value="0.022539225349601982" />
+            <inertia ixx="2.37833414559731e-06" iyy="2.3783341455973135e-06" izz="4.396427974324623e-06" ixy="2.1305963111134955e-06" iyz="1.1540754098365622e-40" ixz="3.669670471741294e-40" />
+        </inertial>
+        <visual name="leg_1_femur_visual">
+            <origin xyz="0.004242641999351258 0.00424264198077716 4.682672221090201e-09" rpy="1.5707963267948966 -1.1510487151465529e-16 -0.7853981633974483" />
+            <geometry>
+                <mesh filename="assets/femur.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_1_femur_collision">
+            <origin xyz="0.004242641999351258 0.00424264198077716 4.682672221090201e-09" rpy="1.5707963267948966 -1.1510487151465529e-16 -0.7853981633974483" />
+            <geometry>
+                <mesh filename="assets/femur.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_2_coxa">
+        <inertial>
+            <origin xyz="-0.006642110481126933 0.0066421106264777045 -0.0006464304048130908" rpy="0.0 -0.0 0.0" />
+            <mass value="0.012320734531554899" />
+            <inertia ixx="5.722976919083291e-07" iyy="5.722976919083223e-07" izz="5.637559421976882e-07" ixy="2.3260825694209502e-07" iyz="1.5970073353431298e-07" ixz="-1.5970073353431468e-07" />
+        </inertial>
+        <visual name="leg_2_coxa_visual">
+            <origin xyz="-0.010462052149024138 0.01046205229437491 0.002999995317327777" rpy="-1.5707963267948966 7.359808400080176e-18 -0.7853981633974483" />
+            <geometry>
+                <mesh filename="assets/coxa.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_2_coxa_collision">
+            <origin xyz="-0.010462052149024138 0.01046205229437491 0.002999995317327777" rpy="-1.5707963267948966 7.359808400080176e-18 -0.7853981633974483" />
+            <geometry>
+                <mesh filename="assets/coxa.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_2_femur">
+        <inertial>
+            <origin xyz="-0.012020817085635809 -0.016263458605225125 4.682672225531093e-09" rpy="0.0 -0.0 0.0" />
+            <mass value="0.022539225349601982" />
+            <inertia ixx="2.3783341455973e-06" iyy="2.3783341455973508e-06" izz="4.396427974324643e-06" ixy="-2.1305963111134925e-06" iyz="-1.6940658945086007e-21" ixz="-3.669670471741299e-40" />
+        </inertial>
+        <visual name="leg_2_femur_visual">
+            <origin xyz="0.00424263888165477 -0.004242643325053823 4.682672221090201e-09" rpy="1.5707963267948966 -2.132356501823911e-16 -2.356194490192345" />
+            <geometry>
+                <mesh filename="assets/femur.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_2_femur_collision">
+            <origin xyz="0.00424263888165477 -0.004242643325053823 4.682672221090201e-09" rpy="1.5707963267948966 -2.132356501823911e-16 -2.356194490192345" />
+            <geometry>
+                <mesh filename="assets/femur.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_3_coxa">
+        <inertial>
+            <origin xyz="-0.0066421104811269505 -0.006642102399897496 -0.0006464304048131175" rpy="0.0 -0.0 0.0" />
+            <mass value="0.012320734531554899" />
+            <inertia ixx="5.722976919083494e-07" iyy="5.722976919083359e-07" izz="5.637559421977289e-07" ixy="-2.3260825694208147e-07" iyz="-1.5970073353431806e-07" ixz="-1.5970073353431806e-07" />
+        </inertial>
+        <visual name="leg_3_coxa_visual">
+            <origin xyz="-0.010462052149024155 -0.0104620440677947 0.0029999953173277393" rpy="-1.5707963267948952 -1.3711258752665072e-15 0.7853981633974482" />
+            <geometry>
+                <mesh filename="assets/coxa.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_3_coxa_collision">
+            <origin xyz="-0.010462052149024155 -0.0104620440677947 0.0029999953173277393" rpy="-1.5707963267948952 -1.3711258752665072e-15 0.7853981633974482" />
+            <geometry>
+                <mesh filename="assets/coxa.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_3_femur">
+        <inertial>
+            <origin xyz="-0.016263458459874282 0.012020819004406373 4.682672249955999e-09" rpy="0.0 -0.0 -9.594713797540529e-91" />
+            <mass value="0.022539225349601982" />
+            <inertia ixx="2.3783341455972965e-06" iyy="2.378334145597405e-06" izz="4.396427974324643e-06" ixy="2.130596311113533e-06" iyz="-6.7762635780343974e-21" ixz="6.776263578034418e-21" />
+        </inertial>
+        <visual name="leg_3_femur_visual">
+            <origin xyz="-0.004242643179702981 -0.004242636962884206 4.682672216649309e-09" rpy="1.5707963267948952 -1.4935905551812441e-15 2.3561944901923453" />
+            <geometry>
+                <mesh filename="assets/femur.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_3_femur_collision">
+            <origin xyz="-0.004242643179702981 -0.004242636962884206 4.682672216649309e-09" rpy="1.5707963267948952 -1.4935905551812441e-15 2.3561944901923453" />
+            <geometry>
+                <mesh filename="assets/femur.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_4_coxa">
+        <inertial>
+            <origin xyz="0.0060795493007751444 -0.006079549155424377 -0.0006464304048130787" rpy="0.0 -0.0 0.0" />
+            <mass value="0.012320734531554899" />
+            <inertia ixx="5.722976919083223e-07" iyy="5.72297691908319e-07" izz="5.637559421977018e-07" ixy="2.3260825694208824e-07" iyz="-1.5970073353431468e-07" ixz="1.597007335343151e-07" />
+        </inertial>
+        <visual name="leg_4_coxa_visual">
+            <origin xyz="0.009899490968672358 -0.009899490823321581 0.0029999953173277883" rpy="-1.5707963267948968 -5.3083600073573306e-17 2.356194490192345" />
+            <geometry>
+                <mesh filename="assets/coxa.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_4_coxa_collision">
+            <origin xyz="0.009899490968672358 -0.009899490823321581 0.0029999953173277883" rpy="-1.5707963267948968 -5.3083600073573306e-17 2.356194490192345" />
+            <geometry>
+                <mesh filename="assets/coxa.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_4_femur">
+        <inertial>
+            <origin xyz="0.012020815905284064 0.0162634571341718 4.682672212208417e-09" rpy="0.0 -0.0 1.2462251253867632e-97" />
+            <mass value="0.022539225349601982" />
+            <inertia ixx="2.3783341455973508e-06" iyy="2.378334145597304e-06" izz="4.396427974324752e-06" ixy="-2.130596311113492e-06" iyz="6.776263578034402e-21" ixz="-8.470329472543003e-22" />
+        </inertial>
+        <visual name="leg_4_femur_visual">
+            <origin xyz="-0.004242640062006538 0.0042426418540004816 4.68267220998797e-09" rpy="1.5707963267948968 -1.7554827998830864e-16 0.7853981633974485" />
+            <geometry>
+                <mesh filename="assets/femur.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_4_femur_collision">
+            <origin xyz="-0.004242640062006538 0.0042426418540004816 4.68267220998797e-09" rpy="1.5707963267948968 -1.7554827998830864e-16 0.7853981633974485" />
+            <geometry>
+                <mesh filename="assets/femur.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_1_tibia">
+        <inertial>
+            <origin xyz="0.006904475069726126 -0.01114711315095558 4.68267220998797e-09" rpy="0.0 -0.0 6.52620467083818e-66" />
+            <mass value="0.014281065378017476" />
+            <inertia ixx="8.780855581023792e-07" iyy="8.780855581023805e-07" izz="1.5898201189611045e-06" ixy="7.520668633465008e-07" iyz="-4.235164736271503e-22" ixz="1.2705494208814513e-21" />
+        </inertial>
+        <visual name="leg_1_tibia_visual">
+            <origin xyz="-0.004242638127425433 -0.0042426406409233055 0.00500000468267221" rpy="-0.7853981633974483 1.5707963267948966 0" />
+            <geometry>
+                <mesh filename="assets/tibia.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_1_tibia_collision">
+            <origin xyz="-0.004242638127425433 -0.0042426406409233055 0.00500000468267221" rpy="-0.7853981633974483 1.5707963267948966 0" />
+            <geometry>
+                <mesh filename="assets/tibia.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_1_foot">
+        <inertial>
+            <origin xyz="0.0010190357009553796 4.682672223310646e-09 0.0010190337821848329" rpy="0.0 -0.0 0.0" />
+            <mass value="0.0014224078597118738" />
+            <inertia ixx="8.70517780609712e-09" iyy="8.180821887655772e-09" izz="8.705177806096961e-09" ixy="-1.0587911840678754e-22" iyz="-1.9852334701272664e-22" ixz="1.768126353075017e-10" />
+        </inertial>
+        <visual name="leg_1_foot_visual">
+            <origin xyz="-0.02570781812742543 0.0050000046826722214 -0.021465179359076693" rpy="-2.356194490192345 -1.4353998199084254e-16 -1.5707963267948966" />
+            <geometry>
+                <mesh filename="assets/foot.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_1_foot_collision">
+            <origin xyz="-0.02570781812742543 0.0050000046826722214 -0.021465179359076693" rpy="-2.356194490192345 -1.4353998199084254e-16 -1.5707963267948966" />
+            <geometry>
+                <mesh filename="assets/foot.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_2_foot">
+        <inertial>
+            <origin xyz="-0.0010190368813071692 4.682672205547078e-09 0.0010190370266579785" rpy="0.0 -0.0 0.0" />
+            <mass value="0.0014224078597118738" />
+            <inertia ixx="8.705177806098708e-09" iyy="8.180821887665936e-09" izz="8.70517780609929e-09" ixy="4.235164736271502e-22" iyz="5.823351512373315e-22" ixz="-1.7681263530728993e-10" />
+        </inertial>
+        <visual name="leg_2_foot_visual">
+            <origin xyz="0.021465176259954328 0.005000004682672199 -0.025707816801722797" rpy="-0.7853981633974485 -1.0011563751207073e-16 -1.5707963267948968" />
+            <geometry>
+                <mesh filename="assets/foot.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_2_foot_collision">
+            <origin xyz="0.021465176259954328 0.005000004682672199 -0.025707816801722797" rpy="-0.7853981633974485 -1.0011563751207073e-16 -1.5707963267948968" />
+            <geometry>
+                <mesh filename="assets/foot.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_2_tibia">
+        <inertial>
+            <origin xyz="-0.01114711625007793 -0.006904476395428709 4.682672221090201e-09" rpy="0.0 -0.0 -3.3852038911233743e-65" />
+            <mass value="0.014281065378017476" />
+            <inertia ixx="8.780855581023796e-07" iyy="8.780855581023517e-07" izz="1.5898201189611604e-06" ixy="-7.520668633464997e-07" iyz="-2.98646509537023e-38" ixz="3.3881317890172014e-21" />
+        </inertial>
+        <visual name="leg_2_tibia_visual">
+            <origin xyz="-0.0042426437400456506 0.004242636801722852 0.0050000046826722214" rpy="0.7853981633974482 1.5707963267948963 0" />
+            <geometry>
+                <mesh filename="assets/tibia.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_2_tibia_collision">
+            <origin xyz="-0.0042426437400456506 0.004242636801722852 0.0050000046826722214" rpy="0.7853981633974482 1.5707963267948963 0" />
+            <geometry>
+                <mesh filename="assets/tibia.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_3_foot">
+        <inertial>
+            <origin xyz="-0.0010190368813071161 4.682672416489453e-09 -0.0010190388000777873" rpy="0.0 -0.0 0.0" />
+            <mass value="0.0014224078597118738" />
+            <inertia ixx="8.70517780609929e-09" iyy="8.180821887672716e-09" izz="8.705177806109458e-09" ixy="-5.743605281946937e-40" iyz="1.2705494208814513e-21" ixz="1.768126353066547e-10" />
+        </inertial>
+        <visual name="leg_3_foot_visual">
+            <origin xyz="0.025707816947073567 0.00500000468267237 0.021465174341183762" rpy="0.7853981633974493 2.7773379223285867e-15 -1.5707963267948968" />
+            <geometry>
+                <mesh filename="assets/foot.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_3_foot_collision">
+            <origin xyz="0.025707816947073567 0.00500000468267237 0.021465174341183762" rpy="0.7853981633974493 2.7773379223285867e-15 -1.5707963267948968" />
+            <geometry>
+                <mesh filename="assets/foot.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_3_tibia">
+        <inertial>
+            <origin xyz="-0.006904476250077884 0.0111471181688486 4.682672314348934e-09" rpy="0.0 -0.0 -4.6076937029012825e-61" />
+            <mass value="0.014281065378017476" />
+            <inertia ixx="8.78085558102433e-07" iyy="8.780855581024059e-07" izz="1.5898201189611062e-06" ixy="7.520668633464252e-07" iyz="-6.7762635780344005e-21" ixz="-3.3881317890171953e-21" />
+        </inertial>
+        <visual name="leg_3_tibia_visual">
+            <origin xyz="0.004242636947073635 0.004242645658816287 0.005000004682672301" rpy="2.356194490192346 1.5707963267948937 0" />
+            <geometry>
+                <mesh filename="assets/tibia.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_3_tibia_collision">
+            <origin xyz="0.004242636947073635 0.004242645658816287 0.005000004682672301" rpy="2.356194490192346 1.5707963267948937 0" />
+            <geometry>
+                <mesh filename="assets/tibia.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_4_foot">
+        <inertial>
+            <origin xyz="0.0010190357009555707 4.682672234412877e-09 -0.0010190355556046883" rpy="0.0 -0.0 0.0" />
+            <mass value="0.0014224078597118738" />
+            <inertia ixx="8.705177806092514e-09" iyy="8.180821887645608e-09" izz="8.705177806096326e-09" ixy="-3.3881317890172014e-21" iyz="2.117582368135751e-21" ixz="-1.7681263530580762e-10" />
+        </inertial>
+        <visual name="leg_4_foot_visual">
+            <origin xyz="-0.021465177440305877 0.005000004682672203 0.025707818272775962" rpy="2.356194490192346 1.5386400727373904e-15 -1.570796326794895" />
+            <geometry>
+                <mesh filename="assets/foot.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_4_foot_collision">
+            <origin xyz="-0.021465177440305877 0.005000004682672203 0.025707818272775962" rpy="2.356194490192346 1.5386400727373904e-15 -1.570796326794895" />
+            <geometry>
+                <mesh filename="assets/foot.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="leg_4_tibia">
+        <inertial>
+            <origin xyz="0.011147115069726286 0.0069044749243754215 4.682672225531093e-09" rpy="0.0 -0.0 0.0" />
+            <mass value="0.014281065378017476" />
+            <inertia ixx="8.780855581023246e-07" iyy="8.78085558102369e-07" izz="1.589820118961052e-06" ixy="-7.520668633464999e-07" iyz="1.1026481490189584e-38" ixz="-7.623296525288703e-21" />
+        </inertial>
+        <visual name="leg_4_tibia_visual">
+            <origin xyz="0.004242642559694017 -0.0042426382727760985 0.005000004682672203" rpy="-2.356194490192344 1.5707963267948943 0" />
+            <geometry>
+                <mesh filename="assets/tibia.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </visual>
+        <collision name="leg_4_tibia_collision">
+            <origin xyz="0.004242642559694017 -0.0042426382727760985 0.005000004682672203" rpy="-2.356194490192344 1.5707963267948943 0" />
+            <geometry>
+                <mesh filename="assets/tibia.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <joint name="leg_1_coxa_leg_1_femur" type="continuous">
+        <origin xyz="0.012020810000000002 0.007778179999999999 -0.006999999999999999" rpy="3.141592653589793 5.416677968589073e-35 0.0" />
+        <parent link="leg_1_coxa" />
+        <child link="leg_1_femur" />
+        <axis xyz="0.707107 0.707107 3.830170908335114e-35" />
+    </joint>
+    <joint name="base_leg_1_coxa" type="continuous">
+        <origin xyz="-0.02249999588670991 -0.02250000396793932 -4.682672214428862e-09" rpy="3.141592653589793 -0.0 -1.5707963267948966" />
+        <parent link="base" />
+        <child link="leg_1_coxa" />
+        <axis xyz="0.0 0.0 1.0" />
+    </joint>
+    <joint name="base_leg_2_coxa" type="continuous">
+        <origin xyz="-0.02249999588670991 0.022499996032060682 -4.682672214428862e-09" rpy="3.141592653589793 -0.0 -1.5707963267948966" />
+        <parent link="base" />
+        <child link="leg_2_coxa" />
+        <axis xyz="0.0 0.0 1.0" />
+    </joint>
+    <joint name="leg_2_coxa_leg_2_femur" type="continuous">
+        <origin xyz="-0.008340729999999992 0.01258337 -0.006999999999999999" rpy="3.141592653589793 -5.416677968589073e-35 0.0" />
+        <parent link="leg_2_coxa" />
+        <child link="leg_2_femur" />
+        <axis xyz="0.707107 -0.707107 -3.830170908335114e-35" />
+    </joint>
+    <joint name="leg_3_coxa_leg_3_femur" type="continuous">
+        <origin xyz="-0.01258337 -0.008340720000000008 -0.006999999999999999" rpy="3.141592653589793 2.116374158186469e-30 1.9721522630525295e-31" />
+        <parent link="leg_3_coxa" />
+        <child link="leg_3_femur" />
+        <axis xyz="-0.707107 -0.707107 -1.6254898759704362e-30" />
+    </joint>
+    <joint name="base_leg_3_coxa" type="continuous">
+        <origin xyz="0.022500004113290083 0.022499996032060682 -4.682672214428862e-09" rpy="3.141592653589793 -0.0 -1.5707963267948966" />
+        <parent link="base" />
+        <child link="leg_3_coxa" />
+        <axis xyz="0.0 0.0 1.0" />
+    </joint>
+    <joint name="base_leg_4_coxa" type="continuous">
+        <origin xyz="0.022500004113290083 -0.02250000396793932 -4.682672214428862e-09" rpy="3.141592653589793 -0.0 -1.5707963267948966" />
+        <parent link="base" />
+        <child link="leg_4_coxa" />
+        <axis xyz="0.0 0.0 1.0" />
+    </joint>
+    <joint name="leg_4_coxa_leg_4_femur" type="continuous">
+        <origin xyz="0.007778170000000002 -0.012020810000000015 -0.006999999999999999" rpy="3.141592653589793 -2.205677087359668e-33 1.232595164407831e-32" />
+        <parent link="leg_4_coxa" />
+        <child link="leg_4_femur" />
+        <axis xyz="-0.707107 0.7071069999999999 -3.241300140912161e-33" />
+    </joint>
+    <joint name="leg_1_femur_leg_1_tibia" type="continuous">
+        <origin xyz="0.02828427 -0.028284270000000004 0.0" rpy="1.5407439555097883e-33 9.013165799496008e-34 -2.4651903288156613e-32" />
+        <parent link="leg_1_femur" />
+        <child link="leg_1_tibia" />
+        <axis xyz="-0.7071070000000002 -0.707107 -4.84832862692823e-33" />
+    </joint>
+    <joint name="leg_1_tibia_leg_1_foot" type="fixed">
+        <origin xyz="0.021465179999999997 -0.02570782 -2.220446049250313e-18" rpy="1.5707963267948966 -8.471498002637101e-34 2.465190328815662e-32" />
+        <parent link="leg_1_tibia" />
+        <child link="leg_1_foot" />
+    </joint>
+    <joint name="leg_2_femur_leg_2_tibia" type="continuous">
+        <origin xyz="-0.028284270000000014 -0.028284270000000004 0.0" rpy="-6.162975822039155e-33 1.5152067497230174e-33 4.930380657631324e-32" />
+        <parent link="leg_2_femur" />
+        <child link="leg_2_tibia" />
+        <axis xyz="-0.707107 0.707107 -1.631123776889653e-32" />
+    </joint>
+    <joint name="leg_2_tibia_leg_2_foot" type="fixed">
+        <origin xyz="-0.025707819999999996 -0.02146518 0.0" rpy="1.5707963267948966 -1.569373529408908e-33 -4.930380657631324e-32" />
+        <parent link="leg_2_tibia" />
+        <child link="leg_2_foot" />
+    </joint>
+    <joint name="leg_3_femur_leg_3_tibia" type="continuous">
+        <origin xyz="-0.028284269999999997 0.028284269999999997 0.0" rpy="-4.173812085533337e-61 -2.200041170737885e-31 3.944304526105059e-31" />
+        <parent link="leg_3_femur" />
+        <child link="leg_3_tibia" />
+        <axis xyz="0.707107 0.707107 1.876117590738102e-30" />
+    </joint>
+    <joint name="leg_3_tibia_leg_3_foot" type="fixed">
+        <origin xyz="-0.021465180000000004 0.025707820000000013 0.0" rpy="1.5707963267948966 2.3363782752602575e-30 -5.9164567891575885e-31" />
+        <parent link="leg_3_tibia" />
+        <child link="leg_3_foot" />
+    </joint>
+    <joint name="leg_4_femur_leg_4_tibia" type="continuous">
+        <origin xyz="0.02828427 0.028284270000000014 -2.220446049250313e-18" rpy="6.162975822039157e-33 7.672534297059725e-33 1.2325951644078312e-32" />
+        <parent link="leg_4_femur" />
+        <child link="leg_4_tibia" />
+        <axis xyz="0.707107 -0.7071070000000002 -1.0367299274946627e-32" />
+    </joint>
+    <joint name="leg_4_tibia_leg_4_foot" type="fixed">
+        <origin xyz="0.02570782 0.021465180000000004 0.0" rpy="1.5707963267948966 -8.263406457993844e-34 0.0" />
+        <parent link="leg_4_tibia" />
+        <child link="leg_4_foot" />
+    </joint>
+</robot>
