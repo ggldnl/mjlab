@@ -20,6 +20,10 @@ from mjlab.asset_zoo.robots.unitree_go1.go1_constants import (
 from mjlab.asset_zoo.robots.crawler.actuators import (
   CRAWLER_ACTION_SCALE as CRAWLER_ACTION_SCALE,
 )
+from mjlab.asset_zoo.robots.crawler.sensors import (
+  IMU as IMU,
+  ROOT_ANGMOM as ROOT_ANGMOM
+)
 from mjlab.asset_zoo.robots.crawler.crawler_constants import (
   CRAWLER_FOOT_SITE_NAMES as CRAWLER_FOOT_SITE_NAMES,
   CRAWLER_FOOT_GEOM_NAMES as CRAWLER_FOOT_GEOM_NAMES,

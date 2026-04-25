@@ -19,6 +19,7 @@ MG90S_ARMATURE = MG90S_ROTOR_INERTIA * MG90S_GEAR_RATIO ** 2  # ~= 2.1e-7 kg*m^2
 MG90S_STALL_TORQUE_KGF_CM = 2.2
 KGF_CM_TO_NM = 9.81 * 0.01
 MG90S_EFFORT_LIMIT = MG90S_STALL_TORQUE_KGF_CM * KGF_CM_TO_NM  # ~= 0.216 Nm
+MG90S_EFFORT_LIMIT = 25
 
 # Velocity limit (from datasheet @ 6V, s/60°)
 # It's the time in seconds for the servo to sweep 60 deg under no load, RC hobby convention
