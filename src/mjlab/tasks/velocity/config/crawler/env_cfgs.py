@@ -5,7 +5,6 @@ from mjlab.asset_zoo.robots import (
     CRAWLER_FOOT_GEOM_NAMES,
     CRAWLER_ACTION_SCALE,
     CRAWLER_BASE_NAME,
-    ROOT_ANGMOM,
     IMU,
     get_crawler_robot_cfg,
 )
@@ -17,6 +16,7 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.sensor import (
     ContactMatch,
     ContactSensorCfg,
+    BuiltinSensorCfg,
     ObjRef,
     RayCastSensorCfg,
     RingPatternCfg,
@@ -33,7 +33,7 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg.sim.mujoco.ccd_iterations = 500
     cfg.sim.contact_sensor_maxmatch = 500
-    cfg.sim.nconmax = 100
+    cfg.sim.nconmax = 200
 
     cfg.scene.entities = {"robot": get_crawler_robot_cfg()}
 
@@ -88,10 +88,16 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         history_length=4,
     )
 
+    root_angmom = BuiltinSensorCfg(
+        name="root_angmom",
+        sensor_type="subtreeangmom",
+        obj=ObjRef(type="body", name=CRAWLER_BASE_NAME, entity="robot"),
+    )
+
     cfg.scene.sensors = (cfg.scene.sensors or ()) + (
         feet_ground_cfg,
         self_collision_cfg,
-        ROOT_ANGMOM,
+        root_angmom,
         *IMU,
     )
 
@@ -194,7 +200,7 @@ def crawler_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.sim.njmax = 500
     cfg.sim.mujoco.ccd_iterations = 500
     cfg.sim.contact_sensor_maxmatch = 50
-    cfg.sim.nconmax = 100
+    cfg.sim.nconmax = 200
 
     # Switch to flat terrain.
     assert cfg.scene.terrain is not None

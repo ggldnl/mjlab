@@ -19,7 +19,6 @@ MG90S_ARMATURE = MG90S_ROTOR_INERTIA * MG90S_GEAR_RATIO ** 2  # ~= 2.1e-7 kg*m^2
 MG90S_STALL_TORQUE_KGF_CM = 2.2
 KGF_CM_TO_NM = 9.81 * 0.01
 MG90S_EFFORT_LIMIT = MG90S_STALL_TORQUE_KGF_CM * KGF_CM_TO_NM  # ~= 0.216 Nm
-MG90S_EFFORT_LIMIT = 25
 
 # Velocity limit (from datasheet @ 6V, s/60°)
 # It's the time in seconds for the servo to sweep 60 deg under no load, RC hobby convention
@@ -57,7 +56,7 @@ CRAWLER_JOINT_NAMES = [
 
 # Actuator config
 CRAWLER_ACTUATOR = BuiltinPositionActuatorCfg(
-    target_names_expr=(".*",),  # all joints have the same actuator
+    target_names_expr=(r".*_coxa$", r".*_femur$", r".*_tibia$"),  # all joints have the same actuator
     stiffness=MG90S_STIFFNESS,
     damping=MG90S_DAMPING,
     effort_limit=ACTUATOR_MG90S.effort_limit,

@@ -6,7 +6,7 @@ from mjlab.entity import EntityCfg
 from pathlib import Path
 
 from .actuators import CRAWLER_ARTICULATIONS
-from .collisions import FULL_COLLISION
+from .collisions import FULL_COLLISION, FEET_ONLY_COLLISION
 from .keyframes import INIT_STATE
 
 
@@ -52,34 +52,11 @@ CRAWLER_FOOT_SITE_NAMES = (
 
 CRAWLER_BASE_NAME = "base"
 
-# Entity-scoped sites: we will attach all sensors through python,
-# minimal manual XML editing. We will only need some sites to attach
-# the sensors to.
-
-"""
-# Entity-scoped site
-CRAWLER_IMU_SITE_NAME = "robot/imu"
-
-# Sensor should use plain name (sensors.py)
-imu_site = ObjRef(type="site", name=CRAWLER_IMU_SITE_NAME)
-IMU_ANG_VEL = BuiltinSensorCfg(
-  name="imu_ang_vel",
-  sensor_type="gyro",
-  obj=imu_site,
-)
-
-# Observations should use plain name (observations.py)
-obs = scene["imu_ang_vel"]
-"""
-CRAWLER_IMU_SITE_NAME = "robot/imu"
-CRAWLER_BASE_SITE_NAME = "robot/base"
-
-
 def get_crawler_robot_cfg() -> EntityCfg:
     """Get a fresh Crawler robot configuration instance."""
     return EntityCfg(
         init_state=INIT_STATE,
-        collisions=(FULL_COLLISION,),
+        collisions=(FEET_ONLY_COLLISION, ),  # (FULL_COLLISION,),
         spec_fn=get_spec,
         articulation=CRAWLER_ARTICULATIONS,
     )

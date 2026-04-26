@@ -8,7 +8,7 @@ from mjlab.entity import EntityCfg
 # model to derive this will defy the sole purpose of using DRL:
 # it's difficult to have models for complex robots.
 INIT_STATE = EntityCfg.InitialStateCfg(
-    pos=(0.0, 0.0, 0.04),  # base at 4cm from ground
+    pos=(0.0, 0.0, 0.05),
     joint_pos={
         "base_leg_[1-4]_coxa": 0.0,
         "leg_[1-4]_coxa_leg_[1-4]_femur": -0.25,

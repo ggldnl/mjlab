@@ -19,13 +19,14 @@ ENTITY_ALIASES: dict[str, str] = {
   "g1": "mjlab.asset_zoo.robots:get_g1_robot_cfg",
   "go1": "mjlab.asset_zoo.robots:get_go1_robot_cfg",
   "yam": "mjlab.asset_zoo.robots:get_yam_robot_cfg",
+  "crawler": "mjlab.asset_zoo.robots:get_crawler_robot_cfg",
 }
 
 
 @dataclass
 class ExportSceneCfg:
   target: tyro.conf.Positional[str]
-  """Task ID, entity alias (g1, go1, yam), or import path (pkg.module:get_cfg)."""
+  """Task ID, entity alias (g1, go1, yam, crawler), or import path (pkg.module:get_cfg)."""
 
   output_dir: str = "export"
   """Output directory."""

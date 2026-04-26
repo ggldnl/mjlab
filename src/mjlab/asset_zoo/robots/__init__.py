@@ -22,7 +22,6 @@ from mjlab.asset_zoo.robots.crawler.actuators import (
 )
 from mjlab.asset_zoo.robots.crawler.sensors import (
   IMU as IMU,
-  ROOT_ANGMOM as ROOT_ANGMOM
 )
 from mjlab.asset_zoo.robots.crawler.crawler_constants import (
   CRAWLER_FOOT_SITE_NAMES as CRAWLER_FOOT_SITE_NAMES,
