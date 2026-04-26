@@ -40,9 +40,11 @@ ACTUATOR_MG90S = ElectricActuator(
 MG90S_NATURAL_FREQ = 5.0 * 2.0 * math.pi   # 5 Hz -> ~31.4 rad/s
 MG90S_DAMPING_RATIO = 1.0                  # critically damped (typical for hobby servo tuning)
 
-MG90S_STIFFNESS = MG90S_ARMATURE * MG90S_NATURAL_FREQ ** 2  # ~= 2.1e-4 N*m/rad
+MG90S_STIFFNESS = 10.0   # N*m/rad, tune upward if joints feel mushy
+MG90S_DAMPING   = 0.2    # N*m*s/rad, ~critically damped at these gains
 
-MG90S_DAMPING = 2.0 * MG90S_DAMPING_RATIO * MG90S_ARMATURE * MG90S_NATURAL_FREQ  # ~= 1.3e-5 N*m*s/rad
+# MG90S_STIFFNESS = MG90S_ARMATURE * MG90S_NATURAL_FREQ ** 2  # ~= 2.1e-4 N*m/rad
+# MG90S_DAMPING = 2.0 * MG90S_DAMPING_RATIO * MG90S_ARMATURE * MG90S_NATURAL_FREQ  # ~= 1.3e-5 N*m*s/rad
 
 # Use the MG90S on the robot
 

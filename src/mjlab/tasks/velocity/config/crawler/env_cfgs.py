@@ -53,7 +53,7 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 ObjRef(type="site", name=s, entity="robot")
                 for s in CRAWLER_FOOT_SITE_NAMES
             )
-            sensor.pattern = RingPatternCfg.single_ring(radius=0.03, num_samples=6)
+            sensor.pattern = RingPatternCfg.single_ring(radius=0.008, num_samples=6)
 
     # Detect when each foot/tibia subtree touches terrain
     feet_ground_cfg = ContactSensorCfg(
@@ -160,7 +160,7 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         weight=-1.0,
         params={
             "sensor_name": self_collision_cfg.name,
-            "force_threshold": 5.0,
+            "force_threshold": 0.5,  # N
         },
     )
 
