@@ -30,7 +30,7 @@ class TrainConfig:
   video: bool = False
   video_length: int = 200
   video_interval: int = 2000
-  enable_nan_guard: bool = False
+  enable_nan_guard: bool = True
   torchrunx_log_dir: str | None = None
   wandb_run_path: str | None = None
   wandb_checkpoint_name: str | None = None

@@ -3,6 +3,7 @@
 from mjlab.asset_zoo.robots import (
     CRAWLER_FOOT_SITE_NAMES,
     CRAWLER_FOOT_GEOM_NAMES,
+    CRAWLER_ACTION_OFFSET,
     CRAWLER_ACTION_SCALE,
     CRAWLER_BASE_NAME,
     IMU,
@@ -27,13 +28,19 @@ from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
 
+SIM_DT = 0.001
+DECIMATION = 10 # control period = 10 ms > T_settle (depends on the actuators)
+
+
 def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """Create Crawler rough terrain velocity configuration."""
     cfg = make_velocity_env_cfg()
 
-    cfg.sim.mujoco.ccd_iterations = 500
+    cfg.sim.mujoco.ccd_iterations = 50
     cfg.sim.contact_sensor_maxmatch = 500
     cfg.sim.nconmax = 200
+    cfg.sim.dt = SIM_DT
+    cfg.decimation = DECIMATION
 
     cfg.scene.entities = {"robot": get_crawler_robot_cfg()}
 
@@ -107,13 +114,14 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     joint_pos_action = cfg.actions["joint_pos"]
     assert isinstance(joint_pos_action, JointPositionActionCfg)
     joint_pos_action.scale = CRAWLER_ACTION_SCALE
+    joint_pos_action.offset = CRAWLER_ACTION_OFFSET
 
     cfg.viewer.body_name = CRAWLER_BASE_NAME
 
     # The crawler rides ~0.1–0.15 m off the ground
     twist_cmd = cfg.commands["twist"]
     assert isinstance(twist_cmd, UniformVelocityCommandCfg)
-    twist_cmd.viz.z_offset = 0.1
+    twist_cmd.viz.z_offset = 0.05
 
     # Randomize friction on the foot geoms only (the contact surfaces).
     cfg.events["foot_friction"].params["asset_cfg"].geom_names = CRAWLER_FOOT_GEOM_NAMES
@@ -198,9 +206,11 @@ def crawler_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # Flat terrain has fewer contacts, we can relax limits.
     cfg.sim.njmax = 500
-    cfg.sim.mujoco.ccd_iterations = 500
+    cfg.sim.mujoco.ccd_iterations = 50
     cfg.sim.contact_sensor_maxmatch = 50
     cfg.sim.nconmax = 200
+    cfg.sim.dt = SIM_DT
+    cfg.decimation = DECIMATION
 
     # Switch to flat terrain.
     assert cfg.scene.terrain is not None

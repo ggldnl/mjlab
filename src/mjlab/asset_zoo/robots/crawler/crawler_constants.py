@@ -5,9 +5,8 @@ from mjlab.entity import EntityCfg
 
 from pathlib import Path
 
-from .actuators import CRAWLER_ARTICULATIONS
+from .actuators import CRAWLER_ARTICULATIONS, INIT_STATE
 from .collisions import FULL_COLLISION, FEET_ONLY_COLLISION
-from .keyframes import INIT_STATE
 
 
 LOCAL_FOLDER = Path(__file__).parent
@@ -56,7 +55,7 @@ def get_crawler_robot_cfg() -> EntityCfg:
     """Get a fresh Crawler robot configuration instance."""
     return EntityCfg(
         init_state=INIT_STATE,
-        collisions=(FEET_ONLY_COLLISION, ),  # (FULL_COLLISION,),
+        collisions=(FEET_ONLY_COLLISION,),
         spec_fn=get_spec,
         articulation=CRAWLER_ARTICULATIONS,
     )

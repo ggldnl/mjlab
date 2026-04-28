@@ -19,6 +19,7 @@ from mjlab.asset_zoo.robots.unitree_go1.go1_constants import (
 
 from mjlab.asset_zoo.robots.crawler.actuators import (
   CRAWLER_ACTION_SCALE as CRAWLER_ACTION_SCALE,
+  CRAWLER_ACTION_OFFSET as CRAWLER_ACTION_OFFSET,
 )
 from mjlab.asset_zoo.robots.crawler.sensors import (
   IMU as IMU,

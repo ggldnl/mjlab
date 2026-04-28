@@ -2,51 +2,56 @@
 
 import math
 from mjlab.actuator import BuiltinPositionActuatorCfg
-from mjlab.utils.actuator import ElectricActuator
 from mjlab.entity import EntityArticulationInfoCfg
+from mjlab.entity import EntityCfg
 
-# MG90S specification
 
-# Brushed DC coreless motor: ~1.5g rotor, ~3mm radius
-MG90S_ROTOR_INERTIA = 7e-9   # kg*m^2
-MG90S_GEAR_RATIO    = 5.5    # total spur gear reduction (estimated, ~5/6)
+# The MG90S is a brushed-DC servo with an internal PID position loop.
+# We model it in MuJoCo as a position actuator (stiffness + damping + effort_limit).
+# The three parameters below are the only externally observable quantities:
+#   effort_limit  - stall torque
+#   velocity_limit - no-load angular speed (used only for documentation here)
+#   armature      - reflected rotor inertia
 
-# Simple gear-train reflection: J_out = J_rotor * N²
-# (no planetary staging, so no two-stage planetary function needed)
-MG90S_ARMATURE = MG90S_ROTOR_INERTIA * MG90S_GEAR_RATIO ** 2  # ~= 2.1e-7 kg*m^2
-
-# Servo stall torque (from datasheet @ 6V, Kgf*cm)
-MG90S_STALL_TORQUE_KGF_CM = 2.2
+# Effort limit: 2.2 Kgf*cm at 6V (datasheet)
+MG90S_STALL_TORQUE_KGF_CM = 2.2  # 2.2
 KGF_CM_TO_NM = 9.81 * 0.01
-MG90S_EFFORT_LIMIT = MG90S_STALL_TORQUE_KGF_CM * KGF_CM_TO_NM  # ~= 0.216 Nm
+MG90S_EFFORT_LIMIT = MG90S_STALL_TORQUE_KGF_CM * KGF_CM_TO_NM  # 0.216 N*m
 
-# Velocity limit (from datasheet @ 6V, s/60°)
-# It's the time in seconds for the servo to sweep 60 deg under no load, RC hobby convention
+# Velocity limit: 0.08 s/60° at 6V (datasheet) -> 13.1 rad/s
 MG90S_NO_LOAD_SPEED_S_PER_60DEG = 0.08
-DEG60_IN_RAD = math.pi / 3
-MG90S_VELOCITY_LIMIT = DEG60_IN_RAD / MG90S_NO_LOAD_SPEED_S_PER_60DEG  # ~= 13.1 rad/s
+MG90S_VELOCITY_LIMIT = (math.pi / 3.0) / MG90S_NO_LOAD_SPEED_S_PER_60DEG  # 13.1 rad/s
 
-# Actuator limits
-ACTUATOR_MG90S = ElectricActuator(
-    reflected_inertia=MG90S_ARMATURE,
-    velocity_limit=MG90S_VELOCITY_LIMIT,
-    effort_limit=MG90S_EFFORT_LIMIT,
-)
+# Reflected rotor inertia
+# Coreless brushed rotor: ~1.5 g, radius ~3 mm -> J_rotor ~= 7e-9 kg*m^2
+# Spur gear train, N ~= 5.5 -> J_arm = J_rotor * N^2 ~= 2.1e-7 kg*m^2
+MG90S_ROTOR_INERTIA = 7e-9  # kg*m^2
+MG90S_GEAR_RATIO = 5.5
+MG90S_ARMATURE = MG90S_ROTOR_INERTIA * MG90S_GEAR_RATIO ** 2  # 2.1e-7 kg*m^2
 
-# Stiffness & damping via natural frequency
-# Hobby servos are slower/softer than brushless, ~5 Hz for the controller is realistic.
-# This is the parameter most worth sweeping in domain randomization.
-MG90S_NATURAL_FREQ = 5.0 * 2.0 * math.pi   # 5 Hz -> ~31.4 rad/s
-MG90S_DAMPING_RATIO = 1.0                  # critically damped (typical for hobby servo tuning)
+# Stiffness (Kp)
+# Kp = effort_limit / delta_sat, where delta_sat is the position error
+# at which the PD controller reaches stall torque.
+# We choose delta_sat so that the full action range (0.3 rad, see below)
+# stays inside the linear actuator regime. With delta_sat = 0.4 rad,
+# a maximum action of 0.3 rad produces 75% of stall torque — the servo
+# responds proportionally and learning gradients flow everywhere.
+# 0.4 rad (~23°) is physically reasonable for a spur-gear hobby servo
+# with plastic output: stiffer than the 34° in the old code, looser than
+# the 5–15° of a metal-gear servo or industrial actuator.
+_DELTA_SAT = 0.6
+MG90S_STIFFNESS = MG90S_EFFORT_LIMIT / _DELTA_SAT  # 0.54 N*m/rad
 
-MG90S_STIFFNESS = 10.0   # N*m/rad, tune upward if joints feel mushy
-MG90S_DAMPING   = 0.2    # N*m*s/rad, ~critically damped at these gains
+# Damping (Kd): critical damping at the femur joint (largest effective inertia)
+# I_eff accounts for tibia + foot rotating about the femur axis, plus armature:
+#   tibia (~1.9 g at 40 mm from femur):  I ~= 3.0e-6 kg*m^2
+#   foot  (~0.2 g at 70 mm from femur):  I ~= 1.0e-6 kg*m^2
+#   armature (reflected rotor):              ~= 0.2e-6 kg*m^2
+#   total: ~4.2e-6, rounded to 5e-6 for margin
+_I_EFF = 5e-6  # kg*m^2
+MG90S_DAMPING = 2.0 * math.sqrt(MG90S_STIFFNESS * _I_EFF)  # 0.0033 N*m*s/rad
 
-# MG90S_STIFFNESS = MG90S_ARMATURE * MG90S_NATURAL_FREQ ** 2  # ~= 2.1e-4 N*m/rad
-# MG90S_DAMPING = 2.0 * MG90S_DAMPING_RATIO * MG90S_ARMATURE * MG90S_NATURAL_FREQ  # ~= 1.3e-5 N*m*s/rad
-
-# Use the MG90S on the robot
-
+# Joint names
 CRAWLER_JOINT_NAMES = [
     "base_leg_1_coxa",  "leg_1_coxa_leg_1_femur",  "leg_1_femur_leg_1_tibia",
     "base_leg_2_coxa",  "leg_2_coxa_leg_2_femur",  "leg_2_femur_leg_2_tibia",
@@ -54,78 +59,72 @@ CRAWLER_JOINT_NAMES = [
     "base_leg_4_coxa",  "leg_4_coxa_leg_4_femur",  "leg_4_femur_leg_4_tibia",
 ]
 
-# Actuator config
+# Actuator configuration
 CRAWLER_ACTUATOR = BuiltinPositionActuatorCfg(
-    target_names_expr=(r".*_coxa$", r".*_femur$", r".*_tibia$"),  # all joints have the same actuator
+    target_names_expr=(r".*_coxa$", r".*_femur$", r".*_tibia$"),
     stiffness=MG90S_STIFFNESS,
     damping=MG90S_DAMPING,
-    effort_limit=ACTUATOR_MG90S.effort_limit,
-    armature=ACTUATOR_MG90S.reflected_inertia,
+    effort_limit=MG90S_EFFORT_LIMIT,
+    armature=MG90S_ARMATURE,
 )
+
+_SOFT = 0.9
 
 CRAWLER_ARTICULATIONS = EntityArticulationInfoCfg(
-    actuators=(CRAWLER_ACTUATOR, ),
-    soft_joint_pos_limit_factor=0.9,  # clips the joint position limits inside the physics engine
+    actuators=(CRAWLER_ACTUATOR,),
+    soft_joint_pos_limit_factor=_SOFT,
 )
 
-# Policy related stuff
+# Joint hard limits
+_COXA_LIM  = (-0.785,  0.785)
+_FEMUR_LIM = (-1.571,  1.571)
+_TIBIA_LIM = (-2.356,  0.785)
 
-# Physical joint range per side (half-range). A policy output of +1.0
-# moves the joint +JOINT_RANGE from center, and -1.0 moves it -JOINT_RANGE,
-# so the total mechanical excursion is 2*JOINT_RANGE.
-JOINT_RANGE_DEG = {
-    "coxa": 45,
-    "femur": 90,
-    "tibia": 90,
-}
-JOINT_RANGE = {j: math.radians(r) for j, r in JOINT_RANGE_DEG.items()}
+# Default joint positions
+_COXA_DEFAULT  =  0.00
+_FEMUR_DEFAULT = -0.25
+_TIBIA_DEFAULT = -1.75
 
-# Policy controls this fraction of the mechanical range. Most policies
-# output actions through a tanh or clipped linear activation, meaning
-# the raw network output lives in (-1, 1). The action scale multiplies
-# that output to get a joint target. If you map 1.0 to the full
-# mechanical range, the policy can only reach the joint limits
-# by saturating its output neuron. Saturated neurons have near-zero gradient,
-# so the policy stops learning to use extreme positions. We trade off reachable
-# range for gradient quality near the edges. ACTION_FRACTION = 0.5 means
-# a saturated output reaches 50% of range — gradients stay healthy everywhere
-# the policy actually operates.
-ACTION_FRACTION = 0.8  # The policy can only reach 80% of the URDF range when saturated
+# Robot standing initially, no need to learn how to get up.
+# We need to manually tune the initial height. Using a kinematic
+# model to derive this will defy the sole purpose of using DRL:
+# it's difficult to have models for complex robots.
+INIT_STATE = EntityCfg.InitialStateCfg(
+    pos=(0.0, 0.0, 0.05),
+    joint_pos={
+        "base_leg_[1-4]_coxa": _COXA_DEFAULT,
+        "leg_[1-4]_coxa_leg_[1-4]_femur": _FEMUR_DEFAULT,
+        "leg_[1-4]_femur_leg_[1-4]_tibia": _TIBIA_DEFAULT,
+    },
+    joint_vel={".*": 0.0},
+)
 
-# Derived action scales: how many radians a policy output of 1.0 maps to
-ACTION_SCALES = {joint: ACTION_FRACTION * rng for joint, rng in JOINT_RANGE.items()}
+def _soft_limits(hard_lim: tuple[float, float], soft: float = _SOFT) -> tuple[float, float]:
+    return hard_lim[0] * soft, hard_lim[1] * soft
 
-# Per-joint action scales, looked up by joint type
-CRAWLER_ACTION_SCALE: dict[str, float] = {
-    name: ACTION_SCALES[
-        "coxa"  if name.endswith("coxa")  else
-        "femur" if name.endswith("femur") else
-        "tibia"
-    ]
-    for name in CRAWLER_JOINT_NAMES
-}
+def _max_scale(hard_lim: tuple[float, float], default: float, soft: float = _SOFT) -> float:
+    """Largest symmetric scale around `default` that stays within soft limits."""
+    soft_lower, soft_upper = _soft_limits(hard_lim, soft)
+    return min(default - soft_lower, soft_upper - default)
 
-"""
-Note: the G1 defines ACTION_SCALES this way:
+def _joint_value_dict(coxa_val: float, femur_val: float, tibia_val: float) -> dict[str, float]:
+    return {
+        name: (
+            coxa_val  if name.endswith("coxa")  else
+            femur_val if name.endswith("femur") else
+            tibia_val
+        )
+        for name in CRAWLER_JOINT_NAMES
+    }
 
-G1_ACTION_SCALE: dict[str, float] = {}
-for a in G1_ARTICULATION.actuators:
-  assert isinstance(a, BuiltinPositionActuatorCfg)
-  e = a.effort_limit
-  s = a.stiffness
-  names = a.target_names_expr
-  assert e is not None
-  for n in names:
-    G1_ACTION_SCALE[n] = 0.25 * e / s
-    
-This is saturation deflection - the position error at which the PD controller
-hits its torque limit. Beyond e/s radians of error, commanding more position
-does nothing - the actuator is already saturated. 0.25 * e/s keeps the policy
-comfortably in the linear regime of the actuator, where torque responds
-proportionally to position error. On the G1, we care about staying in the
-linear torque regime.
+CRAWLER_ACTION_SCALE: dict[str, float] = _joint_value_dict(
+    _max_scale(_COXA_LIM,  _COXA_DEFAULT),   # 0.707
+    _max_scale(_FEMUR_LIM, _FEMUR_DEFAULT),   # 1.164
+    _max_scale(_TIBIA_LIM, _TIBIA_DEFAULT),   # 0.370
+)
 
-On the crawler robot we have MG90S servos that are low-torque and have a
-mechanical range as binding constraint, not actuator saturation. This
-formulation is simpler and should work better.
-"""
+CRAWLER_ACTION_OFFSET: dict[str, float] = _joint_value_dict(
+    _COXA_DEFAULT,   #  0.00
+    _FEMUR_DEFAULT,  # -0.25
+    _TIBIA_DEFAULT,  # -1.75
+)
