@@ -1,8 +1,10 @@
 <mujoco model="crawler">
 
+    <option timestep="0.002" integrator="RK4" gravity="0 0 -9.81"/>
     <compiler angle="radian" autolimits="true" />
 
     <default>
+
         <default class="visual">
             <geom type="mesh" density="0" contype="0" conaffinity="0" group="2"/>
         </default>
@@ -12,6 +14,13 @@
         <default class="foot_collision">
             <geom type="sphere" size="0.005" density="0" contype="1" conaffinity="1" group="3"/>
         </default>
+
+        <joint
+            frictionloss="0.005"
+            solreflimit="0.005 1"
+            solimplimit="0.95 0.99 0.001"/>
+
+        <position ctrllimited="true"/>
     </default>
 
     <asset>
@@ -125,4 +134,26 @@
 
         </body>
     </worldbody>
+
+    <actuator>
+        <!-- Leg 1 -->
+        <position name="act_leg_1_coxa" joint="base_leg_1_coxa" ctrlrange="-0.785  0.785"/>
+        <position name="act_leg_1_femur" joint="leg_1_coxa_leg_1_femur" ctrlrange="-1.571  1.571"/>
+        <position name="act_leg_1_tibia" joint="leg_1_femur_leg_1_tibia" ctrlrange="-2.356  0.785"/>
+
+        <!-- Leg 2 -->
+        <position name="act_leg_2_coxa" joint="base_leg_2_coxa" ctrlrange="-0.785  0.785"/>
+        <position name="act_leg_2_femur" joint="leg_2_coxa_leg_2_femur" ctrlrange="-1.571  1.571"/>
+        <position name="act_leg_2_tibia" joint="leg_2_femur_leg_2_tibia" ctrlrange="-2.356  0.785"/>
+
+        <!-- Leg 3 -->
+        <position name="act_leg_3_coxa" joint="base_leg_3_coxa" ctrlrange="-0.785  0.785"/>
+        <position name="act_leg_3_femur" joint="leg_3_coxa_leg_3_femur" ctrlrange="-1.571  1.571"/>
+        <position name="act_leg_3_tibia" joint="leg_3_femur_leg_3_tibia" ctrlrange="-2.356  0.785"/>
+
+        <!-- Leg 4 -->
+        <position name="act_leg_4_coxa" joint="base_leg_4_coxa" ctrlrange="-0.785  0.785"/>
+        <position name="act_leg_4_femur" joint="leg_4_coxa_leg_4_femur" ctrlrange="-1.571  1.571"/>
+        <position name="act_leg_4_tibia" joint="leg_4_femur_leg_4_tibia" ctrlrange="-2.356  0.785"/>
+    </actuator>
 </mujoco>

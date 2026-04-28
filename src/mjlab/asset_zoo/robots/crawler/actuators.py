@@ -30,15 +30,17 @@ MG90S_GEAR_RATIO = 5.5
 MG90S_ARMATURE = MG90S_ROTOR_INERTIA * MG90S_GEAR_RATIO ** 2  # 2.1e-7 kg*m^2
 
 # Stiffness (Kp)
-# Kp = effort_limit / delta_sat, where delta_sat is the position error
-# at which the PD controller reaches stall torque.
-# We choose delta_sat so that the full action range (0.3 rad, see below)
-# stays inside the linear actuator regime. With delta_sat = 0.4 rad,
-# a maximum action of 0.3 rad produces 75% of stall torque — the servo
-# responds proportionally and learning gradients flow everywhere.
-# 0.4 rad (~23°) is physically reasonable for a spur-gear hobby servo
-# with plastic output: stiffer than the 34° in the old code, looser than
-# the 5–15° of a metal-gear servo or industrial actuator.
+# Kp = effort_limit / delta_sat, where delta_sat is the position error at which
+# the PD controller reaches stall torque.
+#
+# We choose delta_sat so that the tightest action range (tibia: ±0.370 rad,
+# see CRAWLER_ACTION_SCALE below) stays well inside the linear regime of the
+# actuator.  With delta_sat = 0.6 rad, a max tibia action (0.370 rad) produces
+# 0.370 / 0.6 ≈ 62 % of stall torque — the servo responds proportionally and
+# learning gradients flow everywhere.
+#
+# 0.6 rad (~34°) is physically reasonable for a spur-gear hobby servo with a
+# plastic output shaft.
 _DELTA_SAT = 0.6
 MG90S_STIFFNESS = MG90S_EFFORT_LIMIT / _DELTA_SAT  # 0.54 N*m/rad
 

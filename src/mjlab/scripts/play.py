@@ -32,7 +32,7 @@ def _parse_wandb_dt(value: str | datetime) -> datetime:
 
 @dataclass(frozen=True)
 class PlayConfig:
-  agent: Literal["zero", "random", "trained"] = "trained"
+  agent: Literal["zero", "random", "trained", "min", "max"] = "trained"
   registry_name: str | None = None
   wandb_run_path: str | None = None
   wandb_checkpoint_name: str | None = None
@@ -62,7 +62,7 @@ def run_play(task_id: str, cfg: PlayConfig):
   env_cfg = load_env_cfg(task_id, play=True)
   agent_cfg = load_rl_cfg(task_id)
 
-  DUMMY_MODE = cfg.agent in {"zero", "random"}
+  DUMMY_MODE = cfg.agent in {"zero", "random", "min", "max"}
   TRAINED_MODE = not DUMMY_MODE
 
   # Disable terminations if requested (useful for viewing motions).
@@ -181,22 +181,35 @@ def run_play(task_id: str, cfg: PlayConfig):
   env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
   if DUMMY_MODE:
     action_shape: tuple[int, ...] = env.unwrapped.action_space.shape
-    if cfg.agent == "zero":
 
+    if cfg.agent == "zero":
       class PolicyZero:
         def __call__(self, obs) -> torch.Tensor:
           del obs
           return torch.zeros(action_shape, device=env.unwrapped.device)
-
       policy = PolicyZero()
-    else:
 
+    elif cfg.agent == "max":
+      class PolicyMax:
+        def __call__(self, obs) -> torch.Tensor:
+          del obs
+          return torch.ones(action_shape, device=env.unwrapped.device)
+      policy = PolicyMax()
+
+    elif cfg.agent == "min":
+      class PolicyMin:
+        def __call__(self, obs) -> torch.Tensor:
+          del obs
+          return -torch.ones(action_shape, device=env.unwrapped.device)
+      policy = PolicyMin()
+
+    else:
       class PolicyRandom:
         def __call__(self, obs) -> torch.Tensor:
           del obs
           return 2 * torch.rand(action_shape, device=env.unwrapped.device) - 1
-
       policy = PolicyRandom()
+
   else:
     runner_cls = load_runner_cls(task_id) or MjlabOnPolicyRunner
     runner = runner_cls(env, asdict(agent_cfg), device=device)

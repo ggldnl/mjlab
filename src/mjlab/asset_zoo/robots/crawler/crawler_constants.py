@@ -17,9 +17,14 @@ assert CRAWLER_DESCRIPTION_PATH.exists()
 def get_spec() -> mujoco.MjSpec:
     return mujoco.MjSpec.from_file(str(CRAWLER_DESCRIPTION_PATH))
 
-
-# Indices for leg diagonal pairs, used for trot and fast gait.
-CRAWLER_LEG_DIAGONAL_PAIRS = [(0, 2), (1, 3)]
+def get_crawler_robot_cfg() -> EntityCfg:
+    """Get a fresh Crawler robot configuration instance."""
+    return EntityCfg(
+        init_state=INIT_STATE,
+        collisions=(FEET_ONLY_COLLISION,),
+        spec_fn=get_spec,
+        articulation=CRAWLER_ARTICULATIONS,
+    )
 
 CRAWLER_FEMUR_GEOM_NAMES = (
     "leg_1_femur_geom",
@@ -50,15 +55,6 @@ CRAWLER_FOOT_SITE_NAMES = (
 )
 
 CRAWLER_BASE_NAME = "base"
-
-def get_crawler_robot_cfg() -> EntityCfg:
-    """Get a fresh Crawler robot configuration instance."""
-    return EntityCfg(
-        init_state=INIT_STATE,
-        collisions=(FEET_ONLY_COLLISION,),
-        spec_fn=get_spec,
-        articulation=CRAWLER_ARTICULATIONS,
-    )
 
 
 if __name__ == "__main__":
