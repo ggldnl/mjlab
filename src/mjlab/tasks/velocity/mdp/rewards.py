@@ -24,6 +24,26 @@ if TYPE_CHECKING:
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
+def track_target_height(
+        env,
+        asset_cfg: SceneEntityCfg,
+        std: float,
+) -> torch.Tensor:
+  """Penalize deviation from the per-env target height sampled at reset.
+
+  Uses world-z of the base body. On flat terrain this is exact; on rough
+  terrain it carries a small bias equal to the local terrain elevation,
+  which is acceptable given the command range is much larger than typical
+  terrain undulation.
+  """
+  asset = env.scene[asset_cfg.name]
+  body_indices, _ = asset.find_bodies(asset_cfg.body_names)  # unpack (indices, names)
+  body_idx = body_indices[0]  # scalar int index into the bodies dimension
+  base_z = asset.data.body_com_pos_w[:, body_idx, 2]  # (num_envs,)
+  error = base_z - env.target_heights
+  return torch.exp(-(error ** 2) / std ** 2)
+
+
 def track_linear_velocity(
   env: ManagerBasedRlEnv,
   std: float,

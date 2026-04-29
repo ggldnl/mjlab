@@ -5,12 +5,13 @@ from mjlab.entity import EntityCfg
 
 from pathlib import Path
 
-from .actuators import CRAWLER_ARTICULATIONS, INIT_STATE
-from .collisions import FULL_COLLISION, FEET_ONLY_COLLISION
+from mjlab.asset_zoo.robots.crawler.collisions import FEET_ONLY_COLLISION
+from mjlab.asset_zoo.robots.crawler.actuators import CRAWLER_ARTICULATIONS
+from mjlab.asset_zoo.robots.crawler.keyframes import INIT_STATE
 
 
 LOCAL_FOLDER = Path(__file__).parent
-CRAWLER_DESCRIPTION_PATH: Path = LOCAL_FOLDER / "xml" / "crawler.xml"
+CRAWLER_DESCRIPTION_PATH: Path = LOCAL_FOLDER / "xmls" / "crawler.xml"
 assert CRAWLER_DESCRIPTION_PATH.exists()
 
 
@@ -56,12 +57,28 @@ CRAWLER_FOOT_SITE_NAMES = (
 
 CRAWLER_BASE_NAME = "base"
 
-
 if __name__ == "__main__":
 
     import mujoco.viewer as viewer
     from mjlab.entity.entity import Entity
 
     robot = Entity(get_crawler_robot_cfg())
-    model = robot.spec.compile()
+
+    # Add a ground plane and light to the world body
+    spec = robot.spec
+    spec.worldbody.add_geom(
+        name="ground",
+        type=mujoco.mjtGeom.mjGEOM_PLANE,
+        size=[0, 0, 0.025],
+        rgba=[0.8, 0.8, 0.8, 1.0],
+        contype=1,
+        conaffinity=1,
+    )
+    spec.worldbody.add_light(
+        name="main_light",
+        pos=[0, 0, 3],
+        dir=[0, 0, -1],
+    )
+
+    model = spec.compile()
     viewer.launch(model)

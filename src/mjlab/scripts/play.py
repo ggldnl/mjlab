@@ -32,7 +32,7 @@ def _parse_wandb_dt(value: str | datetime) -> datetime:
 
 @dataclass(frozen=True)
 class PlayConfig:
-  agent: Literal["zero", "random", "trained", "min", "max"] = "trained"
+  agent: Literal["zero", "random", "trained", "sinusoidal"] = "trained"
   registry_name: str | None = None
   wandb_run_path: str | None = None
   wandb_checkpoint_name: str | None = None
@@ -62,7 +62,7 @@ def run_play(task_id: str, cfg: PlayConfig):
   env_cfg = load_env_cfg(task_id, play=True)
   agent_cfg = load_rl_cfg(task_id)
 
-  DUMMY_MODE = cfg.agent in {"zero", "random", "min", "max"}
+  DUMMY_MODE = cfg.agent in {"zero", "random", "sinusoidal"}
   TRAINED_MODE = not DUMMY_MODE
 
   # Disable terminations if requested (useful for viewing motions).
@@ -189,19 +189,25 @@ def run_play(task_id: str, cfg: PlayConfig):
           return torch.zeros(action_shape, device=env.unwrapped.device)
       policy = PolicyZero()
 
-    elif cfg.agent == "max":
-      class PolicyMax:
-        def __call__(self, obs) -> torch.Tensor:
-          del obs
-          return torch.ones(action_shape, device=env.unwrapped.device)
-      policy = PolicyMax()
+    elif cfg.agent == "sinusoidal":
+      """
+      Sinusoidal policy, used to check joint ranges.
+      """
+      class PolicySinusoidal:
+        def __init__(self, freq: float = 1.0):
+          self.freq = freq
+          self._step = 0
+          # Offset each joint by an equal phase increment so they don't all move in sync
+          n_joints = action_shape[-1]
+          self.phase_offsets = torch.linspace(0, 2 * torch.pi, n_joints, device=device)
 
-    elif cfg.agent == "min":
-      class PolicyMin:
         def __call__(self, obs) -> torch.Tensor:
           del obs
-          return -torch.ones(action_shape, device=env.unwrapped.device)
-      policy = PolicyMin()
+          t = self._step * self.freq * 2 * torch.pi / 100  # period of 100 steps at freq=1
+          actions = torch.sin(t + self.phase_offsets)  # stays in [-1, 1] by construction
+          self._step += 1
+          return actions.expand(action_shape)
+      policy = PolicySinusoidal()
 
     else:
       class PolicyRandom:

@@ -3,7 +3,6 @@
 import math
 from mjlab.actuator import BuiltinPositionActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg
-from mjlab.entity import EntityCfg
 
 
 # The MG90S is a brushed-DC servo with an internal PID position loop.
@@ -36,7 +35,7 @@ MG90S_ARMATURE = MG90S_ROTOR_INERTIA * MG90S_GEAR_RATIO ** 2  # 2.1e-7 kg*m^2
 # We choose delta_sat so that the tightest action range (tibia: ±0.370 rad,
 # see CRAWLER_ACTION_SCALE below) stays well inside the linear regime of the
 # actuator.  With delta_sat = 0.6 rad, a max tibia action (0.370 rad) produces
-# 0.370 / 0.6 ≈ 62 % of stall torque — the servo responds proportionally and
+# 0.370 / 0.6 ~= 62 % of stall torque — the servo responds proportionally and
 # learning gradients flow everywhere.
 #
 # 0.6 rad (~34°) is physically reasonable for a spur-gear hobby servo with a
@@ -80,34 +79,17 @@ CRAWLER_ARTICULATIONS = EntityArticulationInfoCfg(
 # Joint hard limits
 _COXA_LIM  = (-0.785,  0.785)
 _FEMUR_LIM = (-1.571,  1.571)
-_TIBIA_LIM = (-2.356,  0.785)
+_TIBIA_LIM = (-2.356,  2.356)
 
-# Default joint positions
-_COXA_DEFAULT  =  0.00
-_FEMUR_DEFAULT = -0.25
-_TIBIA_DEFAULT = -1.75
-
-# Robot standing initially, no need to learn how to get up.
-# We need to manually tune the initial height. Using a kinematic
-# model to derive this will defy the sole purpose of using DRL:
-# it's difficult to have models for complex robots.
-INIT_STATE = EntityCfg.InitialStateCfg(
-    pos=(0.0, 0.0, 0.05),
-    joint_pos={
-        "base_leg_[1-4]_coxa": _COXA_DEFAULT,
-        "leg_[1-4]_coxa_leg_[1-4]_femur": _FEMUR_DEFAULT,
-        "leg_[1-4]_femur_leg_[1-4]_tibia": _TIBIA_DEFAULT,
-    },
-    joint_vel={".*": 0.0},
-)
-
-def _soft_limits(hard_lim: tuple[float, float], soft: float = _SOFT) -> tuple[float, float]:
-    return hard_lim[0] * soft, hard_lim[1] * soft
-
-def _max_scale(hard_lim: tuple[float, float], default: float, soft: float = _SOFT) -> float:
-    """Largest symmetric scale around `default` that stays within soft limits."""
-    soft_lower, soft_upper = _soft_limits(hard_lim, soft)
-    return min(default - soft_lower, soft_upper - default)
+def _scale_offset_from_limits(
+    lim: tuple[float, float],
+    soft: float = _SOFT,
+) -> tuple[float, float]:
+    lo, hi = lim
+    center = (lo + hi) / 2.0
+    half_range = (hi - lo) / 2.0
+    scale = half_range * soft  # shrink toward center by soft margin
+    return scale, center
 
 def _joint_value_dict(coxa_val: float, femur_val: float, tibia_val: float) -> dict[str, float]:
     return {
@@ -119,14 +101,25 @@ def _joint_value_dict(coxa_val: float, femur_val: float, tibia_val: float) -> di
         for name in CRAWLER_JOINT_NAMES
     }
 
-CRAWLER_ACTION_SCALE: dict[str, float] = _joint_value_dict(
-    _max_scale(_COXA_LIM,  _COXA_DEFAULT),   # 0.707
-    _max_scale(_FEMUR_LIM, _FEMUR_DEFAULT),   # 1.164
-    _max_scale(_TIBIA_LIM, _TIBIA_DEFAULT),   # 0.370
-)
+_COXA_SCALE,  _COXA_OFFSET  = _scale_offset_from_limits(_COXA_LIM)
+_FEMUR_SCALE, _FEMUR_OFFSET = _scale_offset_from_limits(_FEMUR_LIM)
+_TIBIA_SCALE, _TIBIA_OFFSET = _scale_offset_from_limits(_TIBIA_LIM)
 
-CRAWLER_ACTION_OFFSET: dict[str, float] = _joint_value_dict(
-    _COXA_DEFAULT,   #  0.00
-    _FEMUR_DEFAULT,  # -0.25
-    _TIBIA_DEFAULT,  # -1.75
-)
+CRAWLER_ACTION_SCALE = _joint_value_dict(_COXA_SCALE,  _FEMUR_SCALE,  _TIBIA_SCALE)
+CRAWLER_ACTION_OFFSET = _joint_value_dict(_COXA_OFFSET, _FEMUR_OFFSET, _TIBIA_OFFSET)
+
+
+if __name__ == "__main__":
+
+    for name in CRAWLER_JOINT_NAMES:
+        lo = CRAWLER_ACTION_OFFSET[name] - CRAWLER_ACTION_SCALE[name]
+        hi = CRAWLER_ACTION_OFFSET[name] + CRAWLER_ACTION_SCALE[name]
+
+        if name.endswith("coxa"):
+            jt = "COXA"
+        elif name.endswith("femur"):
+            jt = "FEMUR"
+        else:
+            jt = "TIBIA"
+
+        print(f"{name:30s} ({jt:5s}): {lo:.3f} -> {hi:.3f}")

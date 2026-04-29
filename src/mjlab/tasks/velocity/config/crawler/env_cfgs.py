@@ -14,6 +14,7 @@ from mjlab.envs import mdp as envs_mdp
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import (
     ContactMatch,
     ContactSensorCfg,
@@ -44,10 +45,10 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg.scene.entities = {"robot": get_crawler_robot_cfg()}
 
+    # Sensors
+
     # Patch sensors inherited from make_velocity_env_cfg that are left with
     # blank/empty fields expecting each robot config to fill them in.
-    # - terrain_scan: frame.name='' resolves to 'robot/' at scene init -> crash
-    # - foot_height_scan: frame=() means no sites attached -> sensor never fires
     for sensor in cfg.scene.sensors or ():
         if sensor.name == "terrain_scan":
             assert isinstance(sensor, RayCastSensorCfg)
@@ -77,11 +78,12 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         track_air_time=True,
     )
 
+    # Detect self collision
     self_collision_cfg = ContactSensorCfg(
         name="self_collision",
         primary=ContactMatch(
             mode="subtree",
-            pattern=CRAWLER_BASE_NAME,  # "base"
+            pattern=CRAWLER_BASE_NAME,
             entity="robot",
         ),
         secondary=ContactMatch(
@@ -95,6 +97,7 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         history_length=4,
     )
 
+    # Measure robot angular momentum
     root_angmom = BuiltinSensorCfg(
         name="root_angmom",
         sensor_type="subtreeangmom",
@@ -111,6 +114,8 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     if cfg.scene.terrain is not None and cfg.scene.terrain.terrain_generator is not None:
         cfg.scene.terrain.terrain_generator.curriculum = True
 
+    # Actions
+
     joint_pos_action = cfg.actions["joint_pos"]
     assert isinstance(joint_pos_action, JointPositionActionCfg)
     joint_pos_action.scale = CRAWLER_ACTION_SCALE
@@ -118,16 +123,55 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg.viewer.body_name = CRAWLER_BASE_NAME
 
-    # The crawler rides ~0.1–0.15 m off the ground
+    # Vertical offset at which the velocity command arrow is rendered in the viewer.
+    # Nothing to do with training.
     twist_cmd = cfg.commands["twist"]
     assert isinstance(twist_cmd, UniformVelocityCommandCfg)
     twist_cmd.viz.z_offset = 0.05
 
-    # Randomize friction on the foot geoms only (the contact surfaces).
+    # Randomization
+
+    # Spawn scatter: the terrain spawner places the robot
+    # at the correct absolute height; this is a perturbation on top of that.
+    cfg.events["reset_base"].params["pose_range"].update({
+        "x": (-0.1, 0.1),
+        "y": (-0.1, 0.1),
+        "z": (-0.05, 0.05),
+    })
+
+    # Push disturbance
+    cfg.events["push_robot"].params["velocity_range"].update({
+        "x": (-0.05, 0.05),
+        "y": (-0.05, 0.05),
+        "z": (-0.01, 0.1),
+        "roll": (-0.025, 0.025),
+        "pitch": (-0.025, 0.025),
+        "yaw": (-0.025, 0.025),
+    })
+
+    # CoM offset: +/-25/30 mm is a large fraction of the crawler's body size;
+    # +/-8/10 mm is still meaningful DR without shifting CoM outside the
+    # support polygon at rest.
+    cfg.events["base_com"].params["asset_cfg"].body_names = (CRAWLER_BASE_NAME,)
+    cfg.events["base_com"].params["ranges"].update({
+        0: (-0.008, 0.008),
+        1: (-0.008, 0.008),
+        2: (-0.010, 0.010),
+    })
+
     cfg.events["foot_friction"].params["asset_cfg"].geom_names = CRAWLER_FOOT_GEOM_NAMES
 
-    # Push the center-of-mass randomization onto the base body.
-    cfg.events["base_com"].params["asset_cfg"].body_names = (CRAWLER_BASE_NAME,)
+    # Target height randomization
+    # At each episode reset, every robot is assigned a fixed target body height
+    # sampled uniformly from the range. The value is stored on the env
+    # and read by the track_target_height reward.
+    cfg.events["randomize_target_height"] = EventTermCfg(
+        func=mdp.randomize_target_height,
+        mode="reset",
+        params={"height_range": (0.02, 0.04)},
+    )
+
+    # Pose rewards
 
     # Rationale for std values:
     # Standard deviation around the default joint pose. Smaller std ->
@@ -154,6 +198,17 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         r"leg_[1-4]_coxa_leg_[1-4]_femur": 0.50,
         r"leg_[1-4]_femur_leg_[1-4]_tibia": 0.40,
     }
+
+    cfg.rewards["track_target_height"] = RewardTermCfg(
+        func=mdp.track_target_height,
+        weight=1.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=(CRAWLER_BASE_NAME,)),
+            "std": 0.02,
+        },
+    )
+
+    # Other rewards
 
     # Upright and angular velocity rewards
     cfg.rewards["upright"].params["asset_cfg"].body_names = (CRAWLER_BASE_NAME,)
