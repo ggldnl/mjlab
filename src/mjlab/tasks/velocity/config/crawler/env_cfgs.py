@@ -28,6 +28,8 @@ from mjlab.tasks.velocity import mdp
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
+import math
+
 
 SIM_DT = 0.001
 DECIMATION = 10 # control period = 10 ms > T_settle (depends on the actuators)
@@ -136,17 +138,17 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.events["reset_base"].params["pose_range"].update({
         "x": (-0.1, 0.1),
         "y": (-0.1, 0.1),
-        "z": (-0.05, 0.05),
+        "z": (-0.005, 0.012),
     })
 
     # Push disturbance
     cfg.events["push_robot"].params["velocity_range"].update({
         "x": (-0.05, 0.05),
         "y": (-0.05, 0.05),
-        "z": (-0.01, 0.1),
-        "roll": (-0.025, 0.025),
-        "pitch": (-0.025, 0.025),
-        "yaw": (-0.025, 0.025),
+        "z": (-0.02, 0.03),
+        "roll": (-0.10, 0.10),
+        "pitch": (-0.10, 0.10),
+        "yaw": (-0.15, 0.15),
     })
 
     # CoM offset: +/-25/30 mm is a large fraction of the crawler's body size;
@@ -201,10 +203,10 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg.rewards["track_target_height"] = RewardTermCfg(
         func=mdp.track_target_height,
-        weight=1.0,
+        weight=1.5,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=(CRAWLER_BASE_NAME,)),
-            "std": 0.02,
+            "std": 0.005,
         },
     )
 
@@ -212,6 +214,9 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # Upright and angular velocity rewards
     cfg.rewards["upright"].params["asset_cfg"].body_names = (CRAWLER_BASE_NAME,)
+    cfg.rewards["upright"].params["std"] = math.sqrt(0.05)
+    cfg.rewards["upright"].weight = 3.0
+
     cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = (CRAWLER_BASE_NAME,)
 
     # foot_clearance and foot_slip both need the four foot sites.
@@ -220,7 +225,7 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # The crawler is lower to the ground so angular momentum matters less;
     # air time is left at 0 until a gait style is chosen (trot, crawl, etc.).
-    cfg.rewards["body_ang_vel"].weight = -0.05
+    cfg.rewards["body_ang_vel"].weight = -0.15
     cfg.rewards["angular_momentum"].weight = -0.02
     cfg.rewards["air_time"].weight = 0.0
 
@@ -232,6 +237,10 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "force_threshold": 0.5,  # N
         },
     )
+
+    # Terminations
+
+    cfg.terminations["fell_over"].params["limit_angle"] = math.radians(40.0)
 
     # Apply play mode overrides.
     if play:
