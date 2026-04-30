@@ -78,6 +78,7 @@ Use built-in agents to sanity check your MDP before training:
 ```bash
 uv run play Mjlab-Your-Task-Id --agent zero  # Sends zero actions
 uv run play Mjlab-Your-Task-Id --agent random  # Sends uniform random actions
+uv run play Mjlab-Your-Task-Id --agent sinusoidal # Sends sinusoidal signals to each joint, useful to test ranges
 ```
 
 When running motion-tracking tasks, add `--registry-name your-org/motions/motion-name` to the command.
