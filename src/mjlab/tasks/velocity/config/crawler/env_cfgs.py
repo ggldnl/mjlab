@@ -129,7 +129,7 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # then discovers that moving on command is rewarded.
     twist_cmd = cfg.commands["twist"]
     assert isinstance(twist_cmd, UniformVelocityCommandCfg)
-    twist_cmd.rel_standing_envs = 0.3
+    # twist_cmd.rel_standing_envs = 0.05
 
     # Vertical offset at which the velocity command arrow is rendered in the viewer.
     # Nothing to do with training.
@@ -186,8 +186,11 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # Velocity tracking rewards
 
-    cfg.rewards["track_linear_velocity"].weight = 0.5
-    cfg.rewards["track_angular_velocity"].weight = 0.5
+    cfg.rewards["track_linear_velocity"].weight = 1.5
+    cfg.rewards["track_linear_velocity"].params["std"] = math.sqrt(0.05)
+
+    cfg.rewards["track_angular_velocity"].weight = 1.0
+    cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.05)
 
     # Pose rewards
 
@@ -205,6 +208,7 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # - coxa is tightest: excessive lateral sway destabilizes the trot
     #   and wastes energy.
     # Running values are ~1.5–2x walking to allow larger motion range.
+    cfg.rewards["pose"].weight = 0.0
     cfg.rewards["pose"].params["std_standing"] = {".*": 0.05}
     cfg.rewards["pose"].params["std_walking"] = {
         r"base_leg_[1-4]_coxa": 0.15,  # lateral / rotational hip, keep tight
@@ -235,7 +239,7 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # Upright and angular velocity rewards
     cfg.rewards["upright"].params["asset_cfg"].body_names = (CRAWLER_BASE_NAME,)
     cfg.rewards["upright"].params["std"] = math.sqrt(0.05)
-    cfg.rewards["upright"].weight = 0.25
+    cfg.rewards["upright"].weight = 0.2
 
     cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = (CRAWLER_BASE_NAME,)
 
@@ -247,8 +251,8 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # air time is left at 0 until a gait style is chosen (trot, crawl, etc.).
     cfg.rewards["body_ang_vel"].weight = 0.0
     cfg.rewards["angular_momentum"].weight = -0.02
-    cfg.rewards["air_time"].weight = 0.0
-    cfg.rewards["action_rate_l2"].weight = -0.25
+    cfg.rewards["air_time"].weight = 0.05
+    cfg.rewards["action_rate_l2"].weight = -0.2
 
     cfg.rewards["self_collisions"] = RewardTermCfg(
         func=mdp.self_collision_cost,
@@ -272,6 +276,16 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         weight=0.0,  # +2.0/step * N_steps >> velocity reward from one fall
     )
 
+    # Metrics
+    # TODO add metrics
+    """
+    metrics = {
+        "mean_action_acc": MetricsTermCfg(
+            func=mdp.mean_action_acc,
+        ),
+    }
+    """
+
     # Terminations
 
     cfg.terminations["fell_over"].params["limit_angle"] = math.radians(40.0)
@@ -284,9 +298,9 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "command_name": "twist",
             "velocity_stages": [
             {"step": 0,
-             "lin_vel_x": (-0.1, 0.1), "lin_vel_y": (-0.1, 0.1), "ang_vel_z": (-0.1, 0.1)},
+             "lin_vel_x": (-0.3, 0.3), "lin_vel_y": (-0.2, 0.2), "ang_vel_z": (-0.2, 0.2)},
             {"step": 500 * 24,
-             "lin_vel_x": (-0.4, 0.6), "lin_vel_y": (-0.3, 0.3), "ang_vel_z": (-0.3, 0.3)},
+             "lin_vel_x": (-0.6, 0.8), "lin_vel_y": (-0.4, 0.4), "ang_vel_z": (-0.35, 0.35)},
             {"step": 1000 * 24,
              "lin_vel_x": (-1.0, 1.5), "lin_vel_y": (-0.8, 0.8), "ang_vel_z": (-0.5, 0.5)},
             {"step": 2000 * 24,

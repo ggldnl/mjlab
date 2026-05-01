@@ -49,6 +49,7 @@ dependencies = [
   "tensorboard>=2.20.0",
   "onnxscript>=0.5.4",
   "wandb>=0.22.3",
+  "optuna"
 ]
 
 [project.urls]
@@ -62,6 +63,7 @@ demo = "mjlab.scripts.demo:main"
 list-envs = "mjlab.scripts.list_envs:main"
 viz-nan = "mjlab.scripts.nan_viz:main"
 export-scene = "mjlab.scripts.export_scene:main"
+grid-search = "mjlab.scripts.grid_search:main"
 
 [dependency-groups]
 dev = [

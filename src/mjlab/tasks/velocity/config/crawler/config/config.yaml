@@ -1,0 +1,44 @@
+# config.yaml containing grid search for reward shaping specification
+
+trial_iterations: 1000       # how long each trial runs
+report_interval: 50          # how often to report to pruner
+n_trials: 40                 # total Optuna trials
+study_name: crawler_velocity
+
+# Rewards to tune, ordered by importance (descending).
+# If omitted, it is kept fixed.
+rewards:
+  - name: track_linear_velocity
+    group: task
+    bounds: [0.5, 2.0]        # multiplier on the default weight
+  - name: track_angular_velocity
+    group: task
+    bounds: [0.5, 2.0]
+  - name: track_target_height
+    group: task
+    bounds: [0.5, 2.0]
+  - name: upright
+    group: stability
+    bounds: [0.5, 1.0]
+  - name: pose
+    group: stability
+    bounds: [0.5, 1.0]
+  - name: air_time
+    group: stability
+    bounds: [0.5, 1.0]
+  - name: action_rate_l2
+    group: regularization
+    bounds: [0.2, 0.5]
+
+# Metrics to score each trial, ordered by importance.
+# The script extracts whatever the runner logs.
+metrics:
+  - key: Episode/mean_reward       # exact key from the runner's log dict
+    weight: 1.0
+    direction: maximize
+  - key: Episode/mean_ep_length
+    weight: 0.4
+    direction: maximize
+  - key: Episode/rew_std           # penalize instability
+    weight: -0.15
+    direction: minimize
