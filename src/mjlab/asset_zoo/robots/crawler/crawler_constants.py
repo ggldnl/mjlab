@@ -7,7 +7,7 @@ from pathlib import Path
 
 from mjlab.asset_zoo.robots.crawler.collisions import FEET_ONLY_COLLISION
 from mjlab.asset_zoo.robots.crawler.actuators import CRAWLER_ARTICULATIONS
-from mjlab.asset_zoo.robots.crawler.keyframes import INIT_STATE
+from mjlab.asset_zoo.robots.crawler.actuators import INIT_STATE
 
 
 LOCAL_FOLDER = Path(__file__).parent

@@ -83,6 +83,72 @@ uv run play Mjlab-Your-Task-Id --agent sinusoidal # Sends sinusoidal signals to 
 
 When running motion-tracking tasks, add `--registry-name your-org/motions/motion-name` to the command.
 
+## Reward Search
+
+`grid-search` is a script that automatically explores reward weight configurations
+using Bayesian optimization (Optuna TPE), letting you find effective reward shaping
+without manual tuning.
+
+### How it works
+
+Each trial trains a policy for a fixed number of iterations with a different set of
+reward weights suggested by Optuna's Tree-structured Parzen Estimator (TPE). TPE is
+an informed search: after a warmup of random trials it models which weight configurations
+tend to produce good policies and samples from that region. The sampler is configured
+in multivariate mode, meaning it models interactions between weights (e.g. a high task
+reward only works well with proportionally scaled regularization).
+
+Trials are scored by a composite metric defined in a YAML config file. Each metric is
+normalized to [0, 1] across all trials seen so far (making the score unit-agnostic),
+then combined with user-defined weights and directions. Three metrics are always
+available regardless of task: `mean_reward`, `mean_ep_length`, and `reward_std`.
+Any `MetricsTermCfg` entry in `cfg.metrics` is also available by its key name.
+
+Poorly performing trials are pruned early by Optuna's Hyperband pruner. Trials that
+plateau (no improvement in composite score over a configurable window) are also
+stopped early. The study is persisted to a SQLite file and can be resumed at any time.
+
+### Usage
+
+```bash
+uv run grid-search Mjlab-Velocity-Flat-Crawler \
+  --num-envs 1024 \
+  --search-config path/to/search_config.yaml
+```
+
+### Search config
+
+```yaml
+study_name: example_task
+n_trials: 40
+trial_iterations: 5000    # hard ceiling per trial
+report_interval: 50       # scoring and pruning cadence (in iterations)
+plateau_window: 10        # report intervals without improvement before early stop
+plateau_min_delta: 0.005  # minimum score improvement to not be considered plateau
+
+rewards:
+  - name: track_linear_velocity
+    group: task
+    bounds: [0.5, 2.0]    # absolute range
+  - name: action_rate_l2
+    group: regularization
+    bounds: [0.2, 0.5]
+
+metrics:
+  - key: mean_reward
+    weight: 1.0
+    direction: maximize
+  - key: mean_ep_length
+    weight: 0.4
+    direction: maximize
+  - key: reward_std
+    weight: -0.15
+    direction: minimize
+```
+
+The best weight configuration found is saved to `best_params.yaml` under the run log
+directory. Parameter importances are printed every 5 complete trials, showing which
+reward weights most influenced the outcome.
 
 ## Documentation
 

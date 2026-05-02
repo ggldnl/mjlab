@@ -11,6 +11,16 @@ if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
 
 
+def target_height(env) -> torch.Tensor:
+    """
+    Returns the per-env target height scalar.
+    """
+    heights = getattr(env, "target_heights", None)
+    if heights is None:
+      return torch.zeros(env.num_envs, 1, device=env.device)
+    return heights.unsqueeze(-1)
+
+
 def foot_height(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
   """Per-foot vertical clearance above terrain.
 

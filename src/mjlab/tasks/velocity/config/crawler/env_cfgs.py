@@ -16,6 +16,7 @@ from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
+from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.sensor import (
     ContactMatch,
     ContactSensorCfg,
@@ -26,21 +27,26 @@ from mjlab.sensor import (
     TerrainHeightSensorCfg,
 )
 from mjlab.tasks.velocity import mdp
-from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
+from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg, target_height
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
+from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 import math
 
 
 SIM_DT = 0.001
-DECIMATION = 10 # control period = 10 ms > T_settle (depends on the actuators)
+DECIMATION = 10 # control period = 10 ms
 
 
 def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """Create Crawler rough terrain velocity configuration."""
     cfg = make_velocity_env_cfg()
 
-    cfg.sim.mujoco.ccd_iterations = 50
+    # impratio + elliptic cone give stable, physically meaningful foot forces
+    # even at small mass scales.
+    cfg.sim.mujoco.ccd_iterations = 200
+    cfg.sim.mujoco.impratio = 10
+    cfg.sim.mujoco.cone = "elliptic"
     cfg.sim.contact_sensor_maxmatch = 500
     cfg.sim.nconmax = 200
     cfg.sim.dt = SIM_DT
@@ -125,11 +131,11 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     joint_pos_action.scale = CRAWLER_ACTION_SCALE
     joint_pos_action.offset = CRAWLER_ACTION_OFFSET
 
-    # 60% zero-command environments. The policy learns balance first,
-    # then discovers that moving on command is rewarded.
+    # 40% of envs get a zero-velocity command so the robot first learns to
+    # stand still stably before being pushed to walk.
     twist_cmd = cfg.commands["twist"]
     assert isinstance(twist_cmd, UniformVelocityCommandCfg)
-    # twist_cmd.rel_standing_envs = 0.05
+    # twist_cmd.rel_standing_envs = 0.4
 
     # Vertical offset at which the velocity command arrow is rendered in the viewer.
     # Nothing to do with training.
@@ -145,11 +151,12 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "z": (0.006, 0.018),
     })
 
-    # Push disturbance
+    # Push disturbance: start late so the robot has a chance to learn walking
+    # before being disturbed
     cfg.events["push_robot"] = EventTermCfg(
         func=mdp.push_by_setting_velocity,
         mode="interval",
-        interval_range_s=(4.0, 8.0), # this way pushes can happen only when the robot already learned how to walk
+        interval_range_s=(4.0, 8.0),
         params={
             "velocity_range": {
                 "x": (-0.04, 0.04),
@@ -162,7 +169,7 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # CoM offset: +/-25/30 mm is a large fraction of the crawler's body size;
+    # CoM offset: +/-8/10 mm is a large fraction of the crawler's body size;
     # +/-8/10 mm is still meaningful DR without shifting CoM outside the
     # support polygon at rest.
     cfg.events["base_com"].params["asset_cfg"].body_names = (CRAWLER_BASE_NAME,)
@@ -184,15 +191,15 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={"height_range": (0.02, 0.04)},
     )
 
-    # Velocity tracking rewards
+    # Velocity tracking rewards (should be the primary learning signal)
 
-    cfg.rewards["track_linear_velocity"].weight = 1.5
-    cfg.rewards["track_linear_velocity"].params["std"] = math.sqrt(0.05)
+    cfg.rewards["track_linear_velocity"].weight = 2.0
+    cfg.rewards["track_linear_velocity"].params["std"] = math.sqrt(0.25)
 
     cfg.rewards["track_angular_velocity"].weight = 1.0
-    cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.05)
+    cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.25)
 
-    # Pose rewards
+    # Pose regularization
 
     # Rationale for std values:
     # Standard deviation around the default joint pose. Smaller std ->
@@ -222,9 +229,10 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
 
     # Foot clearance targets scaled to actual robot geometry
-    cfg.rewards["foot_clearance"].params["target_height"] = 0.012
-    cfg.rewards["foot_swing_height"].params["target_height"] = 0.012
+    cfg.rewards["foot_clearance"].params["target_height"] = 0.005
+    cfg.rewards["foot_swing_height"].params["target_height"] = 0.005
 
+    # Slower priority than velocity tracking
     cfg.rewards["track_target_height"] = RewardTermCfg(
         func=mdp.track_target_height,
         weight=0.5,
@@ -239,46 +247,79 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # Upright and angular velocity rewards
     cfg.rewards["upright"].params["asset_cfg"].body_names = (CRAWLER_BASE_NAME,)
     cfg.rewards["upright"].params["std"] = math.sqrt(0.05)
-    cfg.rewards["upright"].weight = 0.2
+    cfg.rewards["upright"].weight = 0.0
 
+    # Body angular velocity penalty
     cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = (CRAWLER_BASE_NAME,)
+    cfg.rewards["body_ang_vel"].weight = 0.0
 
+    # Penalizing angular momentum before the robot can walk
+    # creates conflicting gradients with gait exploration.
+    cfg.rewards["angular_momentum"].weight = 0.0
+
+    # Over-penalizing action rate early in training prevents
+    # the robot from discovering any motion at all.
+    cfg.rewards["action_rate_l2"].weight = -0.1
+
+    # Small positive bonus for air_time.
+    cfg.rewards["air_time"].weight = 0.1
+
+    # Foot sensors
     # foot_clearance and foot_slip both need the four foot sites.
     for reward_name in ["foot_clearance", "foot_slip"]:
         cfg.rewards[reward_name].params["asset_cfg"].site_names = CRAWLER_FOOT_SITE_NAMES
 
-    # The crawler is lower to the ground so angular momentum matters less;
-    # air time is left at 0 until a gait style is chosen (trot, crawl, etc.).
-    cfg.rewards["body_ang_vel"].weight = 0.0
-    cfg.rewards["angular_momentum"].weight = -0.02
-    cfg.rewards["air_time"].weight = 0.05
-    cfg.rewards["action_rate_l2"].weight = -0.2
-
+    # During early training the robot inevitably self-collides while exploring;
+    # a higher penalty per step makes the policy learn to freeze rather than move.
     cfg.rewards["self_collisions"] = RewardTermCfg(
         func=mdp.self_collision_cost,
-        weight=-1.0,
+        weight=-0.1,
         params={
             "sensor_name": self_collision_cfg.name,
             "force_threshold": 0.5,  # N
         },
     )
 
-    # Falling costs more than pushing towards the target direction
-    # at the cost of terminating the episode
+    # Observations
+
+    # Defaults from make_velocity_env_cfg are tuned for a full-size quadruped.
+    _actor_noise_overrides: dict[str, Unoise] = {
+        "base_lin_vel": Unoise(n_min=-0.05, n_max=0.05),
+        "base_ang_vel": Unoise(n_min=-0.05, n_max=0.05),
+        "joint_vel": Unoise(n_min=-0.30, n_max=0.30),
+    }
+    for term_name, noise in _actor_noise_overrides.items():
+        term = cfg.observations["actor"].terms.get(term_name)
+        if term is not None:
+            term.noise = noise
+
+    # The policy is penalized by track_target_height but has no way to observe
+    # what the sampled target is. Without this the reward is an unlearnable
+    # stochastic signal.
+    cfg.observations["actor"].terms["target_height"] = ObservationTermCfg(
+        func=target_height,
+        noise=Unoise(n_min=-0.002, n_max=0.002),
+    )
+
+    # Terminations
+
+    # The large termination penalty combined with a per-step alive bonus trained
+    # the policy to prioritize survival (staying motionless) over locomotion.
+    # The time_out termination already provides the implicit cost of episode
+    # termination through the value function.
+    """
     cfg.rewards["fell_over_penalty"] = RewardTermCfg(
         func=mdp.is_terminated,
         weight=-10.0,
     )
 
-    # Dense alive bonus
     cfg.rewards["alive"] = RewardTermCfg(
         func=mdp.is_alive,
-        weight=0.0,  # +2.0/step * N_steps >> velocity reward from one fall
+        weight=2.0,  # +2.0/step * N_steps >> velocity reward from one fall
     )
+    """
 
-    # Terminations
-
-    cfg.terminations["fell_over"].params["limit_angle"] = math.radians(40.0)
+    cfg.terminations["fell_over"].params["limit_angle"] = math.radians(60.0)
 
     # Curriculum
 
@@ -327,7 +368,7 @@ def crawler_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # Flat terrain has fewer contacts, we can relax limits.
     cfg.sim.njmax = 500
-    cfg.sim.mujoco.ccd_iterations = 50
+    cfg.sim.mujoco.ccd_iterations = 200
     cfg.sim.contact_sensor_maxmatch = 50
     cfg.sim.nconmax = 200
     cfg.sim.dt = SIM_DT

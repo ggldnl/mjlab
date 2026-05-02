@@ -26,9 +26,10 @@ _FOOT_SOLREF = (0.01, 1.5)   # (timeconst, dampratio)
 _FOOT_SOLIMP = (0.85, 0.92, 0.006, 0.5, 2)  # (dmin, dmax, width, midpoint, power)
 
 
+# This config only enables the foot spheres.  Leg capsules stay dormant.
 FEET_ONLY_COLLISION = CollisionCfg(
     geom_names_expr=(".*_foot_geom",),
-    contype=0,
+    contype=0,  # terrain can still touch foot
     conaffinity=1,
     condim=3,
     priority=1,
@@ -41,19 +42,51 @@ FEET_ONLY_COLLISION = CollisionCfg(
 # Self-collisions are given condim=1 while foot collisions
 # are given condim=3.
 FULL_COLLISION = CollisionCfg(
-    geom_names_expr=(".*_geom",),
-    condim={".*_foot_geom": 3, ".*_geom": 1},
+    geom_names_expr=(
+        ".*_foot_geom",
+        ".*_coxa_collision",
+        ".*_femur_collision",
+        ".*_tibia_collision",
+    ),
+    # Enable all listed geoms for active contact (contype=1 & conaffinity=1).
+    contype=1,
+    conaffinity=1,
+    condim={
+        ".*_foot_geom":       3,   # friction cone
+        ".*_coxa_collision":  1,   # frictionless — just detects contact
+        ".*_femur_collision": 1,
+        ".*_tibia_collision": 1,
+    },
     priority={".*_foot_geom": 1},
     friction={".*_foot_geom": (CRAWLER_FOOT_MATERIAL_FRICTION_COEFFICIENT,)},
     solref={".*_foot_geom": _FOOT_SOLREF},
     solimp={".*_foot_geom": _FOOT_SOLIMP},
 )
 
+# Same as FULL_COLLISION but self-collisions are disabled by clearing
+# conaffinity on leg capsules so they cannot contact each other.
 FULL_COLLISION_WITHOUT_SELF = CollisionCfg(
-    geom_names_expr=(".*_geom",),
-    contype=0,
-    conaffinity=1,
-    condim={".*_foot_geom": 3, ".*_geom": 1},
+    geom_names_expr=(
+        ".*_foot_geom",
+        ".*_coxa_collision",
+        ".*_femur_collision",
+        ".*_tibia_collision",
+    ),
+    contype=1,
+    # Leg capsules can be *hit* by terrain (conaffinity=1) but not by each
+    # other (contype check fails for capsule-capsule pairs).
+    conaffinity={
+        ".*_foot_geom":       1,
+        ".*_coxa_collision":  1,
+        ".*_femur_collision": 1,
+        ".*_tibia_collision": 1,
+    },
+    condim={
+        ".*_foot_geom":       3,
+        ".*_coxa_collision":  1,
+        ".*_femur_collision": 1,
+        ".*_tibia_collision": 1,
+    },
     priority={".*_foot_geom": 1},
     friction={".*_foot_geom": (CRAWLER_FOOT_MATERIAL_FRICTION_COEFFICIENT,)},
     solref={".*_foot_geom": _FOOT_SOLREF},

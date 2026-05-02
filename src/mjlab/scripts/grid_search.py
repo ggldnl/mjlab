@@ -241,15 +241,18 @@ class SearchOnPolicyRunner(MjlabOnPolicyRunner):
         super().__init__(interceptor, train_cfg, log_dir, device, **kwargs)
 
     def learn_with_search(
-        self,
-        num_learning_iterations: int,
-        report_interval: int,
-        trial: optuna.Trial,
-        normalizer: ScoreNormalizer,
+            self,
+            num_learning_iterations: int,
+            report_interval: int,
+            trial: optuna.Trial,
+            normalizer: ScoreNormalizer,
+            plateau_window: int = 10,  # number of report intervals to look back
+            plateau_min_delta: float = 0.005,  # minimum improvement in normalized score to not be considered plateau
     ) -> float:
         remaining = num_learning_iterations
         first_chunk = True
         last_score = 0.0
+        score_history: list[float] = []
 
         while remaining > 0:
             chunk = min(report_interval, remaining)
@@ -261,14 +264,24 @@ class SearchOnPolicyRunner(MjlabOnPolicyRunner):
                 (k, acc.pop()) for k, acc in self._accumulators.items()
             ) if v is not None}
             if not metrics:
-                # No episodes completed in this chunk yet; skip this report.
                 continue
 
             last_score = normalizer(metrics)
+            score_history.append(last_score)
             trial.report(last_score, self.current_learning_iteration)
 
             if trial.should_prune():
                 raise optuna.TrialPruned()
+
+            # Stop early if score has not improved by plateau_min_delta
+            # over the last plateau_window report intervals.
+            if len(score_history) >= plateau_window:
+                window = score_history[-plateau_window:]
+                improvement = max(window) - min(window[:plateau_window // 2])
+                if improvement < plateau_min_delta:
+                    print(
+                        f"Trial {trial.number:04d} plateaued at iter {self.current_learning_iteration}, stopping early.")
+                    break
 
         return last_score
 
@@ -316,7 +329,7 @@ def _save_best(path: Path, trial_n: int, score: float, weights: dict[str, float]
             f,
             default_flow_style=False,
         )
-    print(f"New best → trial {trial_n:04d}, score={score:.4f}, saved to {path}")
+    print(f"New best -> trial {trial_n:04d}, score={score:.4f}, saved to {path}")
 
 
 def _print_importances(study: optuna.Study) -> None:

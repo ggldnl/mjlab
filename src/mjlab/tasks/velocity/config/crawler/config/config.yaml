@@ -18,10 +18,12 @@
 #   direction: "maximize" or "minimize"
 #   weight: contribution to the composite score (can be negative to penalize)
 
-trial_iterations: 1000       # how long each trial runs
-report_interval: 50          # how often to report to pruner
-n_trials: 40                 # total Optuna trials
 study_name: crawler_velocity
+n_trials: 40                 # total Optuna trials
+trial_iterations: 5000       # hard ceiling — trial never runs longer than this
+plateau_window: 10           # report intervals to look back for plateau detection
+plateau_min_delta: 0.005     # minimum score improvement to not be considered plateau
+report_interval: 50          # how often to report to pruner
 
 # Rewards to tune, ordered by importance (descending).
 # If omitted, it is kept fixed.

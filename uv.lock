@@ -1953,7 +1953,7 @@ requires-dist = [
     { name = "mujoco", specifier = ">=3.7.0" },
     { name = "mujoco-warp", specifier = ">=3.7.0.1" },
     { name = "onnxscript", specifier = ">=0.5.4" },
-    { name = "optuna" },
+    { name = "optuna", specifier = "==4.8.0" },
     { name = "prettytable" },
     { name = "rsl-rl-lib", specifier = "==5.0.1" },
     { name = "tensorboard", specifier = ">=2.20.0" },
