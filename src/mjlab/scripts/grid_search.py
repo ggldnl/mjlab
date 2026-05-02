@@ -294,7 +294,7 @@ def _inject_weights(
             new_w = sign * abs(default_w) * multiplier
         """
         sign = -1.0 if default_w < 0 else 1.0
-        multiplier = trial.suggest_float(r.name, lo, hi, log=True)
+        multiplier = trial.suggest_float(r.name, lo, hi)
         new_w = sign * abs(default_w) * multiplier
 
         env_cfg.rewards[r.name].weight = new_w
