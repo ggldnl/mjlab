@@ -51,12 +51,12 @@ rewards:
 # Metrics to score each trial, ordered by importance.
 # The script extracts whatever the runner logs.
 metrics:
-  - key: Episode/mean_reward       # exact key from the runner's log dict
+  - key: mean_reward       # exact key from the runner's log dict
     weight: 1.0
     direction: maximize
-  - key: Episode/mean_ep_length
+  - key: mean_ep_length
     weight: 0.4
     direction: maximize
-  - key: Episode/rew_std           # penalize instability
+  - key: rew_std           # penalize instability
     weight: -0.15
     direction: minimize
