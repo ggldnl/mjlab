@@ -20,3 +20,6 @@ benchmark_results/
 
 # PyCharm
 .idea/*
+
+# Optuna weights DB
+*.db
