@@ -1,4 +1,22 @@
-# config.yaml containing grid search for reward shaping specification
+# Reward weight search configuration for the Crawler velocity task.
+#
+# All fields are mandatory. The script will error immediately if any are missing.
+#
+# rewards:
+#   Listed in descending order of expected importance. The ordering itself has
+#   no effect on Optuna (TPE is order-agnostic), but it serves as documentation
+#   of the shaping intent and makes diffs easier to read.
+#
+#   bounds: multiplier range applied to the default weight (e.g. [0.3, 4.0]
+#           means Optuna can try weights from 0.3 to 4.0).
+#
+# metrics:
+#   Listed in descending order of importance (highest weight first).
+#   key: must match either one of the three built-in accumulator keys
+#        (mean_reward, mean_ep_length, reward_std) or the exact name of
+#        a MetricsTermCfg entry in cfg.metrics (e.g. mean_action_acc).
+#   direction: "maximize" or "minimize"
+#   weight: contribution to the composite score (can be negative to penalize)
 
 trial_iterations: 1000       # how long each trial runs
 report_interval: 50          # how often to report to pruner
