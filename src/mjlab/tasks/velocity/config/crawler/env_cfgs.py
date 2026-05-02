@@ -276,16 +276,6 @@ def crawler_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         weight=0.0,  # +2.0/step * N_steps >> velocity reward from one fall
     )
 
-    # Metrics
-    # TODO add metrics
-    """
-    metrics = {
-        "mean_action_acc": MetricsTermCfg(
-            func=mdp.mean_action_acc,
-        ),
-    }
-    """
-
     # Terminations
 
     cfg.terminations["fell_over"].params["limit_angle"] = math.radians(40.0)
