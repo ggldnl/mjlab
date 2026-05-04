@@ -14,7 +14,7 @@ from mjlab.entity import EntityCfg
 #   armature      - reflected rotor inertia
 
 # Effort limit: 2.2 Kgf*cm at 6V (datasheet)
-MG90S_STALL_TORQUE_KGF_CM = 2.2  # 2.2
+MG90S_STALL_TORQUE_KGF_CM = 2.2
 KGF_CM_TO_NM = 9.81 * 0.01
 MG90S_EFFORT_LIMIT = MG90S_STALL_TORQUE_KGF_CM * KGF_CM_TO_NM  # 0.216 N*m
 
@@ -138,15 +138,19 @@ def _joint_value_dict(
         for name in CRAWLER_JOINT_NAMES
     }
 
-_COXA_SCALE  = _scale_from_default(_COXA_LIM,  CRAWLER_COXA_DEFAULT)
-_FEMUR_SCALE = _scale_from_default(_FEMUR_LIM, CRAWLER_FEMUR_DEFAULT)
-_TIBIA_SCALE = _scale_from_default(_TIBIA_LIM, CRAWLER_TIBIA_DEFAULT)
+# _COXA_SCALE  = _scale_from_default(_COXA_LIM,  CRAWLER_COXA_DEFAULT)
+# _FEMUR_SCALE = _scale_from_default(_FEMUR_LIM, CRAWLER_FEMUR_DEFAULT)
+# _TIBIA_SCALE = _scale_from_default(_TIBIA_LIM, CRAWLER_TIBIA_DEFAULT)
+
+_ACTION_SCALE_RAD = 0.8 * _DELTA_SAT
 
 # At action = +/-1 each joint reaches exactly the nearest soft limit:
-#   coxa : 0.00 +/- 0.707 → [-0.707, +0.707]  (within +/-0.707 soft limit)
-#   femur: -0.50 +/- 0.914 → [-1.414, +0.414] (within +/-1.414 soft limit)
-#   tibia: -1.20 +/- 0.920 → [-2.120, -0.280] (within +/-2.120 soft limit)
-CRAWLER_ACTION_SCALE  = _joint_value_dict(_COXA_SCALE,  _FEMUR_SCALE,  _TIBIA_SCALE)
+#   coxa : 0.00 +/- 0.707 -> [-0.707, +0.707]  (within +/-0.707 soft limit)
+#   femur: -0.50 +/- 0.914 -> [-1.414, +0.414] (within +/-1.414 soft limit)
+#   tibia: -1.20 +/- 0.920 -> [-2.120, -0.280] (within +/-2.120 soft limit)
+CRAWLER_ACTION_SCALE = _joint_value_dict(
+    _ACTION_SCALE_RAD, _ACTION_SCALE_RAD, _ACTION_SCALE_RAD,
+)
 CRAWLER_ACTION_OFFSET = _joint_value_dict(
     CRAWLER_COXA_DEFAULT, CRAWLER_FEMUR_DEFAULT, CRAWLER_TIBIA_DEFAULT
 )

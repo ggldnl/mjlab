@@ -5,7 +5,7 @@ from mjlab.entity import EntityCfg
 
 from pathlib import Path
 
-from mjlab.asset_zoo.robots.crawler.collisions import FEET_ONLY_COLLISION
+from mjlab.asset_zoo.robots.crawler.collisions import FEET_ONLY_COLLISION, FULL_COLLISION
 from mjlab.asset_zoo.robots.crawler.actuators import CRAWLER_ARTICULATIONS
 from mjlab.asset_zoo.robots.crawler.actuators import INIT_STATE
 
@@ -22,7 +22,7 @@ def get_crawler_robot_cfg() -> EntityCfg:
     """Get a fresh Crawler robot configuration instance."""
     return EntityCfg(
         init_state=INIT_STATE,
-        collisions=(FEET_ONLY_COLLISION,),
+        collisions=(FULL_COLLISION, ),  # (FEET_ONLY_COLLISION,),
         spec_fn=get_spec,
         articulation=CRAWLER_ARTICULATIONS,
     )
