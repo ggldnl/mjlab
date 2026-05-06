@@ -1,4 +1,12 @@
-"""RL configuration for Crawler velocity task."""
+"""
+RL configuration for the Crawler velocity task.
+
+Defines the learning algorithm. Here we can set PPO hyperparameters
+(learning rate, clip range, GAE lambda, mini-batches, etc.) and the
+neural network architecture (hidden layers, activation functions).
+It's fully decoupled from the environment — we could swap in SAC
+or any other algorithm without touching anything else.
+"""
 
 from mjlab.rl import (
   RslRlModelCfg,
@@ -8,40 +16,26 @@ from mjlab.rl import (
 
 
 def crawler_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-  """Create RL runner configuration for Crawler velocity task."""
+  """Create RL runner configuration for the Crawler velocity task."""
   return RslRlOnPolicyRunnerCfg(
-    actor=RslRlModelCfg(
-      hidden_dims=(512, 256, 128),
-      activation="elu",
-      obs_normalization=True,
-      distribution_cfg={
-        "class_name": "GaussianDistribution",
-        "init_std": 1.0,
-        "std_type": "scalar",
-      },
-    ),
-    critic=RslRlModelCfg(
-      hidden_dims=(512, 256, 128),
-      activation="elu",
-      obs_normalization=True,
-    ),
-    algorithm=RslRlPpoAlgorithmCfg(
-      value_loss_coef=1.0,
-      use_clipped_value_loss=True,
-      clip_param=0.2,
-      entropy_coef=0.025,
-      num_learning_epochs=5,
-      num_mini_batches=4,
-      learning_rate=1.0e-3,
-      schedule="adaptive",
-      gamma=0.99,
-      lam=0.95,
-      desired_kl=0.012,
-      max_grad_norm=1.0,
-    ),
-    experiment_name="crawler_velocity",
-    clip_actions=1.0,
-    save_interval=50,
-    num_steps_per_env=96,
-    max_iterations=30_000,
+      actor=RslRlModelCfg(
+          hidden_dims=(512, 256, 128),
+          activation="elu",
+          obs_normalization=True,
+          distribution_cfg={
+              "class_name": "GaussianDistribution",
+              "init_std": 0.25,
+              "std_type": "log",
+          },
+      ),
+      critic=RslRlModelCfg(
+          hidden_dims=(512, 256, 128),
+          activation="elu",
+          obs_normalization=True,
+      ),
+      algorithm=RslRlPpoAlgorithmCfg(
+          entropy_coef=0.01,
+      ),
+      experiment_name="crawler_velocity_ppo",
+      max_iterations=10_000,
   )

@@ -63,6 +63,13 @@ CRAWLER_TIBIA_DEFAULT = -1.20
 _COXA_LIM  = (-0.785,  0.785)
 _FEMUR_LIM = (-1.571,  1.571)
 _TIBIA_LIM = (-2.356,  2.356)
+SMALLEST_ABS_LIM = min([
+    abs(lim) for lim in [
+        *_COXA_LIM,
+        *_FEMUR_LIM,
+        *_TIBIA_LIM
+    ]
+])
 
 _SOFT = 0.9   # fraction of hard limits used as soft limits
 
