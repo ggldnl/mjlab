@@ -9,7 +9,6 @@ at weight 4.0. Any penalty that routinely produces -10, -40 etc. will always win
 the gradient competition.
 """
 
-import math
 import torch
 
 from mjlab.envs.mdp import action_rate_l2, joint_vel_l2
