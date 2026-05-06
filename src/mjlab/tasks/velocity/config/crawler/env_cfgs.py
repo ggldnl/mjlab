@@ -10,7 +10,7 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.scene import SceneCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.viewer import ViewerConfig
-from mjlab.terrains.config import ALL_TERRAINS_CFG
+from dataclasses import replace
 
 
 from mjlab.asset_zoo.robots.crawler.crawler_constants import get_crawler_robot_cfg
@@ -25,23 +25,17 @@ from mjlab.tasks.velocity.config.crawler.mdp.events import events
 from mjlab.tasks.velocity.config.crawler.mdp import observations
 from mjlab.tasks.velocity.config.crawler.mdp.rewards import rewards
 
-
-# TODO remove play/training distinction, uniform by flat and rough
-
-
-def play_terrain_cfg():
-    return ALL_TERRAINS_CFG.sub_terrains["flat"]
+from mjlab.terrains import TerrainEntityCfg
+from mjlab.terrains.config import ROUGH_TERRAINS_CFG
 
 
-def training_terrain_cfg():
-    # Return the same exact terrain (if we train on flat ground, we test on flat ground)
-    return ALL_TERRAINS_CFG.sub_terrains["flat"]
-
-
-def scene_cfg(play: bool = False, num_envs: int = 2048) -> SceneCfg:
-  terrain = play_terrain_cfg() if play else training_terrain_cfg() # pick at call site
+def scene_cfg(num_envs: int = 2048) -> SceneCfg:
   return SceneCfg(
-    terrain=terrain,
+    terrain=TerrainEntityCfg(
+      terrain_type="generator",
+      terrain_generator=replace(ROUGH_TERRAINS_CFG),
+      max_init_terrain_level=5,
+    ),
     entities={"robot": get_crawler_robot_cfg()},
     sensors=SENSORS,
     num_envs=num_envs,
@@ -77,7 +71,7 @@ def sim_cfg() -> SimulationCfg:
 def crawler_velocity_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create Crawler velocity task configuration."""
   cfg = ManagerBasedRlEnvCfg(
-    scene=scene_cfg(play),
+    scene=scene_cfg(),
     observations=observations,
     actions=actions,
     commands=commands,
