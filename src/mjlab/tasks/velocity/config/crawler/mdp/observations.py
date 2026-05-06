@@ -26,8 +26,6 @@ from mjlab.tasks.velocity.mdp.observations import (
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 from mjlab.asset_zoo.robots.crawler.crawler_constants import CRAWLER_FOOT_GEOM_NAMES
-
-# TODO add TERRAIN_SCAN sensor
 from mjlab.asset_zoo.robots.crawler.sensors import TERRAIN_SCAN
 
 

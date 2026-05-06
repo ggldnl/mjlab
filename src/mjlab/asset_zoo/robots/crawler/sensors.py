@@ -4,7 +4,9 @@ from mjlab.sensor import (
     ContactMatch,
     ContactSensorCfg,
     BuiltinSensorCfg,
-    ObjRef
+    ObjRef,
+    RayCastSensorCfg,
+    TerrainHeightSensorCfg, GridPatternCfg,
 )
 
 from mjlab.asset_zoo.robots.crawler.crawler_constants import CRAWLER_BASE_NAME
@@ -105,10 +107,40 @@ ROOT_ANGMOM = BuiltinSensorCfg(
     obj=ObjRef(type="body", name=CRAWLER_BASE_NAME, entity="robot"),
 )
 
+# Terrain sensors
+TERRAIN_SCAN = RayCastSensorCfg(
+    name="terrain_scan",
+    frame=ObjRef(type="body", name="", entity="robot"),  # Set per-robot.
+    ray_alignment="yaw",
+    pattern=GridPatternCfg(size=(1.6, 1.0), resolution=0.1),
+    max_distance=5.0,
+    exclude_parent_body=True,
+    include_geom_groups=(0,),  # Terrain only.
+    debug_vis=True,
+)
+
+FOOT_HEIGHT_SCAN = TerrainHeightSensorCfg(
+    name="foot_height_scan",
+    frame=(),  # Set per-robot: frame and pattern.
+    ray_alignment="yaw",
+    max_distance=1.0,
+    exclude_parent_body=True,
+    include_geom_groups=(0,),  # Terrain only.
+    debug_vis=True,
+    viz=TerrainHeightSensorCfg.VizCfg(
+        show_rays=True,
+        hit_color=(1.0, 0.0, 1.0, 0.8),  # Magenta rays.
+        hit_sphere_color=(1.0, 0.0, 1.0, 1.0),
+    ),
+)
+
+# Expose all sensors
 SENSORS = (
     *IMU,
     FEET_GROUND,
     LEGS_GROUND,
     SELF_COLLISION,
     ROOT_ANGMOM,
+    TERRAIN_SCAN,
+    FOOT_HEIGHT_SCAN
 )

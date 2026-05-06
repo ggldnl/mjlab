@@ -97,8 +97,11 @@ rewards = {
     params={"command_name": "twist", "std": 0.25},
   ),
 
-
-  # TODO add track_angular_velocity
+  "track_angular_velocity": RewardTermCfg(
+    func=track_angular_velocity,
+    weight=3.0,
+    params={"command_name": "twist", "std": 0.25},
+  ),
 
   # Hard constraint. Large enough that no combination of other terms justifies dying.
   "is_terminated": RewardTermCfg(
