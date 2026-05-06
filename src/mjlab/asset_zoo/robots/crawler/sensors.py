@@ -9,7 +9,7 @@ from mjlab.sensor import (
     TerrainHeightSensorCfg, GridPatternCfg,
 )
 
-from mjlab.asset_zoo.robots.crawler.crawler_constants import CRAWLER_BASE_NAME
+from mjlab.asset_zoo.robots.crawler.crawler_constants import CRAWLER_BASE_NAME, CRAWLER_FOOT_BODY_NAMES
 
 
 # Sensor attachment points - entity-scoped names as they appear after
@@ -110,7 +110,7 @@ ROOT_ANGMOM = BuiltinSensorCfg(
 # Terrain sensors
 TERRAIN_SCAN = RayCastSensorCfg(
     name="terrain_scan",
-    frame=ObjRef(type="body", name="", entity="robot"),  # Set per-robot.
+    frame=ObjRef(type="body", name=CRAWLER_BASE_NAME, entity="robot"),  # Set per-robot.
     ray_alignment="yaw",
     pattern=GridPatternCfg(size=(1.6, 1.0), resolution=0.1),
     max_distance=5.0,
@@ -121,7 +121,10 @@ TERRAIN_SCAN = RayCastSensorCfg(
 
 FOOT_HEIGHT_SCAN = TerrainHeightSensorCfg(
     name="foot_height_scan",
-    frame=(),  # Set per-robot: frame and pattern.
+    frame=tuple(
+        ObjRef(type="body", name=name, entity="robot")
+        for name in CRAWLER_FOOT_BODY_NAMES
+    ),
     ray_alignment="yaw",
     max_distance=1.0,
     exclude_parent_body=True,

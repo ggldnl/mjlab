@@ -119,7 +119,7 @@ rewards = {
   "nonfeet_ground_contact": RewardTermCfg(
     func=nonfeet_ground_contact,
     weight=-0.5,
-    params={"sensor_name": "nonfeet_ground_contact"},
+    params={"sensor_name": "legs_ground_contact"},
   ),
 
   # Posture (curriculum)

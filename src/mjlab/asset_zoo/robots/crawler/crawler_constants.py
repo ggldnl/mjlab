@@ -55,6 +55,13 @@ CRAWLER_FOOT_SITE_NAMES = (
     "leg_4_foot_site",
 )
 
+CRAWLER_FOOT_BODY_NAMES = (
+    "leg_1_foot",
+    "leg_2_foot",
+    "leg_3_foot",
+    "leg_4_foot",
+)
+
 CRAWLER_BASE_NAME = "base"
 
 if __name__ == "__main__":

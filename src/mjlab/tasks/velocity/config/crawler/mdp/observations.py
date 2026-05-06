@@ -38,13 +38,13 @@ _HISTORY = 10
 actor_terms = {
   "base_lin_vel": ObservationTermCfg(
     func=builtin_sensor,
-    params={"sensor_name": "imu_lin_vel"},
+    params={"sensor_name": "robot/imu_lin_vel"},
     noise=Unoise(n_min=-0.5, n_max=0.5),
     history_length=_HISTORY,
   ),
   "base_ang_vel": ObservationTermCfg(
     func=builtin_sensor,
-    params={"sensor_name": "imu_ang_vel"},
+    params={"sensor_name": "robot/imu_ang_vel"},
     noise=Unoise(n_min=-0.2, n_max=0.2),
     history_length=_HISTORY,
   ),
@@ -89,11 +89,11 @@ critic_terms = {
   **actor_terms,
   "true_base_lin_vel": ObservationTermCfg(
     func=builtin_sensor,
-    params={"sensor_name": "imu_lin_vel"},
+    params={"sensor_name": "robot/imu_lin_vel"},
   ),
   "true_base_ang_vel": ObservationTermCfg(
     func=builtin_sensor,
-    params={"sensor_name": "imu_ang_vel"},
+    params={"sensor_name": "robot/imu_ang_vel"},
   ),
   "true_joint_pos": ObservationTermCfg(
     func=joint_pos_rel,
@@ -120,7 +120,7 @@ critic_terms = {
   ),
   "feet_height": ObservationTermCfg(
     func=foot_height,
-    params={"asset_cfg": SceneEntityCfg("robot", geom_names=CRAWLER_FOOT_GEOM_NAMES)},
+    params={"sensor_name": "foot_height_scan"},
   ),
 }
 
