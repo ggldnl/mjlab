@@ -68,10 +68,10 @@ def sim_cfg() -> SimulationCfg:
   )
 
 
-def crawler_velocity_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+def crawler_velocity_env_cfg(play: bool = False, num_envs: int = 2048) -> ManagerBasedRlEnvCfg:
   """Create Crawler velocity task configuration."""
   cfg = ManagerBasedRlEnvCfg(
-    scene=scene_cfg(),
+    scene=scene_cfg(1 if play else num_envs),
     observations=observations,
     actions=actions,
     commands=commands,
