@@ -13,6 +13,8 @@ from mjlab.envs.mdp.observations import (
   last_action,
   projected_gravity,
   height_scan,
+  base_lin_vel,
+  base_ang_vel
 )
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.managers import SceneEntityCfg
@@ -29,7 +31,7 @@ from mjlab.asset_zoo.robots.crawler.collisions import FOOT_GEOM_NAMES
 from mjlab.asset_zoo.robots.crawler.sensors import TERRAIN_SCAN
 
 
-# At 100 Hz / decimation 4 = 25 Hz policy. 10 frames = 400 ms,
+# At 200 Hz / decimation 4 = 50 Hz policy. 10 frames = 200 ms,
 # enough to observe roughly one full stride cycle.
 _HISTORY = 10
 
@@ -74,26 +76,23 @@ actor_terms = {
     func=generated_commands,
     params={"command_name": "twist"},
   ),
-  # Terrain: slow signal, no history to avoid inflating input size
-  "height_scan": ObservationTermCfg(
-    func=height_scan,
-    params={"sensor_name": "terrain_scan"},
-    noise=Unoise(n_min=-0.1, n_max=0.1),
-    scale=1 / TERRAIN_SCAN.max_distance,
+  "feet_contact": ObservationTermCfg(
+    func=foot_contact,
+    params={"sensor_name": "feet_ground_contact"},
+    noise=Unoise(n_min=-0.01, n_max=0.01),
+    history_length=_HISTORY,
   ),
 }
 
 # Critic: everything the actor sees + clean ground truth + privileged contact info.
-# No noise, no history needed since the critic sees exact state.
+# No noise, critic sees exact state.
 critic_terms = {
   **actor_terms,
   "true_base_lin_vel": ObservationTermCfg(
-    func=builtin_sensor,
-    params={"sensor_name": "robot/imu_lin_vel"},
+    func=base_lin_vel,
   ),
   "true_base_ang_vel": ObservationTermCfg(
-    func=builtin_sensor,
-    params={"sensor_name": "robot/imu_ang_vel"},
+    func=base_ang_vel,
   ),
   "true_joint_pos": ObservationTermCfg(
     func=joint_pos_rel,
@@ -106,7 +105,7 @@ critic_terms = {
     params={"sensor_name": "terrain_scan"},
     scale=1 / TERRAIN_SCAN.max_distance,
   ),
-  "feet_contact": ObservationTermCfg(
+  "true_feet_contact": ObservationTermCfg(
     func=foot_contact,
     params={"sensor_name": "feet_ground_contact"},
   ),

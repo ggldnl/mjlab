@@ -19,6 +19,6 @@ terminations = {
   ),
   "fell_over": TerminationTermCfg(
     func=bad_orientation,
-    params={"limit_angle": math.radians(90.0)},
+    params={"limit_angle": math.radians(60.0)},
   ),
 }

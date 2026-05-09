@@ -5,10 +5,13 @@ reset (every episode), or interval (randomly during an episode). This is where t
 - Perturbations (random pushes)
 - Domain randomization (friction, encoder bias, CoM offsets)
 Keeping this separate from rewards/observations lets us swap DR profiles independently
-(e.g. a light-DR version for debugging, a heavy-DR version for sim-to-real transfer).
 """
 
-from mjlab.envs.mdp.dr import body_com_offset, geom_friction
+from mjlab.envs.mdp.dr import (
+  body_com_offset,
+  geom_friction,
+  encoder_bias
+)
 from mjlab.envs.mdp.events import (
   push_by_setting_velocity,
   reset_joints_by_offset,
@@ -70,8 +73,17 @@ events = {
 
   # Domain randomization
 
+  "encoder_bias": EventTermCfg(
+    mode="startup",
+    func=encoder_bias,
+    params={
+      "asset_cfg": SceneEntityCfg("robot"),
+      "bias_range": (-0.015, 0.015),
+    },
+  ),
+
   "foot_friction": EventTermCfg(
-    mode="reset",
+    mode="startup",
     func=geom_friction,
     params={
       "asset_cfg": SceneEntityCfg("robot", geom_names=FOOT_GEOM_NAMES),
@@ -82,7 +94,7 @@ events = {
   ),
 
   "base_com": EventTermCfg(
-    mode="reset",
+    mode="startup",
     func=body_com_offset,
     params={
       "asset_cfg": SceneEntityCfg("robot", body_names=BASE_NAME),
