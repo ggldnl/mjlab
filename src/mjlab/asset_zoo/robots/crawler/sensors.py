@@ -143,6 +143,7 @@ FOOT_HEIGHT_SCAN = TerrainHeightSensorCfg(
         ObjRef(type="site", name=name, entity="robot")
         for name in FOOT_SITE_NAMES
     ),
+    ray_alignment="yaw",
     pattern=RingPatternCfg.single_ring(radius=0.015, num_samples=4),
     max_distance=1.0,
     exclude_parent_body=True,

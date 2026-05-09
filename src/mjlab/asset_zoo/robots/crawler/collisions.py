@@ -48,7 +48,7 @@ COXA_COLLISION_NAMES = (
     "leg_3_coxa_collision",
     "leg_4_coxa_collision",
 )
-COXA_COLLISION_REGEX = "*_coxa_collision"
+COXA_COLLISION_REGEX = "leg_[1-4]_coxa_collision"
 
 FEMUR_COLLISION_NAMES = (
     "leg_1_femur_collision",
@@ -56,7 +56,7 @@ FEMUR_COLLISION_NAMES = (
     "leg_3_femur_collision",
     "leg_4_femur_collision",
 )
-FEMUR_COLLISION_REGEX = "*_femur_collision"
+FEMUR_COLLISION_REGEX = "leg_[1-4]_femur_collision"
 
 TIBIA_COLLISION_NAMES = (
     "leg_1_tibia_collision",
@@ -64,7 +64,7 @@ TIBIA_COLLISION_NAMES = (
     "leg_3_tibia_collision",
     "leg_4_tibia_collision",
 )
-TIBIA_COLLISION_REGEX = "*_tibia_collision"
+TIBIA_COLLISION_REGEX = "leg_[1-4]_tibia_collision"
 
 FOOT_COLLISION_NAMES = (
     "leg_1_foot_collision",
@@ -72,7 +72,7 @@ FOOT_COLLISION_NAMES = (
     "leg_3_foot_collision",
     "leg_4_foot_collision",
 )
-FOOT_COLLISION_REGEX = "*_foot_collision"
+FOOT_COLLISION_REGEX = "leg_[1-4]_foot_collision"
 
 ALL_COLLISION_NAMES = (
     *COXA_COLLISION_NAMES,
@@ -89,7 +89,6 @@ FOOT_SITE_NAMES = (
     "leg_3_foot_site",
     "leg_4_foot_site",
 )
-
 
 # Bodies
 

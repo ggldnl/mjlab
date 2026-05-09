@@ -92,7 +92,7 @@ MG90S_DAMPING = 2.0 * math.sqrt(MG90S_STIFFNESS * _I_EFF)  # 0.0033 N*m*s/rad
 # Default (standing) joint positions. They define "action = 0"
 # (the neutral posture the policy holds when outputting zeros).
 COXA_DEFAULT  =  0.00
-FEMUR_DEFAULT = -0.25
+FEMUR_DEFAULT = -0.8
 TIBIA_DEFAULT = -1.20
 
 # Joint hard limits
