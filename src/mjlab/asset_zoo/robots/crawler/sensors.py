@@ -6,16 +6,27 @@ from mjlab.sensor import (
     BuiltinSensorCfg,
     ObjRef,
     RayCastSensorCfg,
-    TerrainHeightSensorCfg, GridPatternCfg,
+    TerrainHeightSensorCfg,
+    GridPatternCfg,
+    RingPatternCfg
 )
 
-from mjlab.asset_zoo.robots.crawler.crawler_constants import CRAWLER_BASE_NAME, CRAWLER_FOOT_BODY_NAMES
+from mjlab.asset_zoo.robots.crawler.collisions import (
+    COXA_COLLISION_NAMES,
+    FEMUR_COLLISION_NAMES,
+    TIBIA_COLLISION_NAMES,
+)
+from mjlab.asset_zoo.robots.crawler.collisions import FOOT_BODY_REGEX
+from mjlab.asset_zoo.robots.crawler.collisions import FOOT_SITE_NAMES
+from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME
 
+
+IMU_SITE_NAME = "imu"
 
 # Sensor attachment points - entity-scoped names as they appear after
 # the robot entity is instantiated.  The "robot/" prefix is added
 # automatically by the scene; do NOT include it in sensor names.
-_IMU_SITE  = ObjRef(type="site", name="imu", entity="robot")   # matches <site name='imu'> in the MJCF
+_IMU_SITE  = ObjRef(type="site", name=IMU_SITE_NAME, entity="robot")   # matches <site name='imu'> in the MJCF
 
 # IMU sensors - all attached to the <site name="imu"> on the base body.
 IMU_ANG_VEL = BuiltinSensorCfg(
@@ -49,90 +60,97 @@ IMU = (
     IMU_ORIENTATION,
 )
 
+# How many steps back in time we detect
+HISTORY_LENGTH = 4
+
+# Feet-ground contact detection
 FEET_GROUND = ContactSensorCfg(
     name="feet_ground_contact",
     primary=ContactMatch(
         mode="subtree",
-        pattern=r"^leg_[1-4]_foot",  # one per leg - matches all 4
+        pattern=FOOT_BODY_REGEX,
         entity="robot",
     ),
-    secondary=ContactMatch(mode="body", pattern="terrain"),
+    secondary=ContactMatch(
+        mode="body",
+        pattern="terrain"
+    ),
     fields=("found", "force"),
     reduce="netforce",
     num_slots=1,
     track_air_time=True,
 )
 
-LEG_SEGMENT_GEOM_NAMES = tuple(
-    f"leg_{i}_{seg}_collision"
-    for i in (1, 2, 3, 4)
-    for seg in ("coxa", "femur", "tibia")
-)
+# Non-foot leg collision geoms, used to detect unwanted ground contact
 LEGS_GROUND = ContactSensorCfg(
     name="legs_ground_contact",
     primary=ContactMatch(
         mode="geom",
-        pattern=LEG_SEGMENT_GEOM_NAMES,
+        pattern=(
+            *COXA_COLLISION_NAMES,
+            *FEMUR_COLLISION_NAMES,
+            *TIBIA_COLLISION_NAMES,
+        ),
         entity="robot",
     ),
     secondary=ContactMatch(mode="body", pattern="terrain"),
     fields=("found", "force"),
     reduce="none",
     num_slots=1,
-    history_length=4,
+    history_length=HISTORY_LENGTH,
 )
 
 SELF_COLLISION = ContactSensorCfg(
     name="self_collision",
     primary=ContactMatch(
         mode="subtree",
-        pattern=CRAWLER_BASE_NAME,
+        pattern=BASE_NAME,
         entity="robot",
     ),
     secondary=ContactMatch(
         mode="subtree",
-        pattern=CRAWLER_BASE_NAME,
+        pattern=BASE_NAME,
         entity="robot",
     ),
     fields=("found", "force"),
     reduce="none",
     num_slots=1,
-    history_length=4,
+    history_length=HISTORY_LENGTH,
 )
 
 # Measure robot angular momentum
 ROOT_ANGMOM = BuiltinSensorCfg(
     name="root_angmom",
     sensor_type="subtreeangmom",
-    obj=ObjRef(type="body", name=CRAWLER_BASE_NAME, entity="robot"),
+    obj=ObjRef(type="body", name=BASE_NAME, entity="robot"),
 )
 
 # Terrain sensors
 TERRAIN_SCAN = RayCastSensorCfg(
     name="terrain_scan",
-    frame=ObjRef(type="body", name=CRAWLER_BASE_NAME, entity="robot"),  # Set per-robot.
+    frame=ObjRef(type="body", name=BASE_NAME, entity="robot"),
     ray_alignment="yaw",
     pattern=GridPatternCfg(size=(1.6, 1.0), resolution=0.1),
     max_distance=5.0,
     exclude_parent_body=True,
-    include_geom_groups=(0,),  # Terrain only.
+    include_geom_groups=(0,),
     debug_vis=True,
 )
 
 FOOT_HEIGHT_SCAN = TerrainHeightSensorCfg(
     name="foot_height_scan",
     frame=tuple(
-        ObjRef(type="body", name=name, entity="robot")
-        for name in CRAWLER_FOOT_BODY_NAMES
+        ObjRef(type="site", name=name, entity="robot")
+        for name in FOOT_SITE_NAMES
     ),
-    ray_alignment="yaw",
+    pattern=RingPatternCfg.single_ring(radius=0.015, num_samples=4),
     max_distance=1.0,
     exclude_parent_body=True,
-    include_geom_groups=(0,),  # Terrain only.
+    include_geom_groups=(0,),
     debug_vis=True,
     viz=TerrainHeightSensorCfg.VizCfg(
         show_rays=True,
-        hit_color=(1.0, 0.0, 1.0, 0.8),  # Magenta rays.
+        hit_color=(1.0, 0.0, 1.0, 0.8),
         hit_sphere_color=(1.0, 0.0, 1.0, 1.0),
     ),
 )

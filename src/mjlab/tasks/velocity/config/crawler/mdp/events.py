@@ -17,7 +17,7 @@ from mjlab.envs.mdp.events import (
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
-from mjlab.asset_zoo.robots.crawler.crawler_constants import CRAWLER_BASE_NAME, CRAWLER_FOOT_GEOM_NAMES
+from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME, FOOT_GEOM_NAMES
 from mjlab.asset_zoo.robots.crawler.actuators import SMALLEST_ABS_LIM, MG90S_VELOCITY_LIMIT
 
 
@@ -74,7 +74,7 @@ events = {
     mode="reset",
     func=geom_friction,
     params={
-      "asset_cfg": SceneEntityCfg("robot", geom_names=CRAWLER_FOOT_GEOM_NAMES),
+      "asset_cfg": SceneEntityCfg("robot", geom_names=FOOT_GEOM_NAMES),
       "operation": "abs",
       "ranges": (0.3, 1.2),
       "shared_random": True,  # All foot geoms share the same friction
@@ -85,7 +85,7 @@ events = {
     mode="reset",
     func=body_com_offset,
     params={
-      "asset_cfg": SceneEntityCfg("robot", body_names=CRAWLER_BASE_NAME),
+      "asset_cfg": SceneEntityCfg("robot", body_names=BASE_NAME),
       "operation": "add",
       "ranges": {
           0: (-0.015, 0.015),

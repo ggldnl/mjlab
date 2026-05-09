@@ -24,9 +24,9 @@ from mjlab.tasks.velocity.mdp import (
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.utils.lab_api.math import quat_apply_inverse
 
-from mjlab.asset_zoo.robots.crawler.crawler_constants import (
-  CRAWLER_BASE_NAME,
-  CRAWLER_FOOT_SITE_NAMES,
+from mjlab.asset_zoo.robots.crawler.collisions import (
+    BASE_NAME,
+    FOOT_SITE_NAMES,
 )
 
 
@@ -38,7 +38,7 @@ def flat_orientation(env: ManagerBasedRlEnv, std: float) -> torch.Tensor:
   """
 
   asset = env.scene["robot"]
-  base_id = asset.find_bodies(CRAWLER_BASE_NAME)[0]
+  base_id = asset.find_bodies(BASE_NAME)[0]
 
   body_quat_w = asset.data.body_link_quat_w[:, base_id, :]  # [B, 4]
   gravity_w = asset.data.gravity_vec_w  # [3]
@@ -56,7 +56,7 @@ def base_height(env: ManagerBasedRlEnv, target_height: float, std: float) -> tor
   """
 
   asset = env.scene["robot"]
-  base_id = asset.find_bodies(CRAWLER_BASE_NAME)[0]
+  base_id = asset.find_bodies(BASE_NAME)[0]
 
   height = asset.data.body_link_pos_w[:, base_id, 2].squeeze(-1)  # Z coordinate [B]
   height_error_sq = (height - target_height) ** 2
@@ -143,7 +143,7 @@ rewards = {
       "sensor_name": "feet_ground_contact",
       "command_name": "twist",
       "command_threshold": 0.05,
-      "asset_cfg": SceneEntityCfg("robot", site_names=CRAWLER_FOOT_SITE_NAMES),
+      "asset_cfg": SceneEntityCfg("robot", site_names=FOOT_SITE_NAMES),
     },
   ),
 

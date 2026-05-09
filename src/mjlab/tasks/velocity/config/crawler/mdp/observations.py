@@ -25,7 +25,7 @@ from mjlab.tasks.velocity.mdp.observations import (
 )
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
-from mjlab.asset_zoo.robots.crawler.crawler_constants import CRAWLER_FOOT_GEOM_NAMES
+from mjlab.asset_zoo.robots.crawler.collisions import FOOT_GEOM_NAMES
 from mjlab.asset_zoo.robots.crawler.sensors import TERRAIN_SCAN
 
 

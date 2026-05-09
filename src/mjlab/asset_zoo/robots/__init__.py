@@ -18,15 +18,18 @@ from mjlab.asset_zoo.robots.unitree_go1.go1_constants import (
 )
 
 from mjlab.asset_zoo.robots.crawler.actuators import (
-  CRAWLER_ACTION_SCALE as CRAWLER_ACTION_SCALE,
-  CRAWLER_ACTION_OFFSET as CRAWLER_ACTION_OFFSET,
+    ACTION_SCALE as ACTION_SCALE,
+    ACTION_OFFSET as ACTION_OFFSET,
 )
 from mjlab.asset_zoo.robots.crawler.sensors import (
-  IMU as IMU,
+    IMU as IMU,
+    SENSORS as SENSORS,
+)
+from mjlab.asset_zoo.robots.crawler.collisions import (
+    FOOT_SITE_NAMES as FOOT_SITE_NAMES,
+    FOOT_GEOM_NAMES as FOOT_GEOM_NAMES,
+    BASE_NAME as BASE_NAME,
 )
 from mjlab.asset_zoo.robots.crawler.crawler_constants import (
-  CRAWLER_FOOT_SITE_NAMES as CRAWLER_FOOT_SITE_NAMES,
-  CRAWLER_FOOT_GEOM_NAMES as CRAWLER_FOOT_GEOM_NAMES,
-  CRAWLER_BASE_NAME as CRAWLER_BASE_NAME,
-  get_crawler_robot_cfg as get_crawler_robot_cfg,
+    get_crawler_robot_cfg as get_crawler_robot_cfg,
 )

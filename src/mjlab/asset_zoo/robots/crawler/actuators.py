@@ -6,6 +6,42 @@ from mjlab.entity import EntityArticulationInfoCfg
 from mjlab.entity import EntityCfg
 
 
+LEG_1_JOINT_NAMES = (
+    "base_leg_1_coxa",
+    "leg_1_coxa_leg_1_femur",
+    "leg_1_femur_leg_1_tibia"
+)
+
+LEG_2_JOINT_NAMES = (
+    "base_leg_2_coxa",
+    "leg_2_coxa_leg_2_femur",
+    "leg_2_femur_leg_2_tibia"
+)
+
+LEG_3_JOINT_NAMES = (
+    "base_leg_3_coxa",
+    "leg_3_coxa_leg_3_femur",
+    "leg_3_femur_leg_3_tibia"
+)
+
+LEG_4_JOINT_NAMES = (
+    "base_leg_4_coxa",
+    "leg_4_coxa_leg_4_femur",
+    "leg_4_femur_leg_4_tibia"
+)
+
+COXA_JOINT_REGEX = "base_leg_[1-4]_coxa"
+FEMUR_JOINT_REGEX = "leg_[1-4]_coxa_leg_[1-4]_femur"
+TIBIA_JOINT_REGEX = "leg_[1-4]_femur_leg_[1-4]_tibia"
+
+JOINT_NAMES = [
+    *LEG_1_JOINT_NAMES,
+    *LEG_2_JOINT_NAMES,
+    *LEG_3_JOINT_NAMES,
+    *LEG_4_JOINT_NAMES
+]
+
+
 # The MG90S is a brushed-DC servo with an internal PID position loop.
 # We model it in MuJoCo as a position actuator (stiffness + damping + effort_limit).
 # The three parameters below are the only externally observable quantities:
@@ -55,19 +91,19 @@ MG90S_DAMPING = 2.0 * math.sqrt(MG90S_STIFFNESS * _I_EFF)  # 0.0033 N*m*s/rad
 
 # Default (standing) joint positions. They define "action = 0"
 # (the neutral posture the policy holds when outputting zeros).
-CRAWLER_COXA_DEFAULT  =  0.00
-CRAWLER_FEMUR_DEFAULT = -0.25
-CRAWLER_TIBIA_DEFAULT = -1.20
+COXA_DEFAULT  =  0.00
+FEMUR_DEFAULT = -0.25
+TIBIA_DEFAULT = -1.20
 
 # Joint hard limits
-_COXA_LIM  = (-0.785,  0.785)
-_FEMUR_LIM = (-1.571,  1.571)
-_TIBIA_LIM = (-2.356,  2.356)
+COXA_LIMS  = (-0.785, 0.785)
+FEMUR_LIMS = (-1.571, 1.571)
+TIBIA_LIMS = (-2.356, 2.356)
 SMALLEST_ABS_LIM = min([
     abs(lim) for lim in [
-        *_COXA_LIM,
-        *_FEMUR_LIM,
-        *_TIBIA_LIM
+        *COXA_LIMS,
+        *FEMUR_LIMS,
+        *TIBIA_LIMS
     ]
 ])
 
@@ -80,32 +116,24 @@ _SOFT = 0.9   # fraction of hard limits used as soft limits
 INIT_STATE = EntityCfg.InitialStateCfg(
     pos=(0.0, 0.0, 0.05),
     joint_pos={
-        "base_leg_[1-4]_coxa": CRAWLER_COXA_DEFAULT,
-        "leg_[1-4]_coxa_leg_[1-4]_femur": CRAWLER_FEMUR_DEFAULT,
-        "leg_[1-4]_femur_leg_[1-4]_tibia": CRAWLER_TIBIA_DEFAULT,
+        COXA_JOINT_REGEX: COXA_DEFAULT,
+        FEMUR_JOINT_REGEX: FEMUR_DEFAULT,
+        TIBIA_JOINT_REGEX: TIBIA_DEFAULT,
     },
     joint_vel={".*": 0.0},
 )
 
-# Joint names
-CRAWLER_JOINT_NAMES = [
-    "base_leg_1_coxa",  "leg_1_coxa_leg_1_femur",  "leg_1_femur_leg_1_tibia",
-    "base_leg_2_coxa",  "leg_2_coxa_leg_2_femur",  "leg_2_femur_leg_2_tibia",
-    "base_leg_3_coxa",  "leg_3_coxa_leg_3_femur",  "leg_3_femur_leg_3_tibia",
-    "base_leg_4_coxa",  "leg_4_coxa_leg_4_femur",  "leg_4_femur_leg_4_tibia",
-]
-
 # Actuator configuration
-CRAWLER_ACTUATOR = BuiltinPositionActuatorCfg(
-    target_names_expr=(r".*_coxa$", r".*_femur$", r".*_tibia$"),
+ACTUATOR = BuiltinPositionActuatorCfg(
+    target_names_expr=(".*", ),
     stiffness=MG90S_STIFFNESS,
     damping=MG90S_DAMPING,
     effort_limit=MG90S_EFFORT_LIMIT,
     armature=MG90S_ARMATURE,
 )
 
-CRAWLER_ARTICULATIONS = EntityArticulationInfoCfg(
-    actuators=(CRAWLER_ACTUATOR,),
+ARTICULATIONS = EntityArticulationInfoCfg(
+    actuators=(ACTUATOR,),
     soft_joint_pos_limit_factor=_SOFT,
 )
 
@@ -142,12 +170,12 @@ def _joint_value_dict(
             femur_val if name.endswith("femur") else
             tibia_val
         )
-        for name in CRAWLER_JOINT_NAMES
+        for name in JOINT_NAMES
     }
 
-# _COXA_SCALE  = _scale_from_default(_COXA_LIM,  CRAWLER_COXA_DEFAULT)
-# _FEMUR_SCALE = _scale_from_default(_FEMUR_LIM, CRAWLER_FEMUR_DEFAULT)
-# _TIBIA_SCALE = _scale_from_default(_TIBIA_LIM, CRAWLER_TIBIA_DEFAULT)
+# COXA_SCALE  = _scale_from_default(COXA_LIMS,  COXA_DEFAULT)
+# FEMUR_SCALE = _scale_from_default(FEMUR_LIMS, FEMUR_DEFAULT)
+# TIBIA_SCALE = _scale_from_default(TIBIA_LIMS, TIBIA_DEFAULT)
 
 _ACTION_SCALE_RAD = 0.8 * _DELTA_SAT
 
@@ -155,11 +183,11 @@ _ACTION_SCALE_RAD = 0.8 * _DELTA_SAT
 #   coxa : 0.00 +/- 0.707 -> [-0.707, +0.707]  (within +/-0.707 soft limit)
 #   femur: -0.50 +/- 0.914 -> [-1.414, +0.414] (within +/-1.414 soft limit)
 #   tibia: -1.20 +/- 0.920 -> [-2.120, -0.280] (within +/-2.120 soft limit)
-CRAWLER_ACTION_SCALE = _joint_value_dict(
+ACTION_SCALE = _joint_value_dict(
     _ACTION_SCALE_RAD, _ACTION_SCALE_RAD, _ACTION_SCALE_RAD,
 )
-CRAWLER_ACTION_OFFSET = _joint_value_dict(
-    CRAWLER_COXA_DEFAULT, CRAWLER_FEMUR_DEFAULT, CRAWLER_TIBIA_DEFAULT
+ACTION_OFFSET = _joint_value_dict(
+    COXA_DEFAULT, FEMUR_DEFAULT, TIBIA_DEFAULT
 )
 
 
@@ -167,10 +195,10 @@ if __name__ == "__main__":
 
     print(f"{'Joint':35s} {'Type':5s}  {'lo':>7s}  {'hi':>7s}  scale")
 
-    for name in CRAWLER_JOINT_NAMES:
+    for name in JOINT_NAMES:
 
-        offset = CRAWLER_ACTION_OFFSET[name]
-        scale  = CRAWLER_ACTION_SCALE[name]
+        offset = ACTION_OFFSET[name]
+        scale  = ACTION_SCALE[name]
         lo, hi = offset - scale, offset + scale
         jt = ("COXA" if name.endswith("coxa") else
               "FEMUR" if name.endswith("femur") else "TIBIA")

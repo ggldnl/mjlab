@@ -14,7 +14,7 @@ from dataclasses import replace
 
 
 from mjlab.asset_zoo.robots.crawler.crawler_constants import get_crawler_robot_cfg
-from mjlab.asset_zoo.robots.crawler.crawler_constants import CRAWLER_BASE_NAME
+from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME
 from mjlab.asset_zoo.robots.crawler.sensors import SENSORS
 
 from mjlab.tasks.velocity.config.crawler.mdp.actions import actions
@@ -47,7 +47,7 @@ def viewer_cfg() -> ViewerConfig:
   return ViewerConfig(
     origin_type=ViewerConfig.OriginType.ASSET_BODY,
     entity_name="robot",
-    body_name=CRAWLER_BASE_NAME,
+    body_name=BASE_NAME,
     distance=3.0,
     elevation=-5.0,
     azimuth=90.0,
