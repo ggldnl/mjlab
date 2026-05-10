@@ -72,7 +72,7 @@ MG90S_ARMATURE = MG90S_ROTOR_INERTIA * MG90S_GEAR_RATIO ** 2  # 2.1e-7 kg*m^2
 # We choose delta_sat so that the tightest action range (tibia: +/-0.370 rad,
 # see CRAWLER_ACTION_SCALE below) stays well inside the linear regime of the
 # actuator.  With delta_sat = 0.6 rad, a max tibia action (0.370 rad) produces
-# 0.370 / 0.6 ~= 62 % of stall torque — the servo responds proportionally and
+# 0.370 / 0.6 ~= 62 % of stall torque — the servo responses proportionally and
 # learning gradients flow everywhere.
 #
 # 0.6 rad (~34°) is physically reasonable for a spur-gear hobby servo with a
@@ -80,14 +80,8 @@ MG90S_ARMATURE = MG90S_ROTOR_INERTIA * MG90S_GEAR_RATIO ** 2  # 2.1e-7 kg*m^2
 _DELTA_SAT = 0.6
 MG90S_STIFFNESS = MG90S_EFFORT_LIMIT / _DELTA_SAT
 
-# Damping (Kd): critical damping at the femur joint (largest effective inertia)
-# I_eff accounts for tibia + foot rotating about the femur axis, plus armature:
-#   tibia (~1.9 g at 40 mm from femur):  I ~= 3.0e-6 kg*m^2
-#   foot  (~0.2 g at 70 mm from femur):  I ~= 1.0e-6 kg*m^2
-#   armature (reflected rotor):              ~= 0.2e-6 kg*m^2
-#   total: ~4.2e-6, rounded to 5e-6 for margin
-_I_EFF = 5e-6  # kg*m^2
-MG90S_DAMPING = 2.0 * math.sqrt(MG90S_STIFFNESS * _I_EFF)  # 0.0033 N*m*s/rad
+# Damping (Kd)
+MG90S_DAMPING = MG90S_EFFORT_LIMIT / MG90S_VELOCITY_LIMIT  # 0.0033 N*m*s/rad
 
 # Default (standing) joint positions. They define "action = 0"
 # (the neutral posture the policy holds when outputting zeros).
@@ -130,6 +124,7 @@ ACTUATOR = BuiltinPositionActuatorCfg(
     damping=MG90S_DAMPING,
     effort_limit=MG90S_EFFORT_LIMIT,
     armature=MG90S_ARMATURE,
+    viscous_damping=0.0
 )
 
 ARTICULATIONS = EntityArticulationInfoCfg(
@@ -181,6 +176,7 @@ ACTION_OFFSET = _joint_value_dict(COXA_DEFAULT, FEMUR_DEFAULT, TIBIA_DEFAULT)
 
 if __name__ == "__main__":
 
+    print("Joint ranges")
     print(f"{'Joint':35s} {'Type':5s}  {'lo':>7s}  {'hi':>7s}  scale")
 
     for name in JOINT_NAMES:
@@ -191,3 +187,16 @@ if __name__ == "__main__":
         jt = ("COXA" if name.endswith("coxa") else
               "FEMUR" if name.endswith("femur") else "TIBIA")
         print(f"{name:35s} ({jt:5s})  {lo:7.3f}  {hi:7.3f}  {scale:.3f}")
+
+    print("\nActuators specs")
+    print(f"{'Parameter':35s} {'Value':5s}")
+
+    params = {
+        "Damping": MG90S_DAMPING,
+        "Stiffness": MG90S_STIFFNESS,
+        "Armature": MG90S_ARMATURE,
+        "Velocity limit": MG90S_VELOCITY_LIMIT,
+        "Effort limit": MG90S_EFFORT_LIMIT,
+    }
+    for name, value in params.items():
+        print(f"{name:35s} {value:<7.3f}")

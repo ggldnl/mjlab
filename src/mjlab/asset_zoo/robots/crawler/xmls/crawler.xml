@@ -6,9 +6,10 @@
             solver="Newton" tolerance="1e-10" gravity="0 0 -9.81"/>
 
     <default>
-        <joint damping="0.002" frictionloss="0.0005"/>
 
-        kee<!--
+        <joint damping="0.0" frictionloss="0.0005"/>
+
+        <!--
             Visual meshes: no physics contribution whatsoever.
             density=0 -> no mass/inertia (inertial tag is used instead)
             contype=0 conaffinity=0 -> invisible to the collision pipeline
@@ -43,7 +44,9 @@
             <geom type="capsule" size="0.004" density="0" contype="0" conaffinity="0" group="3" rgba="0 0 0 0"/>
         </default>
         <default class="foot_collision">
-            <geom type="sphere"  size="0.004" density="0" contype="0" conaffinity="0" group="3" rgba="0 0 0 0"/>
+            <geom type="sphere" size="0.004" density="0" contype="0" conaffinity="0" group="3" rgba="0 0 0 0"
+                solref="0.02 1.0"
+                solimp="0.9 0.95 0.001"/>
         </default>
     </default>
 
