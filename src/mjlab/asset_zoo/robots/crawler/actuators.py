@@ -108,7 +108,7 @@ _SOFT = 0.9   # fraction of hard limits used as soft limits
 # model to derive this will defy the sole purpose of using DRL:
 # it's difficult to have models for complex robots.
 INIT_STATE = EntityCfg.InitialStateCfg(
-    pos=(0.0, 0.0, 0.05),
+    pos=(0.0, 0.0, 0.025),
     joint_pos={
         COXA_JOINT_REGEX: COXA_DEFAULT,
         FEMUR_JOINT_REGEX: FEMUR_DEFAULT,

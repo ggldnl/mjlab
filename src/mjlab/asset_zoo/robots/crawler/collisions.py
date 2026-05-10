@@ -113,7 +113,7 @@ FOOT_MATERIAL_FRICTION_COEFFICIENT = 0.9
 # that drives the violation to zero. solref defines that spring.
 #   timeconst is how fast the contact spring tries to close a violation
 #   dampratio is the damping of that spring
-FOOT_SOLREF = (0.01, 1.5)   # (timeconst, dampratio)
+FOOT_SOLREF = (0.02, 1.5)   # (timeconst, dampratio)
 
 # solimp (dmin, dmax, width, midpoint, power)
 # Where solref defines the spring dynamics, solimp defines the impedance:
@@ -124,7 +124,7 @@ FOOT_SOLREF = (0.01, 1.5)   # (timeconst, dampratio)
 #   width is the penetration depth over which the impedance ramps from dmin to dmax.
 #   midpoint defines where along the width ramp the sigmoid's inflection point sits.
 #   power is the exponent of the polynomial that shapes the ramp.
-FOOT_SOLIMP = (0.85, 0.92, 0.006, 0.5, 2)  # (dmin, dmax, width, midpoint, power)
+FOOT_SOLIMP = (0.90, 0.95, 0.01, 0.5, 2)  # (dmin, dmax, width, midpoint, power)
 
 
 # This config only enables the foot spheres. Leg capsules stay dormant.

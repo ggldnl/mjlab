@@ -34,7 +34,7 @@ def scene_cfg(num_envs: int = 2048) -> SceneCfg:
     terrain=TerrainEntityCfg(
       terrain_type="generator",
       terrain_generator=replace(ROUGH_TERRAINS_CFG),
-      max_init_terrain_level=5,
+      max_init_terrain_level=0,
     ),
     entities={"robot": get_crawler_robot_cfg()},
     sensors=SENSORS,
@@ -61,9 +61,10 @@ def sim_cfg() -> SimulationCfg:
     contact_sensor_maxmatch=500,
     mujoco=MujocoCfg(
       timestep=0.005,
-      iterations=20,
+      iterations=50,
       ls_iterations=20,
       ccd_iterations=500,
+      cone="elliptic",
     ),
   )
 

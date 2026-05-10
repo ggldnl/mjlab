@@ -10,14 +10,11 @@ the gradient competition.
 
 import torch
 
-from mjlab.envs.mdp import action_rate_l2, joint_vel_l2
+from mjlab.envs.mdp import action_rate_l2, joint_pos_limits
 from mjlab.managers import RewardTermCfg
-from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.tasks.velocity.mdp import (
   feet_air_time,
-  feet_slip,
   feet_swing_height,
-  is_terminated,
   self_collision_cost,
   track_angular_velocity,
   track_linear_velocity,
@@ -25,7 +22,7 @@ from mjlab.tasks.velocity.mdp import (
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.utils.lab_api.math import quat_apply_inverse
 
-from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME, FOOT_SITE_NAMES
+from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME
 
 
 def flat_orientation(env: ManagerBasedRlEnv, std: float) -> torch.Tensor:
@@ -59,8 +56,9 @@ def base_stability(env: ManagerBasedRlEnv, std: float = 0.5) -> torch.Tensor:
   """
   Penalize roll and pitch angular velocity.
   Returns values in (0, 1]: 1.0 when still, decaying with wobble.
-  NOTE: activate only after a stable gait exists (Phase 4); walking naturally
-  produces roll/pitch oscillations that this term will fight early in training.
+  NOTE: activate only after a stable gait exists; walking naturally
+  produces roll/pitch oscillations that this term will fight early
+  in training.
   """
   asset = env.scene["robot"]
   roll_pitch_vel = asset.data.root_link_vel_w[:, 3:5]  # wx, wy [B, 2]
@@ -93,37 +91,21 @@ rewards = {
     params={"command_name": "twist", "std": 0.25},
   ),
 
-  "is_terminated": RewardTermCfg(
-    func=is_terminated,
-    weight=0.0,
-  ),
-
   # Stability
 
   "base_stability": RewardTermCfg(
     func=base_stability,
-    weight=-1.5,
+    weight=0.2,
     params={"std": 0.5},
   ),
 
   "upright": RewardTermCfg(
     func=flat_orientation,
-    weight=0.05,
+    weight=0.2,
     params={"std": 0.5},
   ),
 
   # Foot
-
-  "foot_slip": RewardTermCfg(
-    func=feet_slip,
-    weight=-0.1,
-    params={
-      "sensor_name": "feet_ground_contact",
-      "command_name": "twist",
-      "command_threshold": 0.05,
-      "asset_cfg": SceneEntityCfg("robot", site_names=FOOT_SITE_NAMES),
-    },
-  ),
 
   # Structural contact guard: prevents dragging limbs on the ground.
   "nonfeet_ground_contact": RewardTermCfg(
@@ -137,25 +119,11 @@ rewards = {
   # standing on three legs.
   "feet_air_time": RewardTermCfg(
     func=feet_air_time,
-    weight=0.05,
+    weight=0.5,
     params={
       "sensor_name": "feet_ground_contact",
       "threshold_min": 0.1,
-      "threshold_max": 1.0,
-      "command_name": "twist",
-      "command_threshold": 0.05,
-    },
-  ),
-
-  # Foot clearance: penalize feet that are in swing but not reaching target height.
-  # Uses foot_height_scan to measure actual foot height above terrain.
-  "foot_swing_height": RewardTermCfg(
-    func=feet_swing_height,
-    weight=-0.5,
-    params={
-      "sensor_name": "feet_ground_contact",
-      "height_sensor_name": "foot_height_scan",
-      "target_height": 0.03,
+      "threshold_max": 0.5,
       "command_name": "twist",
       "command_threshold": 0.05,
     },
@@ -163,14 +131,9 @@ rewards = {
 
   # Polish
 
-  "action_rate_l2": RewardTermCfg(
-    func=action_rate_l2,
-    weight=-0.05,
-  ),
-
-  "joint_vel_l2": RewardTermCfg(
-    func=joint_vel_l2,
-    weight=0.0,
+  "dof_pos_limits": RewardTermCfg(
+    func=joint_pos_limits,
+    weight=-1.0,
   ),
 
   "self_collisions": RewardTermCfg(
@@ -179,3 +142,45 @@ rewards = {
     params={"sensor_name": "self_collision", "force_threshold": 2.5},
   ),
 }
+
+"""
+"action_rate_l2": RewardTermCfg(
+  func=action_rate_l2,
+  weight=-0.05,
+),
+  
+# Foot clearance: penalize feet that are in swing but not reaching target height.
+# Uses foot_height_scan to measure actual foot height above terrain.
+"foot_swing_height": RewardTermCfg(
+  func=feet_swing_height,
+  weight=-0.5,
+  params={
+    "sensor_name": "feet_ground_contact",
+    "height_sensor_name": "foot_height_scan",
+    "target_height": 0.01,
+    "command_name": "twist",
+    "command_threshold": 0.05,
+  },
+),
+
+"is_terminated": RewardTermCfg(
+  func=is_terminated,
+  weight=0.0,
+),
+
+"joint_vel_l2": RewardTermCfg(
+  func=joint_vel_l2,
+  weight=0.0,
+),
+
+"foot_slip": RewardTermCfg(
+  func=feet_slip,
+  weight=-0.1,
+  params={
+    "sensor_name": "feet_ground_contact",
+    "command_name": "twist",
+    "command_threshold": 0.05,
+    "asset_cfg": SceneEntityCfg("robot", site_names=FOOT_SITE_NAMES),
+  },
+),
+"""
