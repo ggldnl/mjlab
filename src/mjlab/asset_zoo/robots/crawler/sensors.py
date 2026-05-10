@@ -135,6 +135,10 @@ TERRAIN_SCAN = RayCastSensorCfg(
     exclude_parent_body=True,
     include_geom_groups=(0,),
     debug_vis=True,
+    viz=RayCastSensorCfg.VizCfg(
+        # Cyan spheres
+        hit_sphere_radius=0.1,
+    ),
 )
 
 FOOT_HEIGHT_SCAN = TerrainHeightSensorCfg(
@@ -150,7 +154,9 @@ FOOT_HEIGHT_SCAN = TerrainHeightSensorCfg(
     include_geom_groups=(0,),
     debug_vis=True,
     viz=TerrainHeightSensorCfg.VizCfg(
+        # Magenta spheres
         show_rays=True,
+        hit_sphere_radius=0.1,
         hit_color=(1.0, 0.0, 1.0, 0.8),
         hit_sphere_color=(1.0, 0.0, 1.0, 1.0),
     ),

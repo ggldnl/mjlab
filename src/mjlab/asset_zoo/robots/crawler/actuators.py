@@ -78,7 +78,7 @@ MG90S_ARMATURE = MG90S_ROTOR_INERTIA * MG90S_GEAR_RATIO ** 2  # 2.1e-7 kg*m^2
 # 0.6 rad (~34°) is physically reasonable for a spur-gear hobby servo with a
 # plastic output shaft.
 _DELTA_SAT = 0.6
-MG90S_STIFFNESS = MG90S_EFFORT_LIMIT / _DELTA_SAT  # 0.54 N*m/rad
+MG90S_STIFFNESS = MG90S_EFFORT_LIMIT / _DELTA_SAT
 
 # Damping (Kd): critical damping at the femur joint (largest effective inertia)
 # I_eff accounts for tibia + foot rotating about the femur axis, plus armature:
@@ -92,8 +92,8 @@ MG90S_DAMPING = 2.0 * math.sqrt(MG90S_STIFFNESS * _I_EFF)  # 0.0033 N*m*s/rad
 # Default (standing) joint positions. They define "action = 0"
 # (the neutral posture the policy holds when outputting zeros).
 COXA_DEFAULT  =  0.00
-FEMUR_DEFAULT = -0.8
-TIBIA_DEFAULT = -1.20
+FEMUR_DEFAULT = -0.20
+TIBIA_DEFAULT = -1.45
 
 # Joint hard limits
 COXA_LIMS  = (-0.785, 0.785)
@@ -138,12 +138,14 @@ ARTICULATIONS = EntityArticulationInfoCfg(
 )
 
 
-# The action offset is the DEFAULT (standing) joint position, so that
-# policy output = 0 -> target = default pose -> zero actuator error at reset.
-#
-# The action scale is the maximum excursion from the default pose to the
-# nearest soft limit in either direction.  This keeps the full [-1, +1]
-# action range inside the reachable, penalization-free zone.
+def _range_center_and_scale(lims: tuple[float, float], soft: float) -> tuple[float, float]:
+    """Center and half-width of the soft-limited range.
+    action in [-1, 1] maps to [soft_lo, soft_hi] = center ± scale.
+    """
+    lo, hi = lims
+    center = (lo + hi) / 2.0
+    scale  = (hi - lo) / 2.0 * soft
+    return center, scale
 
 def _scale_from_default(
         lim: tuple[float, float],
@@ -158,37 +160,23 @@ def _scale_from_default(
     soft_hi = centre + half * soft
     return min(default - soft_lo, soft_hi - default)
 
-
-def _joint_value_dict(
-        coxa_val: float,
-        femur_val: float,
-        tibia_val: float,
-) -> dict[str, float]:
+def _joint_value_dict(coxa_val: float, femur_val: float, tibia_val: float) -> dict[str, float]:
     return {
         name: (
-            coxa_val if name.endswith("coxa") else
+            coxa_val  if name.endswith("coxa")  else
             femur_val if name.endswith("femur") else
             tibia_val
         )
         for name in JOINT_NAMES
     }
 
-# COXA_SCALE  = _scale_from_default(COXA_LIMS,  COXA_DEFAULT)
-# FEMUR_SCALE = _scale_from_default(FEMUR_LIMS, FEMUR_DEFAULT)
-# TIBIA_SCALE = _scale_from_default(TIBIA_LIMS, TIBIA_DEFAULT)
 
-_ACTION_SCALE_RAD = 0.8 * _DELTA_SAT
+COXA_SCALE  = min(_scale_from_default(COXA_LIMS,  COXA_DEFAULT),  _DELTA_SAT)
+FEMUR_SCALE = min(_scale_from_default(FEMUR_LIMS, FEMUR_DEFAULT), _DELTA_SAT)
+TIBIA_SCALE = min(_scale_from_default(TIBIA_LIMS, TIBIA_DEFAULT), _DELTA_SAT)
 
-# At action = +/-1 each joint reaches exactly the nearest soft limit:
-#   coxa : 0.00 +/- 0.707 -> [-0.707, +0.707]  (within +/-0.707 soft limit)
-#   femur: -0.50 +/- 0.914 -> [-1.414, +0.414] (within +/-1.414 soft limit)
-#   tibia: -1.20 +/- 0.920 -> [-2.120, -0.280] (within +/-2.120 soft limit)
-ACTION_SCALE = _joint_value_dict(
-    _ACTION_SCALE_RAD, _ACTION_SCALE_RAD, _ACTION_SCALE_RAD,
-)
-ACTION_OFFSET = _joint_value_dict(
-    COXA_DEFAULT, FEMUR_DEFAULT, TIBIA_DEFAULT
-)
+ACTION_SCALE  = _joint_value_dict(COXA_SCALE, FEMUR_SCALE, TIBIA_SCALE)
+ACTION_OFFSET = _joint_value_dict(COXA_DEFAULT, FEMUR_DEFAULT, TIBIA_DEFAULT)
 
 
 if __name__ == "__main__":

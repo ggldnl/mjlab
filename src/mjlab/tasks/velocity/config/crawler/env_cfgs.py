@@ -56,12 +56,12 @@ def viewer_cfg() -> ViewerConfig:
 
 def sim_cfg() -> SimulationCfg:
   return SimulationCfg(
-    nconmax=200,
+    nconmax=100,
     njmax=1500,
     contact_sensor_maxmatch=500,
     mujoco=MujocoCfg(
       timestep=0.005,
-      iterations=10,
+      iterations=20,
       ls_iterations=20,
       ccd_iterations=500,
     ),
