@@ -11,18 +11,20 @@ the gradient competition.
 import torch
 
 from mjlab.envs.mdp import action_rate_l2, joint_pos_limits
-from mjlab.managers import RewardTermCfg
+from mjlab.managers import RewardTermCfg, SceneEntityCfg
 from mjlab.tasks.velocity.mdp import (
-  feet_air_time,
-  feet_swing_height,
+  feet_slip,
   self_collision_cost,
   track_angular_velocity,
   track_linear_velocity,
+  variable_posture,
+  feet_swing_height,
 )
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.utils.lab_api.math import quat_apply_inverse
 
-from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME
+from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME, FOOT_SITE_NAMES
+from mjlab.asset_zoo.robots.crawler.actuators import COXA_JOINT_REGEX, FEMUR_JOINT_REGEX, TIBIA_JOINT_REGEX
 
 
 def flat_orientation(env: ManagerBasedRlEnv, std: float) -> torch.Tensor:
@@ -75,19 +77,27 @@ def nonfeet_ground_contact(
   found = sensor.data.found.reshape(env.num_envs, -1)
   return found.float().sum(dim=1)
 
+def all_feet_airborne(
+        env: ManagerBasedRlEnv,
+        sensor_name: str = "feet_ground_contact",
+) -> torch.Tensor:
+  """
+  Penalize simultaneous loss of all ground contact (jumping).
+  Returns 1.0 when every foot is in the air, 0.0 when any foot is grounded.
+  """
+  sensor = env.scene.sensors[sensor_name]
+  contact = sensor.data.found.reshape(env.num_envs, -1)  # [B, n_feet]
+  any_grounded = contact.any(dim=1).float()
+  return 1.0 - any_grounded
+
 
 rewards = {
 
-  # Primary task.
+  # Primary task
+
   "track_linear_velocity": RewardTermCfg(
     func=track_linear_velocity,
-    weight=3.0,
-    params={"command_name": "twist", "std": 0.25},
-  ),
-
-  "track_angular_velocity": RewardTermCfg(
-    func=track_angular_velocity,
-    weight=1.5,
+    weight=5.0,
     params={"command_name": "twist", "std": 0.25},
   ),
 
@@ -95,14 +105,56 @@ rewards = {
 
   "base_stability": RewardTermCfg(
     func=base_stability,
-    weight=0.2,
+    weight=0.0,  # curriculum
     params={"std": 0.5},
+  ),
+
+  "base_height": RewardTermCfg(
+    func=base_height,
+    weight=0.0,  # curriculum
+    params={"target_height": 0.07, "std": 0.035},
   ),
 
   "upright": RewardTermCfg(
     func=flat_orientation,
-    weight=0.2,
+    weight=0.0,  # curriculum
     params={"std": 0.5},
+  ),
+
+  "action_rate_l2": RewardTermCfg(
+    func=action_rate_l2,
+    weight=-0.0,  # curriculum
+  ),
+  
+  # Pose
+  
+  "pose": RewardTermCfg(
+      func=variable_posture,
+      weight=0.5,
+      params={
+          "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
+          "command_name": "twist",
+          "std_standing": {
+              # When standing still: tight tolerance, robot should hold default pose closely.
+              COXA_JOINT_REGEX:  0.05,
+              FEMUR_JOINT_REGEX: 0.08,
+              TIBIA_JOINT_REGEX: 0.12,
+          },
+          "std_walking": {
+              # When walking: open up the tolerance significantly to not fight the gait.
+              COXA_JOINT_REGEX:  0.3,
+              FEMUR_JOINT_REGEX: 0.4,
+              TIBIA_JOINT_REGEX: 0.5,
+          },
+          "std_running": {
+              # At higher speeds allow even more deviation.
+              COXA_JOINT_REGEX:  0.4,
+              FEMUR_JOINT_REGEX: 0.5,
+              TIBIA_JOINT_REGEX: 0.6,
+          },
+          "walking_threshold": 0.05,   # m/s
+          "running_threshold": 0.25,   # m/s
+      },
   ),
 
   # Foot
@@ -110,20 +162,30 @@ rewards = {
   # Structural contact guard: prevents dragging limbs on the ground.
   "nonfeet_ground_contact": RewardTermCfg(
     func=nonfeet_ground_contact,
-    weight=-0.5,
-    params={"sensor_name": "legs_ground_contact"},
+    weight=-1.0,
+    params={"sensor_name": "nonfeet_ground_contact"},
   ),
 
-  # Gait structure: reward lifting feet off the ground long enough to constitute a stride.
-  # threshold_min=0.1s avoids rewarding micro-hops; threshold_max=1.0s avoids rewarding
-  # standing on three legs.
-  "feet_air_time": RewardTermCfg(
-    func=feet_air_time,
-    weight=0.5,
+  "foot_slip": RewardTermCfg(
+    func=feet_slip,
+    weight=0.0,  # curriculum
     params={
       "sensor_name": "feet_ground_contact",
-      "threshold_min": 0.1,
-      "threshold_max": 0.5,
+      "command_name": "twist",
+      "command_threshold": 0.05,
+      "asset_cfg": SceneEntityCfg("robot", site_names=FOOT_SITE_NAMES),
+    },
+  ),
+
+  # Foot clearance: penalize feet that are in swing but not reaching target height.
+  # Uses foot_height_scan to measure actual foot height above terrain.
+  "foot_swing_height": RewardTermCfg(
+    func=feet_swing_height,
+    weight=-0.5,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "height_sensor_name": "foot_height_scan",
+      "target_height": 0.01,
       "command_name": "twist",
       "command_threshold": 0.05,
     },
@@ -131,56 +193,32 @@ rewards = {
 
   # Polish
 
-  "dof_pos_limits": RewardTermCfg(
-    func=joint_pos_limits,
-    weight=-1.0,
-  ),
-
   "self_collisions": RewardTermCfg(
     func=self_collision_cost,
-    weight=-0.1,
+    weight=-0.2,
     params={"sensor_name": "self_collision", "force_threshold": 2.5},
   ),
 }
 
 """
-"action_rate_l2": RewardTermCfg(
-  func=action_rate_l2,
-  weight=-0.05,
+"track_angular_velocity": RewardTermCfg(
+  func=track_angular_velocity,
+  weight=1.5,
+  params={"command_name": "twist", "std": 0.25},
 ),
-  
-# Foot clearance: penalize feet that are in swing but not reaching target height.
-# Uses foot_height_scan to measure actual foot height above terrain.
-"foot_swing_height": RewardTermCfg(
-  func=feet_swing_height,
-  weight=-0.5,
+
+# Gait structure: reward lifting feet off the ground long enough to constitute a stride.
+# threshold_min=0.1s avoids rewarding micro-hops; threshold_max=1.0s avoids rewarding
+# standing on three legs.
+"feet_air_time": RewardTermCfg(
+  func=feet_air_time,
+  weight=0.2,
   params={
     "sensor_name": "feet_ground_contact",
-    "height_sensor_name": "foot_height_scan",
-    "target_height": 0.01,
+    "threshold_min": 0.1,
+    "threshold_max": 0.5,
     "command_name": "twist",
     "command_threshold": 0.05,
-  },
-),
-
-"is_terminated": RewardTermCfg(
-  func=is_terminated,
-  weight=0.0,
-),
-
-"joint_vel_l2": RewardTermCfg(
-  func=joint_vel_l2,
-  weight=0.0,
-),
-
-"foot_slip": RewardTermCfg(
-  func=feet_slip,
-  weight=-0.1,
-  params={
-    "sensor_name": "feet_ground_contact",
-    "command_name": "twist",
-    "command_threshold": 0.05,
-    "asset_cfg": SceneEntityCfg("robot", site_names=FOOT_SITE_NAMES),
   },
 ),
 """

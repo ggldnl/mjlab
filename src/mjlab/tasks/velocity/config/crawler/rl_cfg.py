@@ -24,7 +24,7 @@ def crawler_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
           obs_normalization=True,
           distribution_cfg={
               "class_name": "GaussianDistribution",
-              "init_std": 0.5,
+              "init_std": 0.75,
               "std_type": "log",
           },
       ),

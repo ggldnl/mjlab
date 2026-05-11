@@ -32,9 +32,8 @@ from mjlab.terrains.config import ROUGH_TERRAINS_CFG
 def scene_cfg(num_envs: int = 2048) -> SceneCfg:
   return SceneCfg(
     terrain=TerrainEntityCfg(
-      terrain_type="generator",
-      terrain_generator=replace(ROUGH_TERRAINS_CFG),
-      max_init_terrain_level=0,
+      terrain_type="plane",
+      terrain_generator=None,
     ),
     entities={"robot": get_crawler_robot_cfg()},
     sensors=SENSORS,
@@ -56,15 +55,15 @@ def viewer_cfg() -> ViewerConfig:
 
 def sim_cfg() -> SimulationCfg:
   return SimulationCfg(
-    nconmax=100,
-    njmax=1500,
+    nconmax=35,
+    njmax=300,
     contact_sensor_maxmatch=500,
     mujoco=MujocoCfg(
-      timestep=0.005,
-      iterations=50,
+      timestep=0.002,
+      iterations=10,
       ls_iterations=20,
       ccd_iterations=500,
-      cone="elliptic",
+      cone="pyramidal",
     ),
   )
 
@@ -83,12 +82,14 @@ def crawler_velocity_env_cfg(play: bool = False, num_envs: int = 2048) -> Manage
     metrics={},
     viewer=viewer_cfg(),
     sim=sim_cfg(),
-    decimation=4,
+    decimation=10,
     episode_length_s=20.0,
   )
 
+  """
   if cfg.scene.terrain is not None and cfg.scene.terrain.terrain_generator is not None:
     cfg.scene.terrain.terrain_generator.curriculum = True
+  """
 
   if play:
     cfg.episode_length_s = int(1e9)

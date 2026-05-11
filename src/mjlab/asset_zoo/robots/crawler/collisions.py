@@ -103,7 +103,7 @@ FOOT_BODY_REGEX = "leg_[1-4]_foot"
 # Base
 
 BASE_NAME = "base"
-
+BASE_COLLISION_NAME = "base_collision"
 
 # Friction coefficient of the material feet are made of
 FOOT_MATERIAL_FRICTION_COEFFICIENT = 0.9

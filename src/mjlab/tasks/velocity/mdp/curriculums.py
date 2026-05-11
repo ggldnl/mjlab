@@ -106,3 +106,37 @@ def commands_vel(
     "ang_vel_z_min": torch.tensor(cfg.ranges.ang_vel_z[0]),
     "ang_vel_z_max": torch.tensor(cfg.ranges.ang_vel_z[1]),
   }
+
+
+class RewardWeightStage(TypedDict):
+  step: int
+  weight: float
+
+
+def reward_weight(
+        env: ManagerBasedRlEnv,
+        env_ids: torch.Tensor,
+        reward_name: str,
+        weight_stages: list[RewardWeightStage],
+) -> dict[str, torch.Tensor]:
+  """Curriculum that adjusts a single reward term's weight based on training step.
+
+  Args:
+      env: The RL environment.
+      env_ids: Unused; weight changes apply globally across all envs.
+      reward_name: The name of the reward term to modify.
+      weight_stages: List of stages, each specifying a `step` threshold
+          and the new `weight` to apply.
+
+  Returns:
+      A dict with the current weight of the term, for logging.
+  """
+  del env_ids  # Weight changes are global, not per-environment.
+
+  term_cfg = env.reward_manager.get_term_cfg(reward_name)
+
+  for stage in weight_stages:
+    if env.common_step_counter >= stage["step"]:
+      term_cfg.weight = stage["weight"]
+
+  return {"weight": torch.tensor(term_cfg.weight)}

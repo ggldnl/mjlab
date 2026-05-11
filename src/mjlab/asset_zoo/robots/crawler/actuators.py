@@ -53,6 +53,7 @@ MG90S_EFFORT_LIMIT = MG90S_STALL_TORQUE_KGF_CM * KGF_CM_TO_NM  # 0.216 N*m
 # Velocity limit: 0.08 s/60° at 6V (datasheet) -> 13.1 rad/s
 MG90S_NO_LOAD_SPEED_S_PER_60DEG = 0.08
 MG90S_VELOCITY_LIMIT = (math.pi / 3.0) / MG90S_NO_LOAD_SPEED_S_PER_60DEG  # 13.1 rad/s
+MG90S_JOINT_DAMPING = MG90S_EFFORT_LIMIT / MG90S_VELOCITY_LIMIT
 
 # Reflected rotor inertia
 # Coreless brushed rotor: ~1.5 g, radius ~3 mm -> J_rotor ~= 7e-9 kg*m^2
@@ -75,7 +76,7 @@ EFFECTIVE_INERTIAS = {
     "tibia": 8.0e-7,   # kg*m^2
 }
 
-NATURAL_FREQ  = 2 * 2.0 * math.pi
+NATURAL_FREQ  = 50.0 * 2.0 * math.pi
 DAMPING_RATIO = 2.0
 
 def _pd_gains(joint_type: str) -> tuple[float, float]:

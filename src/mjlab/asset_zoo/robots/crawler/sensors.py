@@ -12,6 +12,7 @@ from mjlab.sensor import (
 )
 
 from mjlab.asset_zoo.robots.crawler.collisions import (
+    BASE_COLLISION_NAME,
     COXA_COLLISION_NAMES,
     FEMUR_COLLISION_NAMES,
     TIBIA_COLLISION_NAMES,
@@ -81,12 +82,32 @@ FEET_GROUND = ContactSensorCfg(
     track_air_time=True,
 )
 
-# Non-foot leg collision geoms, used to detect unwanted ground contact
+# Legs ground collision detection
 LEGS_GROUND = ContactSensorCfg(
     name="legs_ground_contact",
     primary=ContactMatch(
         mode="geom",
         pattern=(
+            *COXA_COLLISION_NAMES,
+            *FEMUR_COLLISION_NAMES,
+            *TIBIA_COLLISION_NAMES,
+        ),
+        entity="robot",
+    ),
+    secondary=ContactMatch(mode="body", pattern="terrain"),
+    fields=("found", "force"),
+    reduce="none",
+    num_slots=1,
+    history_length=HISTORY_LENGTH,
+)
+
+# Non-feet ground collision detection
+NONFEET_GROUND = ContactSensorCfg(
+    name="nonfeet_ground_contact",
+    primary=ContactMatch(
+        mode="geom",
+        pattern=(
+            BASE_COLLISION_NAME,
             *COXA_COLLISION_NAMES,
             *FEMUR_COLLISION_NAMES,
             *TIBIA_COLLISION_NAMES,
@@ -167,6 +188,7 @@ SENSORS = (
     *IMU,
     FEET_GROUND,
     LEGS_GROUND,
+    NONFEET_GROUND,
     SELF_COLLISION,
     ROOT_ANGMOM,
     TERRAIN_SCAN,
