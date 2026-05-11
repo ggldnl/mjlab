@@ -2,9 +2,6 @@
 
     <compiler angle="radian" autolimits="true" />
 
-    <option timestep="0.005" iterations="50" ls_iterations="20"
-            solver="Newton" tolerance="1e-10" gravity="0 0 -9.81"/>
-
     <default>
 
         <joint damping="0.0" frictionloss="0.0005" solreflimit="0.02 1.5" solimplimit="0.9 0.95 0.01 0.5 2"/>

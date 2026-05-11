@@ -44,10 +44,6 @@ JOINT_NAMES = [
 
 # The MG90S is a brushed-DC servo with an internal PID position loop.
 # We model it in MuJoCo as a position actuator (stiffness + damping + effort_limit).
-# The three parameters below are the only externally observable quantities:
-#   effort_limit  - stall torque
-#   velocity_limit - no-load angular speed (used only for documentation here)
-#   armature      - reflected rotor inertia
 
 # Effort limit: 2.2 Kgf*cm at 6V (datasheet)
 MG90S_STALL_TORQUE_KGF_CM = 2.2
@@ -65,23 +61,58 @@ MG90S_ROTOR_INERTIA = 7e-9  # kg*m^2
 MG90S_GEAR_RATIO = 5.5
 MG90S_ARMATURE = MG90S_ROTOR_INERTIA * MG90S_GEAR_RATIO ** 2  # 2.1e-7 kg*m^2
 
-# Stiffness (Kp)
-# Kp = effort_limit / delta_sat, where delta_sat is the position error at which
-# the PD controller reaches stall torque.
+# Effective inetias per joint type
+# These are the load inertias seen at the joint output shaft, obtained by
+# summing the contributions of all downstream rigid bodies projected onto
+# the joint rotation axis.  Estimated from the MJCF inertial tags:
 #
-# We choose delta_sat so that the tightest action range (tibia: +/-0.370 rad,
-# see CRAWLER_ACTION_SCALE below) stays well inside the linear regime of the
-# actuator.  With delta_sat = 0.6 rad, a max tibia action (0.370 rad) produces
-# 0.370 / 0.6 ~= 62 % of stall torque — the servo responses proportionally and
-# learning gradients flow everywhere.
-#
-# 0.6 rad (~34°) is physically reasonable for a spur-gear hobby servo with a
-# plastic output shaft.
-_DELTA_SAT = 0.6
-MG90S_STIFFNESS = MG90S_EFFORT_LIMIT / _DELTA_SAT
+#   tibia  <- tibia body + foot body
+#   femur  <- femur body + tibia body + foot body
+#   coxa   <- coxa body + femur body + tibia body + foot body
+EFFECTIVE_INERTIAS = {
+    "coxa": 9.0e-6,    # kg*m^2
+    "femur": 5.0e-6,   # kg*m^2
+    "tibia": 8.0e-7,   # kg*m^2
+}
 
-# Damping (Kd)
-MG90S_DAMPING = MG90S_EFFORT_LIMIT / MG90S_VELOCITY_LIMIT  # 0.0033 N*m*s/rad
+NATURAL_FREQ  = 2 * 2.0 * math.pi
+DAMPING_RATIO = 2.0
+
+def _pd_gains(joint_type: str) -> tuple[float, float]:
+    """Return (stiffness, damping) for the given joint type."""
+    j = EFFECTIVE_INERTIAS[joint_type]
+    k = j * NATURAL_FREQ ** 2
+    d = 2.0 * DAMPING_RATIO * j * NATURAL_FREQ
+    return k, d
+
+_coxa_k, _coxa_d = _pd_gains("coxa")
+_femur_k, _femur_d = _pd_gains("femur")
+_tibia_k, _tibia_d = _pd_gains("tibia")
+
+COXA_ACTUATOR = BuiltinPositionActuatorCfg(
+    target_names_expr=(COXA_JOINT_REGEX,),
+    stiffness=_coxa_k,
+    damping=_coxa_d,
+    effort_limit=MG90S_EFFORT_LIMIT,
+    armature=MG90S_ARMATURE,
+)
+
+FEMUR_ACTUATOR = BuiltinPositionActuatorCfg(
+    target_names_expr=(FEMUR_JOINT_REGEX,),
+    stiffness=_femur_k,
+    damping=_femur_d,
+    effort_limit=MG90S_EFFORT_LIMIT,
+    armature=MG90S_ARMATURE,
+)
+
+TIBIA_ACTUATOR = BuiltinPositionActuatorCfg(
+    target_names_expr=(TIBIA_JOINT_REGEX,),
+    stiffness=_tibia_k,
+    damping=_tibia_d,
+    effort_limit=MG90S_EFFORT_LIMIT,
+    armature=MG90S_ARMATURE,
+)
+
 
 # Default (standing) joint positions. They define "action = 0"
 # (the neutral posture the policy holds when outputting zeros).
@@ -108,7 +139,7 @@ _SOFT = 0.9   # fraction of hard limits used as soft limits
 # model to derive this will defy the sole purpose of using DRL:
 # it's difficult to have models for complex robots.
 INIT_STATE = EntityCfg.InitialStateCfg(
-    pos=(0.0, 0.0, 0.025),
+    pos=(0.0, 0.0, 0.05),
     joint_pos={
         COXA_JOINT_REGEX: COXA_DEFAULT,
         FEMUR_JOINT_REGEX: FEMUR_DEFAULT,
@@ -117,23 +148,16 @@ INIT_STATE = EntityCfg.InitialStateCfg(
     joint_vel={".*": 0.0},
 )
 
-# Actuator configuration
-ACTUATOR = BuiltinPositionActuatorCfg(
-    target_names_expr=(".*", ),
-    stiffness=MG90S_STIFFNESS,
-    damping=MG90S_DAMPING,
-    effort_limit=MG90S_EFFORT_LIMIT,
-    armature=MG90S_ARMATURE,
-    viscous_damping=0.0
-)
 
 ARTICULATIONS = EntityArticulationInfoCfg(
-    actuators=(ACTUATOR,),
+    actuators=(COXA_ACTUATOR, FEMUR_ACTUATOR, TIBIA_ACTUATOR),
     soft_joint_pos_limit_factor=_SOFT,
 )
 
-
-def _range_center_and_scale(lims: tuple[float, float], soft: float) -> tuple[float, float]:
+def _range_center_and_scale(
+        lims: tuple[float, float],
+        soft: float
+) -> tuple[float, float]:
     """Center and half-width of the soft-limited range.
     action in [-1, 1] maps to [soft_lo, soft_hi] = center ± scale.
     """
@@ -155,7 +179,11 @@ def _scale_from_default(
     soft_hi = centre + half * soft
     return min(default - soft_lo, soft_hi - default)
 
-def _joint_value_dict(coxa_val: float, femur_val: float, tibia_val: float) -> dict[str, float]:
+def _joint_value_dict(
+        coxa_val: float,
+        femur_val: float,
+        tibia_val: float
+) -> dict[str, float]:
     return {
         name: (
             coxa_val  if name.endswith("coxa")  else
@@ -166,11 +194,11 @@ def _joint_value_dict(coxa_val: float, femur_val: float, tibia_val: float) -> di
     }
 
 
-COXA_SCALE  = min(_scale_from_default(COXA_LIMS,  COXA_DEFAULT),  _DELTA_SAT)
-FEMUR_SCALE = min(_scale_from_default(FEMUR_LIMS, FEMUR_DEFAULT), _DELTA_SAT)
-TIBIA_SCALE = min(_scale_from_default(TIBIA_LIMS, TIBIA_DEFAULT), _DELTA_SAT)
+COXA_SCALE = _scale_from_default(COXA_LIMS, COXA_DEFAULT)
+FEMUR_SCALE = _scale_from_default(FEMUR_LIMS, FEMUR_DEFAULT)
+TIBIA_SCALE = _scale_from_default(TIBIA_LIMS, TIBIA_DEFAULT)
 
-ACTION_SCALE  = _joint_value_dict(COXA_SCALE, FEMUR_SCALE, TIBIA_SCALE)
+ACTION_SCALE = _joint_value_dict(COXA_SCALE, FEMUR_SCALE, TIBIA_SCALE)
 ACTION_OFFSET = _joint_value_dict(COXA_DEFAULT, FEMUR_DEFAULT, TIBIA_DEFAULT)
 
 
@@ -188,15 +216,20 @@ if __name__ == "__main__":
               "FEMUR" if name.endswith("femur") else "TIBIA")
         print(f"{name:35s} ({jt:5s})  {lo:7.3f}  {hi:7.3f}  {scale:.3f}")
 
-    print("\nActuators specs")
-    print(f"{'Parameter':35s} {'Value':5s}")
+    print("\nActuator specs")
+    print(f"\t{'Parameter':35s} {'Value':>12s}")
 
-    params = {
-        "Damping": MG90S_DAMPING,
-        "Stiffness": MG90S_STIFFNESS,
-        "Armature": MG90S_ARMATURE,
-        "Velocity limit": MG90S_VELOCITY_LIMIT,
-        "Effort limit": MG90S_EFFORT_LIMIT,
-    }
-    for name, value in params.items():
-        print(f"{name:35s} {value:<7.3f}")
+    for jt, (k, d) in [
+        ("coxa",  (_coxa_k,  _coxa_d)),
+        ("femur", (_femur_k, _femur_d)),
+        ("tibia", (_tibia_k, _tibia_d)),
+    ]:
+        print(f"\t[{jt}]")
+        print(f"\t{'Stiffness (N*m/rad)':33s} {k:12.6f}")
+        print(f"\t{'Damping (N*m*s/rad)':33s} {d:12.6f}")
+        wn = math.sqrt(k / EFFECTIVE_INERTIAS[jt])
+        print(f"\t{'Implied w (rad/s)':33s} {wn:12.2f}  ({wn/(2*math.pi):.2f} Hz)")
+
+    print(f"\n{'Effort limit (N*m)':35s} {MG90S_EFFORT_LIMIT:12.4f}")
+    print(f"{'Velocity limit (rad/s)':35s} {MG90S_VELOCITY_LIMIT:12.4f}")
+    print(f"{'Armature (kg*m^2)':35s} {MG90S_ARMATURE:12.4e}")
