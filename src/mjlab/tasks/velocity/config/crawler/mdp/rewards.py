@@ -181,11 +181,11 @@ rewards = {
   # Uses foot_height_scan to measure actual foot height above terrain.
   "foot_swing_height": RewardTermCfg(
     func=feet_swing_height,
-    weight=-0.5,
+    weight=0.0,  # curriculum
     params={
       "sensor_name": "feet_ground_contact",
       "height_sensor_name": "foot_height_scan",
-      "target_height": 0.01,
+      "target_height": 0.01,  # 1 cm
       "command_name": "twist",
       "command_threshold": 0.05,
     },
