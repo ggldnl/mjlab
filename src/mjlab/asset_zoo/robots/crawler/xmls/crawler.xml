@@ -4,7 +4,7 @@
 
     <default>
 
-        <joint damping="0.0165" frictionloss="0.0005" solreflimit="0.04 1" solimplimit="0.9 0.95 0.005 0.5 2"/>
+        <joint damping="0.0165" frictionloss="0.0005" solreflimit="0.02 1.5" solimplimit="0.9 0.95 0.01 0.5 2"/>
 
         <!--
             Visual meshes: no physics contribution whatsoever.
@@ -41,7 +41,7 @@
             <geom type="capsule" size="0.004" density="0" contype="0" conaffinity="0" group="3"/>
         </default>
         <default class="foot_collision">
-            <geom type="sphere" size="0.004" density="0" contype="0" conaffinity="0" group="3" friction="0.6 0.005 0.0001"/>
+            <geom type="sphere" size="0.004" density="0" contype="0" conaffinity="0" group="3" friction="1.2 0.01 0.001"/>
         </default>
     </default>
 
@@ -86,7 +86,7 @@
                     <body name="leg_1_tibia" pos="0.040000000000000036 0.004999999999999983 0.012000000000000033" euler="3.141592653589793 5.990253684472967e-34 1.5707963267948968">
                         <joint name="leg_1_femur_leg_1_tibia" axis="-3.925232361368103e-17 0.0 -1.0000003094489525" pos="0.004999584682672212 -3.357802766898806e-08 0.006000500203172275" range="-2.356 2.356"/>
                         <geom name="leg_1_tibia_geom" class="visual" mesh="tibia" pos="0 0 0" euler="0 0 0" />
-                        <geom name="leg_1_tibia_collision" class="tibia_collision" fromto="0 0 0  0.004 -0.020 0.0024"/>
+                        <geom name="leg_1_tibia_collision" class="tibia_collision" fromto="0 0 0  0.004 -0.028 0.0024"/>
                         <inertial mass="0.0019283986370316592" pos="0.005000000000000001 -0.012764398664719852 0.0030000000000000027" fullinertia="2.1467634727372854e-07 1.7016537126271533e-08 2.201224925778106e-07 1.354676878604395e-22 -2.991081696422713e-23 2.0514079191315086e-22" />
                         <body name="leg_1_foot" pos="-8.881784197001253e-18 -2.220446049250313e-18 0.0" euler="1.5407439555097878e-33 -3.404814103916397e-17 -0.0">
                             <site name="leg_1_foot_site" pos="0.005 -0.035 0.003" size="0.004" rgba="1.0 0.0 0.0 0.0"/>
@@ -114,7 +114,7 @@
                     <body name="leg_2_tibia" pos="0.039999999999999994 0.004999999999999993 0.011999999999999993" euler="-3.141592653589793 -1.1102230246251548e-16 1.5707963267948966">
                         <joint name="leg_2_femur_leg_2_tibia" axis="-1.2499003140340276e-17 -2.220446049250313e-16 -1.000000309448952" pos="0.004999584682672221 -9.236000512930923e-09 0.006000664091729092" range="-2.356 2.356"/>
                         <geom name="leg_2_tibia_geom" class="visual" mesh="tibia" pos="0 0 0" euler="0 0 0" />
-                        <geom name="leg_2_tibia_collision" class="tibia_collision" fromto="0 0 0  0.004 -0.020 0.0024"/>
+                        <geom name="leg_2_tibia_collision" class="tibia_collision" fromto="0 0 0  0.004 -0.028 0.0024"/>
                         <inertial mass="0.0019283986370316592" pos="0.005000000000000006 -0.012764398664719854 0.0029999999999999975" fullinertia="2.146763472737279e-07 1.701653712627141e-08 2.2012249257781054e-07 -5.443817352644975e-22 -5.946114532333802e-22 2.5311726744122647e-22" />
 
                         <body name="leg_2_foot" pos="2.2204460492503132e-17 -4.4408920985006264e-17 5.329070518200751e-17" euler="-3.8857805861880494e-16 -3.5529595225747607e-16 1.479114197289397e-31">
@@ -143,7 +143,7 @@
                     <body name="leg_3_tibia" pos="0.040000000000000126 0.005000000000000009 0.012000000000000018" euler="3.141592653589793 -2.4560148940840263e-30 1.5707963267948961">
                         <joint name="leg_3_femur_leg_3_tibia" axis="1.873772050008584e-15 -2.7755575615628914e-15 -1.0000003094489514" pos="0.00499958468267229 1.5465255636485357e-07 0.006000007941976822" range="-2.356 2.356"/>
                         <geom name="leg_3_tibia_geom" class="visual" mesh="tibia" pos="0 0 0" euler="0 0 0" />
-                        <geom name="leg_3_tibia_collision" class="tibia_collision" fromto="0 0 0  0.004 -0.020 0.0024"/>
+                        <geom name="leg_3_tibia_collision" class="tibia_collision" fromto="0 0 0  0.004 -0.028 0.0024"/>
                         <inertial mass="0.0019283986370316592" pos="0.005000000000000012 -0.012764398664719822 0.0029999999999999476" fullinertia="2.1467634727374146e-07 1.7016537126285996e-08 2.201224925778088e-07 -3.0227481031488494e-22 -6.916831638744122e-22 5.922613185879674e-22" />
 
                         <body name="leg_3_foot" pos="-7.105427357601002e-17 0.0 7.549516567451065e-17" euler="-1.6653345369377607e-16 -3.552959522574772e-16 3.944304526105059e-31">
@@ -172,7 +172,7 @@
                     <body name="leg_4_tibia" pos="0.040000000000000084 0.004999999999999983 0.012000000000000028" euler="-3.141592653589793 -5.551115123125795e-17 1.5707963267948943">
                         <joint name="leg_4_femur_leg_4_tibia" axis="-1.5628744103669466e-18 -1.2212453270876722e-15 -1.0000003094489496" pos="0.004999584682672181 1.303105293561133e-07 0.005999844053419971" range="-2.356 2.356"/>
                         <geom name="leg_4_tibia_geom" class="visual" mesh="tibia" pos="0 0 0" euler="0 0 0" />
-                        <geom name="leg_4_tibia_collision" class="tibia_collision" fromto="0 0 0  0.004 -0.020 0.0024"/>
+                        <geom name="leg_4_tibia_collision" class="tibia_collision" fromto="0 0 0  0.004 -0.028 0.0024"/>
                         <inertial mass="0.0019283986370316592" pos="0.004999999999999987 -0.01276439866471977 0.0029999999999999654" fullinertia="2.1467634727371245e-07 1.701653712626749e-08 2.2012249257780477e-07 -6.621443756658888e-22 -7.10141981706438e-22 -2.4881592825595072e-21" />
 
                         <body name="leg_4_foot" pos="0.0 -1.7763568394002506e-16 3.552713678800501e-17" euler="1.210947355928211e-30 -3.55295952257474e-16 -0.0">

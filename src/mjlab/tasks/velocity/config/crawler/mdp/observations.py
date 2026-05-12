@@ -54,6 +54,7 @@ actor_terms = {
   "projected_gravity": ObservationTermCfg(
     func=projected_gravity,
     noise=Unoise(n_min=-0.05, n_max=0.05),
+    history_length=_HISTORY,
   ),
   # Joint history implicitly encodes leg phase
   "joint_pos": ObservationTermCfg(

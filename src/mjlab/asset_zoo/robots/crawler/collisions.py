@@ -106,7 +106,7 @@ BASE_NAME = "base"
 BASE_COLLISION_NAME = "base_collision"
 
 # Friction coefficient of the material feet are made of
-FOOT_MATERIAL_FRICTION_COEFFICIENT = 0.9
+FOOT_MATERIAL_FRICTION_COEFFICIENT = 1.2
 
 # solref (timeconst, dampratio)
 # MuJoCo models each constraint (contact, joint limit, etc.) as a damped spring

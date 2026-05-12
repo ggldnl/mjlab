@@ -23,7 +23,7 @@ curriculum = {
     params={
       "command_name": "twist",
       "velocity_stages": [
-        {"step": _S0, "lin_vel_x": (-0.10, 0.10), "lin_vel_y": (-0.10, 0.10), "ang_vel_z": (-0.10, 0.10)},
+        {"step": _S0, "lin_vel_x": (-0.00, 0.00), "lin_vel_y": (-0.00, 0.00), "ang_vel_z": (-0.00, 0.00)},
         {"step": _S1, "lin_vel_x": (-0.25, 0.25), "lin_vel_y": (-0.25, 0.25), "ang_vel_z": (-0.15, 0.15)},
         {"step": _S2, "lin_vel_x": (-0.35, 0.35), "lin_vel_y": (-0.35, 0.35), "ang_vel_z": (-0.25, 0.25)},
         {"step": _S3, "lin_vel_x": (-0.40, 0.40), "lin_vel_y": (-0.40, 0.40), "ang_vel_z": (-0.30, 0.30)},
@@ -41,7 +41,7 @@ curriculum = {
       "weight_stages": [
         {"step": _S0, "weight": 0.2},
         {"step": _S2, "weight": 0.5},
-        {"step": _S3, "weight": 1.0},
+        {"step": _S4, "weight": 1.0},
       ],
     },
   ),
@@ -51,9 +51,9 @@ curriculum = {
     params={
       "reward_name": "base_stability",
       "weight_stages": [
-        {"step": _S0, "weight": -0.1},
-        {"step": _S3, "weight": -0.5},
-        {"step": _S4, "weight": -1.0},
+        {"step": _S0, "weight": -0.5},
+        {"step": _S2, "weight": -1.0},
+        {"step": _S4, "weight": -1.5},
       ],
     },
   ),
@@ -63,21 +63,9 @@ curriculum = {
     params={
       "reward_name": "base_height",
       "weight_stages": [
-        {"step": _S0, "weight": 0.1},
-        {"step": _S2, "weight": 0.5},
-        {"step": _S3, "weight": 1.0},
-      ],
-    },
-  ),
-
-  "w_action_rate_l2": CurriculumTermCfg(
-    func=reward_weight,
-    params={
-      "reward_name": "action_rate_l2",
-      "weight_stages": [
-        {"step": _S0, "weight": -0.05},
-        {"step": _S3, "weight": -0.10},
-        {"step": _S4, "weight": -0.20},
+        {"step": _S0, "weight": 0.5},
+        {"step": _S2, "weight": 1.0},
+        {"step": _S4, "weight": 1.5},
       ],
     },
   ),
@@ -89,9 +77,9 @@ curriculum = {
     params={
       "reward_name": "foot_slip",
       "weight_stages": [
-        {"step": _S0, "weight": -0.1},
-        {"step": _S2, "weight": -0.2},
-        {"step": _S3, "weight": -0.5},
+        {"step": _S0, "weight": -0.10},
+        {"step": _S1, "weight": -0.25},
+        {"step": _S2, "weight": -0.50},
       ],
     },
   ),
@@ -102,9 +90,38 @@ curriculum = {
       "reward_name": "foot_swing_height",
       "weight_stages": [
         {"step": _S0, "weight": -0.1},
-        {"step": _S2, "weight": -0.2},
-        {"step": _S3, "weight": -0.5},
+        {"step": _S1, "weight": -0.2},
+        {"step": _S2, "weight": -0.5},
       ],
     },
   ),
+
+  "w_feet_air_time": CurriculumTermCfg(
+    func=reward_weight,
+    params={
+      "reward_name": "feet_air_time",
+      "weight_stages": [
+        {"step": _S0, "weight": 0.2},
+        {"step": _S1, "weight": 0.5},
+        {"step": _S2, "weight": 1.0},
+      ],
+    },
+  ),
+
+  # Polish
+
+  "w_action_rate_l2": CurriculumTermCfg(
+    func=reward_weight,
+    params={
+      "reward_name": "action_rate_l2",
+      "weight_stages": [
+        {"step": _S0, "weight": -0.02},
+        {"step": _S1, "weight": -0.05},
+        {"step": _S2, "weight": -0.1},
+        {"step": _S3, "weight": -0.5},
+        {"step": _S4, "weight": -0.8},
+      ],
+    },
+  ),
+
 }

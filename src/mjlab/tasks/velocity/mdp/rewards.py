@@ -360,7 +360,16 @@ def feet_slip(
   linear_norm = torch.norm(command[:, :2], dim=1)
   angular_norm = torch.abs(command[:, 2])
   total_command = linear_norm + angular_norm
+
+  """
+  The binary active means the gradient of the slip penalty with respect to commanded velocity is zero everywhere 
+  except at the threshold, where it's infinite. This linearly scales the penalty from 0 at zero command up to 
+  full strength at command_threshold, then holds it there. The optimizer gets a continuous gradient signal 
+  through the commanded velocity range.
+  """
   active = (total_command > command_threshold).float()
+  # active = torch.clamp(total_command / command_threshold, 0.0, 1.0)
+
   assert contact_sensor.data.found is not None
   in_contact = (contact_sensor.data.found > 0).float()  # [B, N]
   foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, N, 2]

@@ -1,8 +1,8 @@
 import jax.numpy as jnp
 from mujoco import mjx
 
-from mjlab.envs.mdp.abstraction import Abstraction, AbstractionTarget
-from mjlab.tasks.velocity_abstraction.mdp.utils import quat_to_yaw, yaw_to_rot2d, gaussian_reward
+from mjlab.envs.mdp.abstractions import Abstraction, AbstractionTarget
+from mjlab.tasks.velocity_abstraction.mdp.abstractions.utils import quat_to_yaw, yaw_to_rot2d, gaussian_reward
 
 
 class FootPlacementAbstraction(Abstraction):

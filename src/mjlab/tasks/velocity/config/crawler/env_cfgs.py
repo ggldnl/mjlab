@@ -10,8 +10,6 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.scene import SceneCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.viewer import ViewerConfig
-from dataclasses import replace
-
 
 from mjlab.asset_zoo.robots.crawler.crawler_constants import get_crawler_robot_cfg
 from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME
@@ -26,7 +24,6 @@ from mjlab.tasks.velocity.config.crawler.mdp import observations
 from mjlab.tasks.velocity.config.crawler.mdp.rewards import rewards
 
 from mjlab.terrains import TerrainEntityCfg
-from mjlab.terrains.config import ROUGH_TERRAINS_CFG
 
 
 def scene_cfg(num_envs: int = 2048) -> SceneCfg:
@@ -63,7 +60,7 @@ def sim_cfg() -> SimulationCfg:
       iterations=10,
       ls_iterations=20,
       ccd_iterations=500,
-      cone="pyramidal",
+      cone="elliptic",
     ),
   )
 
