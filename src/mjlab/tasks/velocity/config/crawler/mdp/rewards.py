@@ -222,7 +222,10 @@ rewards = {
   "self_collisions": RewardTermCfg(
     func=self_collision_cost,
     weight=-0.2,
-    params={"sensor_name": "self_collision", "force_threshold": 2.5},
+    params={
+      "sensor_name": "self_collision",
+      "force_threshold": 2.5
+    },
   ),
 
   "dof_pos_limits": RewardTermCfg(

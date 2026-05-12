@@ -116,10 +116,8 @@ curriculum = {
       "reward_name": "action_rate_l2",
       "weight_stages": [
         {"step": _S0, "weight": -0.02},
-        {"step": _S1, "weight": -0.05},
-        {"step": _S2, "weight": -0.1},
-        {"step": _S3, "weight": -0.5},
-        {"step": _S4, "weight": -0.8},
+        {"step": _S2, "weight": -0.05},
+        {"step": _S4, "weight": -0.1},
       ],
     },
   ),
