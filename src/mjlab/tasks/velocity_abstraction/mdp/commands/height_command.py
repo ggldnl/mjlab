@@ -1,5 +1,5 @@
 """
-Height command for legged robots. Implements a uniform-random target body height 
+Height command for legged robots. Implements a uniform-random target body height
 command that integrates with the mjlab command manager.
 
 Usage in envs:
@@ -67,17 +67,15 @@ class UniformHeightCommand(CommandTerm):
         lo, hi = self.cfg.ranges.height
         n = env_ids.numel()
         self._command[env_ids, 0] = (
-            torch.rand(n, device=self._env.device) * (hi - lo) + lo
+                torch.rand(n, device=self._env.device) * (hi - lo) + lo
         )
         # reset the countdown timer for these envs
         t_lo, t_hi = self.cfg.resampling_time_range
         self.time_left[env_ids] = (
-            torch.rand(n, device=self._env.device) * (t_hi - t_lo) + t_lo
+                torch.rand(n, device=self._env.device) * (t_hi - t_lo) + t_lo
         )
 
-    
     # Logging / visualisation
-    
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         # No geometric visualization needed for a scalar command.

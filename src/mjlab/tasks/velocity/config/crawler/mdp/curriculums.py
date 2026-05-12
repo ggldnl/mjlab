@@ -11,10 +11,10 @@ _HORIZON = 24
 
 # Curriculum stage thresholds (common_step_counter values, not iteration numbers).
 _S0 = 0
-_S1 = 100 * _HORIZON   # Phase 1 -> 2: robot is moving, introduce gait structure rewards
-_S2 = 200 * _HORIZON  # Phase 2 -> 3: gait exists, introduce posture and expand velocity
-_S3 = 300 * _HORIZON  # Phase 3 -> 4: posture stable, introduce polish and expand velocity
-_S4 = 500 * _HORIZON  # Phase 4: final ceiling
+_S1 = 50 * _HORIZON   # Phase 1 -> 2: robot is moving, introduce gait structure rewards
+_S2 = 100 * _HORIZON  # Phase 2 -> 3: gait exists, introduce posture and expand velocity
+_S3 = 150 * _HORIZON  # Phase 3 -> 4: posture stable, introduce polish and expand velocity
+_S4 = 200 * _HORIZON  # Phase 4: final ceiling
 
 curriculum = {
 
@@ -51,7 +51,7 @@ curriculum = {
     params={
       "reward_name": "base_stability",
       "weight_stages": [
-        {"step": _S0, "weight": 0.0},
+        {"step": _S0, "weight": -0.1},
         {"step": _S3, "weight": -0.5},
         {"step": _S4, "weight": -1.0},
       ],
@@ -63,7 +63,7 @@ curriculum = {
     params={
       "reward_name": "base_height",
       "weight_stages": [
-        {"step": _S0, "weight": 0.0},
+        {"step": _S0, "weight": 0.1},
         {"step": _S2, "weight": 0.5},
         {"step": _S3, "weight": 1.0},
       ],
@@ -75,7 +75,7 @@ curriculum = {
     params={
       "reward_name": "action_rate_l2",
       "weight_stages": [
-        {"step": _S0, "weight": -0.00},
+        {"step": _S0, "weight": -0.05},
         {"step": _S3, "weight": -0.10},
         {"step": _S4, "weight": -0.20},
       ],
@@ -89,7 +89,7 @@ curriculum = {
     params={
       "reward_name": "foot_slip",
       "weight_stages": [
-        {"step": _S0, "weight":  0.0},
+        {"step": _S0, "weight": -0.1},
         {"step": _S2, "weight": -0.2},
         {"step": _S3, "weight": -0.5},
       ],
@@ -101,7 +101,7 @@ curriculum = {
     params={
       "reward_name": "foot_swing_height",
       "weight_stages": [
-        {"step": _S0, "weight": 0.0},
+        {"step": _S0, "weight": -0.1},
         {"step": _S2, "weight": -0.2},
         {"step": _S3, "weight": -0.5},
       ],
