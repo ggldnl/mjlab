@@ -46,6 +46,11 @@ JOINT_NAMES = [
 # To use a different gait (walk, bound), change these offsets only — nothing else.
 LEG_PHASE_OFFSETS = torch.tensor([0.0, math.pi, 0.0, math.pi])
 
+# Scale actuator parameters: a small robot is difficult to simulate in mjlab
+SCALE = 100.0
+MASS_SCALE = SCALE ** 3
+INERTIA_SCALE = SCALE ** 5
+TORQUE_SCALE = SCALE ** 4
 
 # The MG90S is a brushed-DC servo with an internal PID position loop.
 # We model it in MuJoCo as a position actuator (stiffness + damping + effort_limit).
@@ -54,6 +59,7 @@ LEG_PHASE_OFFSETS = torch.tensor([0.0, math.pi, 0.0, math.pi])
 MG90S_STALL_TORQUE_KGF_CM = 2.2
 KGF_CM_TO_NM = 9.81 * 0.01
 MG90S_EFFORT_LIMIT = MG90S_STALL_TORQUE_KGF_CM * KGF_CM_TO_NM  # 0.216 N*m
+MG90S_EFFORT_LIMIT *= TORQUE_SCALE
 
 # Velocity limit: 0.08 s/60° at 6V (datasheet) -> 13.1 rad/s
 MG90S_NO_LOAD_SPEED_S_PER_60DEG = 0.08
@@ -66,6 +72,7 @@ MG90S_JOINT_DAMPING = MG90S_EFFORT_LIMIT / MG90S_VELOCITY_LIMIT
 MG90S_ROTOR_INERTIA = 7e-9  # kg*m^2
 MG90S_GEAR_RATIO = 5.5
 MG90S_ARMATURE = MG90S_ROTOR_INERTIA * MG90S_GEAR_RATIO ** 2  # 2.1e-7 kg*m^2
+MG90S_ARMATURE *= INERTIA_SCALE
 
 # Effective inetias per joint type
 # These are the load inertias seen at the joint output shaft, obtained by
@@ -76,9 +83,9 @@ MG90S_ARMATURE = MG90S_ROTOR_INERTIA * MG90S_GEAR_RATIO ** 2  # 2.1e-7 kg*m^2
 #   femur  <- femur body + tibia body + foot body
 #   coxa   <- coxa body + femur body + tibia body + foot body
 EFFECTIVE_INERTIAS = {
-    "coxa": 9.0e-6,    # kg*m^2
-    "femur": 5.0e-6,   # kg*m^2
-    "tibia": 8.0e-7,   # kg*m^2
+    "coxa": 9.0e-6 * INERTIA_SCALE,    # kg*m^2
+    "femur": 5.0e-6 * INERTIA_SCALE,   # kg*m^2
+    "tibia": 8.0e-7 * INERTIA_SCALE,   # kg*m^2
 }
 
 NATURAL_FREQ  = 50.0 * 2.0 * math.pi
@@ -145,7 +152,7 @@ _SOFT = 0.9   # fraction of hard limits used as soft limits
 # model to derive this will defy the sole purpose of using DRL:
 # it's difficult to have models for complex robots.
 INIT_STATE = EntityCfg.InitialStateCfg(
-    pos=(0.0, 0.0, 0.05),
+    pos=(0.0, 0.0, 0.05 * SCALE),
     joint_pos={
         COXA_JOINT_REGEX: COXA_DEFAULT,
         FEMUR_JOINT_REGEX: FEMUR_DEFAULT,
