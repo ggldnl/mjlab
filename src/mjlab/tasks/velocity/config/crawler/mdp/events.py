@@ -20,7 +20,7 @@ from mjlab.envs.mdp.events import (
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
-from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME, FOOT_GEOM_NAMES
+from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME, FOOT_COLLISION_NAMES
 from mjlab.asset_zoo.robots.crawler.actuators import SMALLEST_ABS_LIM, MG90S_VELOCITY_LIMIT
 
 
@@ -33,7 +33,7 @@ events = {
       "pose_range": {
         "x": (-0.5, 0.5),
         "y": (-0.5, 0.5),
-        "z": (0.01, 0.05),
+        "z": (0.04, 0.06),
         "yaw": (-3.14, 3.14),
       },
       "velocity_range": {},
@@ -49,7 +49,7 @@ events = {
         "position_range": (- 0.1 * SMALLEST_ABS_LIM, 0.1 * SMALLEST_ABS_LIM),
 
         # Small initial joint velocities to avoid perfectly static starts (10% of max velocity)
-        "velocity_range": (-0.1 * MG90S_VELOCITY_LIMIT, 0.1 * MG90S_VELOCITY_LIMIT),
+        "velocity_range": (-0.025 * MG90S_VELOCITY_LIMIT, 0.025 * MG90S_VELOCITY_LIMIT),
 
         "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
     }
@@ -58,15 +58,15 @@ events = {
   "push_robot": EventTermCfg(
     func=push_by_setting_velocity,
     mode="interval",
-    interval_range_s=(1.0, 3.0),
+    interval_range_s=(3.0, 8.0),
     params={
       "velocity_range": {
-        "x": (-0.3, 0.3),
-        "y": (-0.3, 0.3),
-        "z": (-0.1, 0.1),
-        "roll": (-0.3, 0.3),
-        "pitch": (-0.3, 0.3),
-        "yaw": (-0.5, 0.5),
+        "x": (-0.1, 0.1),
+        "y": (-0.1, 0.1),
+        "z": (-0.05, 0.05),
+        "roll": (-0.15, 0.15),
+        "pitch": (-0.15, 0.15),
+        "yaw": (-0.3, 0.3),
       },
     },
   ),
@@ -86,9 +86,9 @@ events = {
     mode="startup",
     func=geom_friction,
     params={
-      "asset_cfg": SceneEntityCfg("robot", geom_names=FOOT_GEOM_NAMES),
+      "asset_cfg": SceneEntityCfg("robot", geom_names=FOOT_COLLISION_NAMES),
       "operation": "abs",
-      "ranges": (0.3, 1.2),
+      "ranges": (0.3, 2.0),
       "shared_random": True,  # All foot geoms share the same friction
     },
   ),

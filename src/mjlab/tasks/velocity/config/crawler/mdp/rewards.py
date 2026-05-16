@@ -27,6 +27,46 @@ from mjlab.utils.lab_api.math import quat_apply_inverse
 
 from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME, FOOT_SITE_NAMES
 from mjlab.asset_zoo.robots.crawler.actuators import COXA_JOINT_REGEX, FEMUR_JOINT_REGEX, TIBIA_JOINT_REGEX
+from mjlab.asset_zoo.robots.crawler.actuators import LEG_PHASE_OFFSETS
+
+
+def phase_contact_reward(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str,
+  command_threshold: float = 0.02,
+) -> torch.Tensor:
+  """
+  Reward contact state matching the trot clock.
+  When cos(phase) > 0 the leg should be in stance; when cos(phase) < 0 it
+  should be in swing. Agreement is 1.0 when all four legs match the schedule,
+  0.25 when only one matches (e.g. body-rocking with three static feet).
+  This directly breaks the standing-still local minimum without any penalty.
+  Gated on command magnitude so the robot is not forced to trot in place
+  when commanded to stand.
+  """
+
+  # _phase_clock is initialized by gait_phase_clock in observations.py,
+  # which always runs before rewards in the RL loop.
+  if not hasattr(env, "_phase_clock"):
+    return torch.zeros(env.num_envs, device=env.device)
+
+  offsets = LEG_PHASE_OFFSETS.to(env.device)
+  phases = env._phase_clock.unsqueeze(1) + offsets  # [B, 4]
+
+  # Stance when cos > 0, swing when cos < 0
+  desired_contact = (torch.cos(phases) > 0).float()  # [B, 4]
+
+  sensor = env.scene.sensors[sensor_name]
+  actual_contact = sensor.data.found.reshape(env.num_envs, -1).float()  # [B, 4]
+
+  agreement = 1.0 - torch.abs(desired_contact - actual_contact).mean(dim=1)  # [B]
+
+  command = env.command_manager.get_command(command_name)
+  total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+  scale = (total_command > command_threshold).float()
+
+  return agreement * scale
 
 
 def flat_orientation(env: ManagerBasedRlEnv, std: float) -> torch.Tensor:
@@ -105,8 +145,17 @@ rewards = {
 
   "track_angular_velocity": RewardTermCfg(
     func=track_angular_velocity,
-    weight=1.0,
+    weight=2.5,
     params={"command_name": "twist", "std": 0.25},
+  ),
+
+  "phase_contact": RewardTermCfg(
+    func=phase_contact_reward,
+    weight=2.0,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "command_name": "twist",
+    },
   ),
 
   # Stability
@@ -139,7 +188,8 @@ rewards = {
             "robot",
             joint_names=(
               COXA_JOINT_REGEX,
-              FEMUR_JOINT_REGEX
+              FEMUR_JOINT_REGEX,
+              TIBIA_JOINT_REGEX
             ),  # (".*",)
           ),
           "command_name": "twist",
@@ -147,19 +197,19 @@ rewards = {
               # When standing still: tight tolerance, robot should hold default pose closely.
               COXA_JOINT_REGEX:  0.05,
               FEMUR_JOINT_REGEX: 0.1,
-              # TIBIA_JOINT_REGEX: 0.12,
+              TIBIA_JOINT_REGEX: 0.1,
           },
           "std_walking": {
               # When walking: open up the tolerance significantly to not fight the gait.
               COXA_JOINT_REGEX:  0.1,
               FEMUR_JOINT_REGEX: 0.3,
-              # TIBIA_JOINT_REGEX: 0.5,
+              TIBIA_JOINT_REGEX: 0.5,
           },
           "std_running": {
               # At higher speeds allow even more deviation.
               COXA_JOINT_REGEX:  0.25,
               FEMUR_JOINT_REGEX: 0.5,
-              # TIBIA_JOINT_REGEX: 0.6,
+              TIBIA_JOINT_REGEX: 0.6,
           },
           "walking_threshold": 0.05,   # m/s
           "running_threshold": 0.25,   # m/s
@@ -205,8 +255,8 @@ rewards = {
     weight=0.0,  # curriculum
     params={
       "sensor_name": "feet_ground_contact",
-      "threshold_min": 1.0,
-      "threshold_max": 3.0,
+      "threshold_min": 0.1,
+      "threshold_max": 0.5,
       "command_name": "twist",
       "command_threshold": 0.02,
     },

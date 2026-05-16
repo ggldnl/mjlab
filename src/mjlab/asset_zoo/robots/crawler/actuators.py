@@ -1,9 +1,10 @@
 """Crawler actuators: all hardware parameters."""
 
-import math
 from mjlab.actuator import BuiltinPositionActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg
 from mjlab.entity import EntityCfg
+import torch
+import math
 
 
 LEG_1_JOINT_NAMES = (
@@ -40,6 +41,10 @@ JOINT_NAMES = [
     *LEG_3_JOINT_NAMES,
     *LEG_4_JOINT_NAMES
 ]
+
+# Diagonal-pair trot offsets: legs 0 and 2 are in phase, legs 1 and 3 are anti-phase.
+# To use a different gait (walk, bound), change these offsets only — nothing else.
+LEG_PHASE_OFFSETS = torch.tensor([0.0, math.pi, 0.0, math.pi])
 
 
 # The MG90S is a brushed-DC servo with an internal PID position loop.

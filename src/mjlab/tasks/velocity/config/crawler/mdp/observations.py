@@ -17,7 +17,6 @@ from mjlab.envs.mdp.observations import (
   base_ang_vel
 )
 from mjlab.envs import ManagerBasedRlEnv
-from mjlab.managers import SceneEntityCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.tasks.velocity.mdp.observations import (
   foot_air_time,
@@ -26,8 +25,9 @@ from mjlab.tasks.velocity.mdp.observations import (
   foot_height,
 )
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
+import torch
 
-from mjlab.asset_zoo.robots.crawler.collisions import FOOT_GEOM_NAMES
+from mjlab.asset_zoo.robots.crawler.actuators import LEG_PHASE_OFFSETS
 from mjlab.asset_zoo.robots.crawler.sensors import TERRAIN_SCAN
 
 
@@ -36,24 +36,49 @@ from mjlab.asset_zoo.robots.crawler.sensors import TERRAIN_SCAN
 _HISTORY = 10
 
 
+def gait_phase_clock(
+  env: ManagerBasedRlEnv,
+  frequency: float = 1.5,
+) -> torch.Tensor:
+  """
+  # Absolute phase reference the policy cannot infer from proprioception.
+  """
+
+  # Initialize lazily
+  if not hasattr(env, "_phase_clock"):
+    env._phase_clock = torch.zeros(env.num_envs, device=env.device)
+
+  env._phase_clock[env.episode_length_buf <= 1] = 0.0
+
+  dt = env.physics_dt * env.cfg.decimation
+  env._phase_clock += 2.0 * torch.pi * frequency * dt
+
+  offsets = LEG_PHASE_OFFSETS.to(env.device)
+  phases = env._phase_clock.unsqueeze(1) + offsets  # [B, 4]
+
+  # Sin and cos together give a smooth, non-discontinuous phase signal.
+  # The policy sees both where in the cycle each leg is AND the rate of change.
+  return torch.cat([torch.sin(phases), torch.cos(phases)], dim=1)  # [B, 8]
+
+
 # Actor: sim-to-real-safe sensors only, with noise.
 actor_terms = {
   "base_lin_vel": ObservationTermCfg(
     func=builtin_sensor,
     params={"sensor_name": "robot/imu_lin_vel"},
-    noise=Unoise(n_min=-0.5, n_max=0.5),
+    noise=Unoise(n_min=-0.05, n_max=0.05),
     history_length=_HISTORY,
   ),
   "base_ang_vel": ObservationTermCfg(
     func=builtin_sensor,
     params={"sensor_name": "robot/imu_ang_vel"},
-    noise=Unoise(n_min=-0.2, n_max=0.2),
+    noise=Unoise(n_min=-0.05, n_max=0.05),
     history_length=_HISTORY,
   ),
   # Gravity projection: slow signal, single frame is sufficient
   "projected_gravity": ObservationTermCfg(
     func=projected_gravity,
-    noise=Unoise(n_min=-0.05, n_max=0.05),
+    noise=Unoise(n_min=-0.02, n_max=0.02),
     history_length=_HISTORY,
   ),
   # Joint history implicitly encodes leg phase
@@ -64,7 +89,7 @@ actor_terms = {
   ),
   "joint_vel": ObservationTermCfg(
     func=joint_vel_rel,
-    noise=Unoise(n_min=-1.5, n_max=1.5),
+    noise=Unoise(n_min=-0.5, n_max=0.5),
     history_length=_HISTORY,
   ),
   # Action history lets the policy detect and correct its own oscillations
@@ -80,8 +105,15 @@ actor_terms = {
   "feet_contact": ObservationTermCfg(
     func=foot_contact,
     params={"sensor_name": "feet_ground_contact"},
-    noise=Unoise(n_min=-0.01, n_max=0.01),
+    noise=Unoise(n_min=-0.1, n_max=0.1),
     history_length=_HISTORY,
+  ),
+  # Absolute phase reference the policy cannot infer from proprioception.
+  # Joint positions tell the policy where the legs are; the clock tells it
+  # where they should be going. No history: it is already a temporal signal.
+  "gait_phase": ObservationTermCfg(
+    func=gait_phase_clock,
+    params={"frequency": 1.5},
   ),
 }
 

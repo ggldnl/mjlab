@@ -23,11 +23,9 @@ curriculum = {
     params={
       "command_name": "twist",
       "velocity_stages": [
-        {"step": _S0, "lin_vel_x": (-0.00, 0.00), "lin_vel_y": (-0.00, 0.00), "ang_vel_z": (-0.00, 0.00)},
-        {"step": _S1, "lin_vel_x": (-0.25, 0.25), "lin_vel_y": (-0.25, 0.25), "ang_vel_z": (-0.15, 0.15)},
-        {"step": _S2, "lin_vel_x": (-0.35, 0.35), "lin_vel_y": (-0.35, 0.35), "ang_vel_z": (-0.25, 0.25)},
-        {"step": _S3, "lin_vel_x": (-0.40, 0.40), "lin_vel_y": (-0.40, 0.40), "ang_vel_z": (-0.30, 0.30)},
-        {"step": _S4, "lin_vel_x": (-0.50, 0.50), "lin_vel_y": (-0.50, 0.50), "ang_vel_z": (-0.40, 0.40)},
+        {"step": _S0, "lin_vel_x": (-0.10, 0.10), "lin_vel_y": (-0.10, 0.10), "ang_vel_z": (-0.05, 0.05)},
+        {"step": _S2, "lin_vel_x": (-0.25, 0.25), "lin_vel_y": (-0.25, 0.25), "ang_vel_z": (-0.15, 0.15)},
+        {"step": _S4, "lin_vel_x": (-0.35, 0.35), "lin_vel_y": (-0.35, 0.35), "ang_vel_z": (-0.25, 0.25)},
       ],
     },
   ),
@@ -51,9 +49,8 @@ curriculum = {
     params={
       "reward_name": "base_stability",
       "weight_stages": [
-        {"step": _S0, "weight": -0.5},
-        {"step": _S2, "weight": -1.0},
-        {"step": _S4, "weight": -1.5},
+        {"step": _S3, "weight": -0.5},
+        {"step": _S4, "weight": -1.0},
       ],
     },
   ),
@@ -77,9 +74,9 @@ curriculum = {
     params={
       "reward_name": "foot_slip",
       "weight_stages": [
-        {"step": _S0, "weight": -0.10},
-        {"step": _S1, "weight": -0.25},
-        {"step": _S2, "weight": -0.50},
+        {"step": _S0, "weight": -1.0},
+        # {"step": _S1, "weight": -0.50},
+        # {"step": _S2, "weight": -1.00},
       ],
     },
   ),
