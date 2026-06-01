@@ -8,6 +8,24 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Added an *abstraction* mechanism (``mjlab.abstraction`` and
+  ``AbstractionManager``) for guiding RL with reduced-order template models.
+  An abstraction encodes simple physics about a behavior, samples a per-episode
+  reference, and emits scalar signals (in ``[0, 1]``) that are surfaced to the
+  reward manager as ordinary reward terms and to the policy as observations.
+  The mechanism is opt-in: environments without abstractions use a no-op
+  manager.
+- Added a standing-jump environment for the Booster T1 robot
+  (``Mjlab-Jump-Booster-T1``). The robot spawns on a platform and must jump
+  across a gap to a target on the far side. A ballistic ``JumpAbstraction``
+  supplies the takeoff-velocity, (back-loaded) parabola-tracking, and
+  landing-accuracy signals; stability rewards (upright, posture) are gated to a
+  successful landing near the target so they cannot be farmed by standing or
+  hopping in place; and failure terminations are penalized so the policy cannot
+  escape by tipping over. A terrain-level curriculum starts every environment on
+  flat ground (zero gap, short hop) and widens the gap - and thus the jump
+  distance, via far-platform landing patches - as each environment reliably
+  lands on target.
 - Added a jumping environment for the Booster T1 robot
   (``Mjlab-Jumping-Booster-T1``). It extends the flat velocity-tracking task
   with a static box obstacle: the robot is commanded to walk straight forward

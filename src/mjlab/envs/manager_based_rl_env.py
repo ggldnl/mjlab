@@ -8,8 +8,13 @@ import torch
 import warp as wp
 from prettytable import PrettyTable
 
+from mjlab.abstraction.abstraction import AbstractionCfg
 from mjlab.envs import types
 from mjlab.envs.mdp.events import reset_scene_to_default
+from mjlab.managers.abstraction_manager import (
+  AbstractionManager,
+  NullAbstractionManager,
+)
 from mjlab.managers.action_manager import ActionManager, ActionTermCfg
 from mjlab.managers.command_manager import (
   CommandManager,
@@ -120,6 +125,10 @@ class ManagerBasedRlEnvCfg:
 
   commands: dict[str, CommandTermCfg] = field(default_factory=dict)
   """Command generator terms (e.g., velocity targets)."""
+
+  abstractions: dict[str, AbstractionCfg] = field(default_factory=dict)
+  """Abstraction terms (template-model references that produce learning signals).
+  If empty, a no-op manager is used with zero overhead."""
 
   curriculum: dict[str, CurriculumTermCfg] = field(default_factory=dict)
   """Curriculum terms for adaptive difficulty."""
@@ -290,6 +299,8 @@ class ManagerBasedRlEnv:
       self.manager_visualizers["command_manager"] = self.command_manager
     self.manager_visualizers["event_manager"] = self.event_manager
     self.manager_visualizers["reward_manager"] = self.reward_manager
+    if getattr(self.abstraction_manager, "active_terms", None):
+      self.manager_visualizers["abstraction_manager"] = self.abstraction_manager
 
   def load_managers(self) -> None:
     """Load and initialize all managers.
@@ -310,6 +321,14 @@ class ManagerBasedRlEnv:
     else:
       self.command_manager = NullCommandManager()
     print_info(f"[INFO] {self.command_manager}")
+
+    # Abstraction manager (before observation/reward managers, which reference
+    # its references and signals).
+    if len(self.cfg.abstractions) > 0:
+      self.abstraction_manager = AbstractionManager(self.cfg.abstractions, self)
+    else:
+      self.abstraction_manager = NullAbstractionManager()
+    print_info(f"[INFO] {self.abstraction_manager}")
 
     # Action and observation managers.
     self.action_manager = ActionManager(self.cfg.actions, self)
@@ -365,6 +384,7 @@ class ManagerBasedRlEnv:
     self.sim.forward()
     self.command_manager.compute(dt=0.0)
     self.sim.sense()
+    self.abstraction_manager.compute(dt=0.0)
     self.obs_buf = self.observation_manager.compute(update_history=True)
     self.recorder_manager.record_post_reset(env_ids)
     return self.obs_buf, self.extras
@@ -422,6 +442,10 @@ class ManagerBasedRlEnv:
     # Update env counters.
     self.episode_length_buf += 1
     self.common_step_counter += 1
+
+    # Refresh abstraction references/signals from the just-stepped state so that
+    # terminations and rewards see the same contact snapshot (consistent phase).
+    self.abstraction_manager.compute(dt=self.step_dt)
 
     # Check terminations and compute rewards.
     # NOTE: Derived quantities (xpos, xquat, ...) are stale by one physics
@@ -570,6 +594,9 @@ class ManagerBasedRlEnv:
     self.extras["log"].update(info)
     # command manager.
     info = self.command_manager.reset(env_ids)
+    self.extras["log"].update(info)
+    # abstraction manager.
+    info = self.abstraction_manager.reset(env_ids)
     self.extras["log"].update(info)
     # event manager.
     info = self.event_manager.reset(env_ids)
