@@ -114,10 +114,10 @@ class RewardWeightStage(TypedDict):
 
 
 def reward_weight(
-        env: ManagerBasedRlEnv,
-        env_ids: torch.Tensor,
-        reward_name: str,
-        weight_stages: list[RewardWeightStage],
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  reward_name: str,
+  weight_stages: list[RewardWeightStage],
 ) -> dict[str, torch.Tensor]:
   """Curriculum that adjusts a single reward term's weight based on training step.
 

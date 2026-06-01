@@ -8,6 +8,23 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Added a jumping environment for the Booster T1 robot
+  (``Mjlab-Jumping-Booster-T1``). It extends the flat velocity-tracking task
+  with a static box obstacle: the robot is commanded to walk straight forward
+  into a rigid barrier and must jump over it to keep tracking its forward
+  velocity. The task enables whole-body collision so the obstacle is a genuine
+  barrier and shapes the leap with foot-clearance and obstacle-crossing rewards.
+- Added a dribbling environment for the Booster T1 robot
+  (``Mjlab-Dribbling-Booster-T1``). It extends the flat velocity-tracking task
+  with a soccer ball: the robot tracks its (forward-biased) commanded velocity
+  while keeping the ball a dribbling distance in front of it and matching the
+  ball's velocity to the command. A reward curriculum first lets the policy
+  learn to walk (ball rewards at zero weight) and then ramps up the
+  ball-position and ball-velocity rewards.
+- Added velocity tracking environments for the Booster T1 robot
+  (``Mjlab-Velocity-Flat-Booster-T1`` and
+  ``Mjlab-Velocity-Rough-Booster-T1``), mirroring the existing Unitree G1
+  velocity task.
 - Added ``ContactSensor.primary_names`` property to expose the resolved
   primary names in the order they appear along the per-contact axis of the
   output tensors. This makes it possible to map a contact-data column back

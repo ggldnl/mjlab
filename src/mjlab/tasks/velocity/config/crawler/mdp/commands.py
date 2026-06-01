@@ -19,9 +19,9 @@ commands: Dict[str, CommandTermCfg] = {
     debug_vis=True,
     resampling_time_range=(2.0, 6.0),
     ranges=UniformVelocityCommandCfg.Ranges(
-      lin_vel_x=(-0.8, 0.8),
-      lin_vel_y=(-0.8, 0.8),
-      ang_vel_z=(-0.5, 0.5),
+      lin_vel_x=(-0.35, 0.35),
+      lin_vel_y=(-0.35, 0.35),
+      ang_vel_z=(-0.25, 0.25),
       heading=(-math.pi, math.pi),
     ),
   ),

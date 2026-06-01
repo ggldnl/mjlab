@@ -16,20 +16,27 @@ from mjlab.asset_zoo.robots.unitree_go1.go1_constants import (
 from mjlab.asset_zoo.robots.unitree_go1.go1_constants import (
   get_go1_robot_cfg as get_go1_robot_cfg,
 )
+from mjlab.asset_zoo.robots.booster_t1.t1_constants import (
+  T1_ACTION_SCALE as T1_ACTION_SCALE,
+)
+from mjlab.asset_zoo.robots.booster_t1.t1_constants import (
+  get_t1_robot_cfg as get_t1_robot_cfg,
+)
 
+# Crawler
 from mjlab.asset_zoo.robots.crawler.actuators import (
-    ACTION_SCALE as ACTION_SCALE,
-    ACTION_OFFSET as ACTION_OFFSET,
+  ACTION_SCALE as ACTION_SCALE,
+  ACTION_OFFSET as ACTION_OFFSET,
 )
 from mjlab.asset_zoo.robots.crawler.sensors import (
-    IMU as IMU,
-    SENSORS as SENSORS,
+  IMU as IMU,
+  SENSORS as SENSORS,
 )
 from mjlab.asset_zoo.robots.crawler.collisions import (
-    FOOT_SITE_NAMES as FOOT_SITE_NAMES,
-    FOOT_GEOM_NAMES as FOOT_GEOM_NAMES,
-    BASE_NAME as BASE_NAME,
+  FOOT_SITE_NAMES as FOOT_SITE_NAMES,
+  FOOT_GEOM_NAMES as FOOT_GEOM_NAMES,
+  BASE_NAME as BASE_NAME,
 )
 from mjlab.asset_zoo.robots.crawler.crawler_constants import (
-    get_crawler_robot_cfg as get_crawler_robot_cfg,
+  get_crawler_robot_cfg as get_crawler_robot_cfg,
 )

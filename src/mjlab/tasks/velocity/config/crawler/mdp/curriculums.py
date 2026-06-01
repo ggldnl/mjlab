@@ -11,27 +11,41 @@ _HORIZON = 24
 
 # Curriculum stage thresholds (common_step_counter values, not iteration numbers).
 _S0 = 0
-_S1 = 50 * _HORIZON   # Phase 1 -> 2: robot is moving, introduce gait structure rewards
+_S1 = 50 * _HORIZON  # Phase 1 -> 2: robot is moving, introduce gait structure rewards
 _S2 = 100 * _HORIZON  # Phase 2 -> 3: gait exists, introduce posture and expand velocity
-_S3 = 150 * _HORIZON  # Phase 3 -> 4: posture stable, introduce polish and expand velocity
+_S3 = (
+  150 * _HORIZON
+)  # Phase 3 -> 4: posture stable, introduce polish and expand velocity
 _S4 = 200 * _HORIZON  # Phase 4: final ceiling
 
 curriculum = {
-
   "command_vel": CurriculumTermCfg(
     func=commands_vel,
     params={
       "command_name": "twist",
       "velocity_stages": [
-        {"step": _S0, "lin_vel_x": (-0.10, 0.10), "lin_vel_y": (-0.10, 0.10), "ang_vel_z": (-0.05, 0.05)},
-        {"step": _S2, "lin_vel_x": (-0.25, 0.25), "lin_vel_y": (-0.25, 0.25), "ang_vel_z": (-0.15, 0.15)},
-        {"step": _S4, "lin_vel_x": (-0.35, 0.35), "lin_vel_y": (-0.35, 0.35), "ang_vel_z": (-0.25, 0.25)},
+        {
+          "step": _S0,
+          "lin_vel_x": (-0.10, 0.10),
+          "lin_vel_y": (-0.10, 0.10),
+          "ang_vel_z": (-0.05, 0.05),
+        },
+        {
+          "step": _S2,
+          "lin_vel_x": (-0.25, 0.25),
+          "lin_vel_y": (-0.25, 0.25),
+          "ang_vel_z": (-0.15, 0.15),
+        },
+        {
+          "step": _S4,
+          "lin_vel_x": (-0.35, 0.35),
+          "lin_vel_y": (-0.35, 0.35),
+          "ang_vel_z": (-0.25, 0.25),
+        },
       ],
     },
   ),
-
   # Stability
-
   "w_upright": CurriculumTermCfg(
     func=reward_weight,
     params={
@@ -43,7 +57,6 @@ curriculum = {
       ],
     },
   ),
-
   "w_base_stability": CurriculumTermCfg(
     func=reward_weight,
     params={
@@ -54,7 +67,6 @@ curriculum = {
       ],
     },
   ),
-
   "w_base_height": CurriculumTermCfg(
     func=reward_weight,
     params={
@@ -66,9 +78,7 @@ curriculum = {
       ],
     },
   ),
-
   # Foot
-
   "w_foot_slip": CurriculumTermCfg(
     func=reward_weight,
     params={
@@ -80,7 +90,6 @@ curriculum = {
       ],
     },
   ),
-
   "w_foot_swing_height": CurriculumTermCfg(
     func=reward_weight,
     params={
@@ -92,7 +101,6 @@ curriculum = {
       ],
     },
   ),
-
   "w_feet_air_time": CurriculumTermCfg(
     func=reward_weight,
     params={
@@ -104,9 +112,7 @@ curriculum = {
       ],
     },
   ),
-
   # Polish
-
   "w_action_rate_l2": CurriculumTermCfg(
     func=reward_weight,
     params={
@@ -118,5 +124,4 @@ curriculum = {
       ],
     },
   ),
-
 }

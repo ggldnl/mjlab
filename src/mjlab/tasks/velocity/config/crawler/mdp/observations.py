@@ -14,7 +14,7 @@ from mjlab.envs.mdp.observations import (
   projected_gravity,
   height_scan,
   base_lin_vel,
-  base_ang_vel
+  base_ang_vel,
 )
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg

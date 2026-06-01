@@ -1,0 +1,194 @@
+<mujoco model="crawler">
+
+    <compiler angle="radian" autolimits="true"/>
+
+    <default>
+
+        <!--
+            Visual meshes: no physics contribution whatsoever.
+            density=0  -> no mass / inertia contribution
+            contype=0 conaffinity=0 -> invisible to the collision pipeline
+            group=2    -> viewer group toggled separately from collision shapes
+        -->
+        <default class="visual">
+            <geom type="mesh" density="0" contype="0" conaffinity="0" group="2"/>
+        </default>
+
+        <!--
+            Collision primitives: participate in contact detection.
+            contype=1 conaffinity=1 -> standard colliding pair (fixed from original)
+            density=0  -> inertia comes from the explicit <inertial> tags, not geoms
+            group=3    -> invisible in the viewer by default (groups 0-2 are shown);
+                          toggle on with Ctrl+G (or 'g' key) during inspection
+        -->
+        <default class="collision">
+            <geom density="0" contype="1" conaffinity="1" group="3"
+                  rgba="0.4 0.8 0.4 0.4"/>
+        </default>
+    </default>
+
+    <asset>
+        <mesh name="base"  file="assets/base.stl"  scale="0.001 0.001 0.001"/>
+        <mesh name="coxa"  file="assets/coxa.stl"  scale="0.001 0.001 0.001"/>
+        <mesh name="femur" file="assets/femur.stl" scale="0.001 0.001 0.001"/>
+        <mesh name="tibia" file="assets/tibia.stl" scale="0.001 0.001 0.001"/>
+        <mesh name="foot"  file="assets/foot.stl"  scale="0.001 0.001 0.001"/>
+    </asset>
+
+    <worldbody>
+        <light directional="true" pos="-0.5 0.5 3" dir="0 0 -1"/>
+
+        <body name="base" pos="0.0 0.0 0.0" euler="-0.0 0.0 -0.0">
+            <freejoint/>
+            <geom name="base_geom" class="visual" mesh="base" pos="0 0 0" euler="0 0 0"/>
+
+            <!--
+                Collision shape for the base hub.
+                type="box" fits better than a capsule for a flat/wide base plate.
+                The compiler infers half-extents from the mesh inertia box.
+                Swap to type="capsule" if your base is more cylindrical.
+            -->
+            <geom name="base_collision" class="collision" type="box" mesh="base"/>
+
+            <inertial mass="234.43434399291593" pos="7.796300326790456e-17 3.898150163395228e-17 0.049742107233483004" fullinertia="6.060186354699191 6.060186354699188 11.732904462396002 8.773058652877807e-15 5.436026067073493e-16 4.545733586219623e-16"/>
+            <site name="imu" pos="0.0 0.0 0.05" size="0.03" rgba=".2 .2 .6 .3"/>
+
+            <!--
+                Naming convention (uniform across all segments):
+                  leg_N_<seg>_geom      -> visual mesh   (class="visual")
+                  leg_N_<seg>_collision -> contact shape (class="collision")
+                  leg_N_foot_site       -> named anchor for sensors / contact queries
+            -->
+
+            <!--Leg 1-->
+
+            <body name="leg_1_coxa" pos="-0.3239949493661167 -0.32399494936611684 -0.029999999999995097" euler="1.5707963267948966 0.7853981633974483 -1.1842378929333265e-15">
+                <joint name="base_leg_1_coxa" type="hinge" axis="-1.184237892933326e-15 0.9999999999999994 9.860761315262642e-32" pos="0.14000000000000007 0.029999999999995246 -8.326672684688674e-17"/>
+                <geom name="leg_1_coxa_geom"      class="visual"     mesh="coxa" pos="0 0 0" euler="0 0 0"/>
+                <geom name="leg_1_coxa_collision" class="collision"   type="capsule" mesh="coxa"/>
+                <inertial mass="12.32073453155839" pos="0.05402213314212047 0.03646425722139935 -2.4286128663675296e-17" fullinertia="0.03396894349663161 0.056375594219793865 0.08049059488507017 0.02258509432851066 2.2270622445613532e-33 1.7347234759768125e-18"/>
+
+                <body name="leg_1_femur" pos="-0.40000000000000036 0.10000000000000009 -0.0900000000000004" euler="2.9582283945787925e-31 0.0 4.5920860387590216e-17">
+                    <joint name="leg_1_coxa_leg_1_femur" type="hinge" axis="2.220446049250313e-16 3.925232361368096e-17 -1.0000003094489522" pos="0.3999999283928757 -4.9454878757141094e-15 0.06000028770137983"/>
+                    <geom name="leg_1_femur_geom"      class="visual"   mesh="femur" pos="0 0 0" euler="0 0 0"/>
+                    <geom name="leg_1_femur_collision" class="collision" type="capsule" mesh="femur"/>
+                    <inertial mass="22.539225349601974" pos="0.20000000000000007 1.3323016437104531e-17 0.029999999999999985" fullinertia="0.024773783448381013 0.4396427974324626 0.45089304567108146 1.681358468132686e-16 -5.707240235963695e-16 -1.7470784013540618e-16"/>
+
+                    <body name="leg_1_tibia" pos="4.263256414560601e-16 0.0 0.1200000000000001" euler="-3.141592653589793 0.0 -1.5707963267948966">
+                        <joint name="leg_1_femur_leg_1_tibia" type="hinge" axis="0.0 1.1102230246251565e-16 -1.0000003094489522" pos="-5.398459205688788e-15 2.2887736321475227e-07 0.06000041940540146"/>
+                        <geom name="leg_1_tibia_geom"      class="visual"   mesh="tibia" pos="0 0 0" euler="0 0 0"/>
+                        <geom name="leg_1_tibia_collision" class="collision" type="capsule" mesh="tibia"/>
+                        <inertial mass="13.247878794023343" pos="8.288792186742524e-18 -0.11367662738338086 0.029999999999999943" fullinertia="0.12275338253184032 0.01191573194546747 0.1267203872008955 -4.468284809618678e-17 -7.850462293419021e-17 -1.343543332144037e-15"/>
+
+                        <body name="leg_1_foot" pos="4.973799150320702e-16 1.4210854715202004e-16 -7.105427357601002e-17" euler="-2.7755575615628894e-16 1.7326462129019245e-16 3.9443045261050573e-31">                            <geom name="leg_1_foot_geom"      class="visual"   mesh="foot" pos="0 0 0" euler="0 0 0"/>
+                            <!--
+                                Sphere fits a foot/tip better than a capsule:
+                                it rolls symmetrically and generates cleaner contacts.
+                                fitscale slightly enlarges it to ensure full mesh coverage.
+                            -->
+                            <geom name="leg_1_foot_collision" class="collision" type="sphere" mesh="foot" fitscale="1.1"/>
+                            <site name="leg_1_foot_site" pos="0.0 -0.33 0.029" size="0.03" rgba=".2 .2 .6 .3"/>
+                            <inertial mass="2.455594443706006" pos="-0.8406245830111374 -0.8406245830111243 0.07000000000000572" fullinertia="0.0020079860058377684 0.002007986005837294 0.0023406555293772335 -0.00043364943157665455 -7.17909681337716e-19 5.496228523996588e-17"/>
+                        </body>
+                    </body>
+                </body>
+            </body>
+
+            <body name="leg_2_coxa" pos="-0.32399494936611656 0.3239949493661166 -0.02999999999999531" euler="1.570796326794898 -0.7853981633974488 1.045720633811615e-15">
+                <joint name="base_leg_2_coxa" type="hinge" axis="2.3446476092208107e-16 1.0 -9.756883456373513e-16" pos="0.13999999999999985 0.029999999999995322 -5.702622598474488e-17"/>
+                <geom name="leg_2_coxa_geom"      class="visual"   mesh="coxa" pos="0 0 0" euler="0 0 0"/>
+                <geom name="leg_2_coxa_collision" class="collision" type="capsule" mesh="coxa"/>
+                <inertial mass="12.32073453155839" pos="0.054022133142120475 0.03646425722139941 -3.904719775519564e-17" fullinertia="0.03396894349663148 0.05637559421979432 0.08049059488507002 0.022585094328510736 -2.9265287557383005e-16 1.0914481828484923e-17"/>
+
+                <body name="leg_2_femur" pos="-0.40000000000000036 0.10000000000000009 -0.0900000000000004" euler="2.9582283945787925e-31 0.0 4.5920860387590216e-17">
+                    <joint name="leg_2_coxa_leg_2_femur" type="hinge" axis="2.220446049250313e-16 3.925232361368096e-17 -1.0000003094489522" pos="0.3999999283928757 -4.9454878757141094e-15 0.06000028770137983"/>
+                    <geom name="leg_2_femur_geom"      class="visual"   mesh="femur" pos="0 0 0" euler="0 0 0"/>
+                    <geom name="leg_2_femur_collision" class="collision" type="capsule" mesh="femur"/>
+                    <inertial mass="22.539225349601974" pos="0.20000000000000007 1.3323016437104531e-17 0.029999999999999985" fullinertia="0.024773783448381013 0.4396427974324626 0.45089304567108146 1.681358468132686e-16 -5.707240235963695e-16 -1.7470784013540618e-16"/>
+
+                    <body name="leg_2_tibia" pos="4.263256414560601e-16 0.0 0.1200000000000001" euler="-3.141592653589793 0.0 -1.5707963267948966">
+                        <joint name="leg_2_femur_leg_2_tibia" type="hinge" axis="0.0 1.1102230246251565e-16 -1.0000003094489522" pos="-5.398459205688788e-15 2.2887736321475227e-07 0.06000041940540146"/>
+                        <geom name="leg_2_tibia_geom"      class="visual"   mesh="tibia" pos="0 0 0" euler="0 0 0"/>
+                        <geom name="leg_2_tibia_collision" class="collision" type="capsule" mesh="tibia"/>
+                        <inertial mass="13.247878794023343" pos="8.288792186742524e-18 -0.11367662738338086 0.029999999999999943" fullinertia="0.12275338253184032 0.01191573194546747 0.1267203872008955 -4.468284809618678e-17 -7.850462293419021e-17 -1.343543332144037e-15"/>
+
+                        <body name="leg_2_foot" pos="4.973799150320702e-16 1.4210854715202004e-16 -7.105427357601002e-17" euler="-2.7755575615628894e-16 1.7326462129019245e-16 3.9443045261050573e-31">                            <geom name="leg_2_foot_geom"      class="visual"   mesh="foot" pos="0 0 0" euler="0 0 0"/>
+                            <geom name="leg_2_foot_collision" class="collision" type="sphere" mesh="foot" fitscale="1.1"/>
+                            <site name="leg_2_foot_site" pos="0.0 -0.33 0.029" size="0.03" rgba=".2 .2 .6 .3"/>
+                            <inertial mass="2.455594443706006" pos="-0.8406245830111374 -0.8406245830111243 0.07000000000000572" fullinertia="0.0020079860058377684 0.002007986005837294 0.0023406555293772335 -0.00043364943157665455 -7.17909681337716e-19 5.496228523996588e-17"/>
+                        </body>
+                    </body>
+                </body>
+            </body>
+
+            <body name="leg_3_coxa" pos="0.3239949493661166 0.3239949493661166 -0.029999999999994975" euler="-1.5707963267948977 -0.7853981633974482 3.141592653589791">
+                <joint name="base_leg_3_coxa" type="hinge" axis="-1.8086610464098663e-15 0.9999999999999981 -7.101554364046656e-16" pos="0.1399999999999998 0.02999999999999516 -3.518245089995085e-17"/>
+                <geom name="leg_3_coxa_geom"      class="visual"   mesh="coxa" pos="0 0 0" euler="0 0 0"/>
+                <geom name="leg_3_coxa_collision" class="collision" type="capsule" mesh="coxa"/>
+                <inertial mass="12.32073453155839" pos="0.05402213314212041 0.036464257221399246 -3.283418440414197e-17" fullinertia="0.03396894349663148 0.05637559421979331 0.08049059488506963 0.02258509432851058 -1.6175569950115575e-16 -3.656598776377609e-17"/>
+
+                <body name="leg_3_femur" pos="-0.40000000000000036 0.10000000000000009 -0.0900000000000004" euler="2.9582283945787925e-31 0.0 4.5920860387590216e-17">
+                    <joint name="leg_3_coxa_leg_3_femur" type="hinge" axis="2.220446049250313e-16 3.925232361368096e-17 -1.0000003094489522" pos="0.3999999283928757 -4.9454878757141094e-15 0.06000028770137983"/>
+                    <geom name="leg_3_femur_geom"      class="visual"   mesh="femur" pos="0 0 0" euler="0 0 0"/>
+                    <geom name="leg_3_femur_collision" class="collision" type="capsule" mesh="femur"/>
+                    <inertial mass="22.539225349601974" pos="0.20000000000000007 1.3323016437104531e-17 0.029999999999999985" fullinertia="0.024773783448381013 0.4396427974324626 0.45089304567108146 1.681358468132686e-16 -5.707240235963695e-16 -1.7470784013540618e-16"/>
+
+                    <body name="leg_3_tibia" pos="4.263256414560601e-16 0.0 0.1200000000000001" euler="-3.141592653589793 0.0 -1.5707963267948966">
+                        <joint name="leg_3_femur_leg_3_tibia" type="hinge" axis="0.0 1.1102230246251565e-16 -1.0000003094489522" pos="-5.398459205688788e-15 2.2887736321475227e-07 0.06000041940540146"/>
+                        <geom name="leg_3_tibia_geom"      class="visual"   mesh="tibia" pos="0 0 0" euler="0 0 0"/>
+                        <geom name="leg_3_tibia_collision" class="collision" type="capsule" mesh="tibia"/>
+                        <inertial mass="13.247878794023343" pos="8.288792186742524e-18 -0.11367662738338086 0.029999999999999943" fullinertia="0.12275338253184032 0.01191573194546747 0.1267203872008955 -4.468284809618678e-17 -7.850462293419021e-17 -1.343543332144037e-15"/>
+
+                        <body name="leg_3_foot" pos="4.973799150320702e-16 1.4210854715202004e-16 -7.105427357601002e-17" euler="-2.7755575615628894e-16 1.7326462129019245e-16 3.9443045261050573e-31">                            <geom name="leg_3_foot_geom"      class="visual"   mesh="foot" pos="0 0 0" euler="0 0 0"/>
+                            <geom name="leg_3_foot_collision" class="collision" type="sphere" mesh="foot" fitscale="1.1"/>
+                            <site name="leg_3_foot_site" pos="0.0 -0.33 0.029" size="0.03" rgba=".2 .2 .6 .3"/>
+                            <inertial mass="2.455594443706006" pos="-0.8406245830111374 -0.8406245830111243 0.07000000000000572" fullinertia="0.0020079860058377684 0.002007986005837294 0.0023406555293772335 -0.00043364943157665455 -7.17909681337716e-19 5.496228523996588e-17"/>
+                        </body>
+                    </body>
+                </body>
+            </body>
+
+            <body name="leg_4_coxa" pos="0.3239949493661166 -0.32399494936611645 -0.02999999999999524" euler="-1.5707963267948968 0.7853981633974482 3.1415926535897927">
+                <joint name="base_leg_4_coxa" type="hinge" axis="-7.800670040177732e-16 0.9999999999999999 -1.4536147162376828e-16" pos="0.1399999999999998 0.029999999999995367 -1.0150535880341356e-16"/>
+                <geom name="leg_4_coxa_geom"      class="visual"   mesh="coxa" pos="0 0 0" euler="0 0 0"/>
+                <geom name="leg_4_coxa_collision" class="collision" type="capsule" mesh="coxa"/>
+                <inertial mass="12.32073453155839" pos="0.05402213314212051 0.03646425722139939 2.9393971428165913e-17" fullinertia="0.033968943496631675 0.05637559421979346 0.08049059488507031 0.02258509432851073 4.1819807827043044e-17 5.0785758843757864e-17"/>
+
+                <body name="leg_4_femur" pos="-0.40000000000000036 0.10000000000000009 -0.0900000000000004" euler="2.9582283945787925e-31 0.0 4.5920860387590216e-17">
+                    <joint name="leg_4_coxa_leg_4_femur" type="hinge" axis="2.220446049250313e-16 3.925232361368096e-17 -1.0000003094489522" pos="0.3999999283928757 -4.9454878757141094e-15 0.06000028770137983"/>
+                    <geom name="leg_4_femur_geom"      class="visual"   mesh="femur" pos="0 0 0" euler="0 0 0"/>
+                    <geom name="leg_4_femur_collision" class="collision" type="capsule" mesh="femur"/>
+                    <inertial mass="22.539225349601974" pos="0.20000000000000007 1.3323016437104531e-17 0.029999999999999985" fullinertia="0.024773783448381013 0.4396427974324626 0.45089304567108146 1.681358468132686e-16 -5.707240235963695e-16 -1.7470784013540618e-16"/>
+
+                    <body name="leg_4_tibia" pos="4.263256414560601e-16 0.0 0.1200000000000001" euler="-3.141592653589793 0.0 -1.5707963267948966">
+                        <joint name="leg_4_femur_leg_4_tibia" type="hinge" axis="0.0 1.1102230246251565e-16 -1.0000003094489522" pos="-5.398459205688788e-15 2.2887736321475227e-07 0.06000041940540146"/>
+                        <geom name="leg_4_tibia_geom"      class="visual"   mesh="tibia" pos="0 0 0" euler="0 0 0"/>
+                        <geom name="leg_4_tibia_collision" class="collision" type="capsule" mesh="tibia"/>
+                        <inertial mass="13.247878794023343" pos="8.288792186742524e-18 -0.11367662738338086 0.029999999999999943" fullinertia="0.12275338253184032 0.01191573194546747 0.1267203872008955 -4.468284809618678e-17 -7.850462293419021e-17 -1.343543332144037e-15"/>
+
+                        <body name="leg_4_foot" pos="4.973799150320702e-16 1.4210854715202004e-16 -7.105427357601002e-17" euler="-2.7755575615628894e-16 1.7326462129019245e-16 3.9443045261050573e-31">                            <geom name="leg_4_foot_geom"      class="visual"   mesh="foot" pos="0 0 0" euler="0 0 0"/>
+                            <geom name="leg_4_foot_collision" class="collision" type="sphere" mesh="foot" fitscale="1.1"/>
+                            <site name="leg_4_foot_site" pos="0.0 -0.33 0.029" size="0.03" rgba=".2 .2 .6 .3"/>
+                            <inertial mass="2.455594443706006" pos="-0.8406245830111374 -0.8406245830111243 0.07000000000000572" fullinertia="0.0020079860058377684 0.002007986005837294 0.0023406555293772335 -0.00043364943157665455 -7.17909681337716e-19 5.496228523996588e-17"/>
+                        </body>
+                    </body>
+                </body>
+            </body>
+
+        </body>
+    </worldbody>
+
+    <contact>
+        <exclude body1="leg_1_coxa" body2="leg_1_tibia"/>
+        <exclude body1="leg_1_femur" body2="leg_1_foot"/>
+
+        <exclude body1="leg_2_coxa" body2="leg_2_tibia"/>
+        <exclude body1="leg_2_femur" body2="leg_2_foot"/>
+
+        <exclude body1="leg_3_coxa" body2="leg_3_tibia"/>
+        <exclude body1="leg_3_femur" body2="leg_3_foot"/>
+
+        <exclude body1="leg_4_coxa" body2="leg_4_tibia"/>
+        <exclude body1="leg_4_femur" body2="leg_4_foot"/>
+    </contact>
+</mujoco>

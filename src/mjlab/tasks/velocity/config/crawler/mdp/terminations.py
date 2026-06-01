@@ -2,7 +2,6 @@
 Terminations: episode-ending conditions (timeout, robot fell over, ...)
 """
 
-
 import math
 
 from mjlab.envs.mdp.terminations import bad_orientation, time_out

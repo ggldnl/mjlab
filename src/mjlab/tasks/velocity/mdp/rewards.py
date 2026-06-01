@@ -25,10 +25,10 @@ _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
 def track_target_height(
-        env,
-        asset_cfg: SceneEntityCfg,
-        command_name: str,
-        std: float,
+  env,
+  asset_cfg: SceneEntityCfg,
+  command_name: str,
+  std: float,
 ) -> torch.Tensor:
   """Penalize deviation from the per-env target height sampled at reset.
 
@@ -43,7 +43,7 @@ def track_target_height(
   base_z = asset.data.body_com_pos_w[:, body_idx, 2]  # (num_envs,)
   target = env.command_manager.get_command(command_name)  # (num_envs, 1)
   error = base_z - target[:, 0]
-  return torch.exp(-(error ** 2) / std ** 2)
+  return torch.exp(-(error**2) / std**2)
 
 
 def track_linear_velocity(

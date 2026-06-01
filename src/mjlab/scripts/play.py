@@ -183,16 +183,19 @@ def run_play(task_id: str, cfg: PlayConfig):
     action_shape: tuple[int, ...] = env.unwrapped.action_space.shape
 
     if cfg.agent == "zero":
+
       class PolicyZero:
         def __call__(self, obs) -> torch.Tensor:
           del obs
           return torch.zeros(action_shape, device=env.unwrapped.device)
+
       policy = PolicyZero()
 
     elif cfg.agent == "sinusoidal":
       """
       Sinusoidal policy, used to check joint ranges.
       """
+
       class PolicySinusoidal:
         def __init__(self, freq: float = 1.0):
           self.freq = freq
@@ -203,17 +206,24 @@ def run_play(task_id: str, cfg: PlayConfig):
 
         def __call__(self, obs) -> torch.Tensor:
           del obs
-          t = self._step * self.freq * 2 * torch.pi / 100  # period of 100 steps at freq=1
-          actions = torch.sin(t + self.phase_offsets)  # stays in [-1, 1] by construction
+          t = (
+            self._step * self.freq * 2 * torch.pi / 100
+          )  # period of 100 steps at freq=1
+          actions = torch.sin(
+            t + self.phase_offsets
+          )  # stays in [-1, 1] by construction
           self._step += 1
           return actions.expand(action_shape)
+
       policy = PolicySinusoidal()
 
     else:
+
       class PolicyRandom:
         def __call__(self, obs) -> torch.Tensor:
           del obs
           return 2 * torch.rand(action_shape, device=env.unwrapped.device) - 1
+
       policy = PolicyRandom()
 
   else:

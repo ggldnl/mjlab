@@ -26,7 +26,11 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.utils.lab_api.math import quat_apply_inverse
 
 from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME, FOOT_SITE_NAMES
-from mjlab.asset_zoo.robots.crawler.actuators import COXA_JOINT_REGEX, FEMUR_JOINT_REGEX, TIBIA_JOINT_REGEX
+from mjlab.asset_zoo.robots.crawler.actuators import (
+  COXA_JOINT_REGEX,
+  FEMUR_JOINT_REGEX,
+  TIBIA_JOINT_REGEX,
+)
 from mjlab.asset_zoo.robots.crawler.actuators import LEG_PHASE_OFFSETS
 
 
@@ -84,7 +88,9 @@ def flat_orientation(env: ManagerBasedRlEnv, std: float) -> torch.Tensor:
   return torch.exp(-xy_squared / std**2)
 
 
-def base_height(env: ManagerBasedRlEnv, target_height: float, std: float) -> torch.Tensor:
+def base_height(
+  env: ManagerBasedRlEnv, target_height: float, std: float
+) -> torch.Tensor:
   """
   Reward staying close to a target base height.
   Returns values in (0, 1]: 1.0 at target, decaying with distance.
@@ -106,7 +112,7 @@ def base_stability(env: ManagerBasedRlEnv, std: float = 0.5) -> torch.Tensor:
   """
   asset = env.scene["robot"]
   roll_pitch_vel = asset.data.root_link_vel_w[:, 3:5]  # wx, wy [B, 2]
-  wobble_sq = torch.sum(roll_pitch_vel ** 2, dim=1)
+  wobble_sq = torch.sum(roll_pitch_vel**2, dim=1)
   return torch.exp(-wobble_sq / std**2)
 
 
@@ -119,9 +125,10 @@ def nonfeet_ground_contact(
   found = sensor.data.found.reshape(env.num_envs, -1)
   return found.float().sum(dim=1)
 
+
 def all_feet_airborne(
-        env: ManagerBasedRlEnv,
-        sensor_name: str = "feet_ground_contact",
+  env: ManagerBasedRlEnv,
+  sensor_name: str = "feet_ground_contact",
 ) -> torch.Tensor:
   """
   Penalize simultaneous loss of all ground contact (jumping).
@@ -134,21 +141,17 @@ def all_feet_airborne(
 
 
 rewards = {
-
   # Primary task
-
   "track_linear_velocity": RewardTermCfg(
     func=track_linear_velocity,
     weight=5.0,
     params={"command_name": "twist", "std": 0.25},
   ),
-
   "track_angular_velocity": RewardTermCfg(
     func=track_angular_velocity,
     weight=2.5,
     params={"command_name": "twist", "std": 0.25},
   ),
-
   "phase_contact": RewardTermCfg(
     func=phase_contact_reward,
     weight=2.0,
@@ -157,74 +160,61 @@ rewards = {
       "command_name": "twist",
     },
   ),
-
   # Stability
-
   "base_stability": RewardTermCfg(
     func=base_stability,
     weight=0.0,  # curriculum
     params={"std": 0.5},
   ),
-
   "base_height": RewardTermCfg(
     func=base_height,
     weight=0.0,  # curriculum
-    params={"target_height": 0.03, "std": 0.25},
+    params={"target_height": 0.3, "std": 0.25},
   ),
-
   "upright": RewardTermCfg(
     func=flat_orientation,
     weight=0.0,  # curriculum
     params={"std": 0.5},
   ),
-  
   # Pose
-  
   "pose": RewardTermCfg(
-      func=variable_posture,
-      weight=0.5,
-      params={
-          "asset_cfg": SceneEntityCfg(
-            "robot",
-            joint_names=(
-              COXA_JOINT_REGEX,
-              FEMUR_JOINT_REGEX,
-              TIBIA_JOINT_REGEX
-            ),  # (".*",)
-          ),
-          "command_name": "twist",
-          "std_standing": {
-              # When standing still: tight tolerance, robot should hold default pose closely.
-              COXA_JOINT_REGEX:  0.05,
-              FEMUR_JOINT_REGEX: 0.1,
-              TIBIA_JOINT_REGEX: 0.1,
-          },
-          "std_walking": {
-              # When walking: open up the tolerance significantly to not fight the gait.
-              COXA_JOINT_REGEX:  0.1,
-              FEMUR_JOINT_REGEX: 0.3,
-              TIBIA_JOINT_REGEX: 0.5,
-          },
-          "std_running": {
-              # At higher speeds allow even more deviation.
-              COXA_JOINT_REGEX:  0.25,
-              FEMUR_JOINT_REGEX: 0.5,
-              TIBIA_JOINT_REGEX: 0.6,
-          },
-          "walking_threshold": 0.05,   # m/s
-          "running_threshold": 0.25,   # m/s
+    func=variable_posture,
+    weight=0.5,
+    params={
+      "asset_cfg": SceneEntityCfg(
+        "robot",
+        joint_names=(COXA_JOINT_REGEX, FEMUR_JOINT_REGEX, TIBIA_JOINT_REGEX),  # (".*",)
+      ),
+      "command_name": "twist",
+      "std_standing": {
+        # When standing still: tight tolerance, robot should hold default pose closely.
+        COXA_JOINT_REGEX: 0.05,
+        FEMUR_JOINT_REGEX: 0.1,
+        TIBIA_JOINT_REGEX: 0.1,
       },
+      "std_walking": {
+        # When walking: open up the tolerance significantly to not fight the gait.
+        COXA_JOINT_REGEX: 0.1,
+        FEMUR_JOINT_REGEX: 0.3,
+        TIBIA_JOINT_REGEX: 0.5,
+      },
+      "std_running": {
+        # At higher speeds allow even more deviation.
+        COXA_JOINT_REGEX: 0.25,
+        FEMUR_JOINT_REGEX: 0.5,
+        TIBIA_JOINT_REGEX: 0.6,
+      },
+      "walking_threshold": 0.05,  # m/s
+      "running_threshold": 0.25,  # m/s
+    },
   ),
-
   # Foot
-
   # Structural contact guard: prevents dragging limbs on the ground.
   "nonfeet_ground_contact": RewardTermCfg(
     func=nonfeet_ground_contact,
     weight=-1.0,
     params={"sensor_name": "nonfeet_ground_contact"},
   ),
-
   "foot_slip": RewardTermCfg(
     func=feet_slip,
     weight=0.0,  # curriculum
@@ -235,7 +225,6 @@ rewards = {
       "asset_cfg": SceneEntityCfg("robot", site_names=FOOT_SITE_NAMES),
     },
   ),
-
   # Foot clearance: penalize feet that are in swing but not reaching target height.
   # Uses foot_height_scan to measure actual foot height above terrain.
   "foot_swing_height": RewardTermCfg(
@@ -244,45 +233,33 @@ rewards = {
     params={
       "sensor_name": "feet_ground_contact",
       "height_sensor_name": "foot_height_scan",
-      "target_height": 0.02,  # 2 cm
+      "target_height": 0.15,  # 2 cm
       "command_name": "twist",
       "command_threshold": 0.05,
     },
   ),
-
   "feet_air_time": RewardTermCfg(
     func=feet_air_time,
     weight=0.0,  # curriculum
     params={
       "sensor_name": "feet_ground_contact",
-      "threshold_min": 0.1,
-      "threshold_max": 0.5,
+      "threshold_min": 0.5,
+      "threshold_max": 1.0,
       "command_name": "twist",
       "command_threshold": 0.02,
     },
   ),
-
   # Polish
-
   "action_rate_l2": RewardTermCfg(
     func=action_rate_l2,
     weight=-0.0,  # curriculum
   ),
-
   "self_collisions": RewardTermCfg(
     func=self_collision_cost,
     weight=-0.2,
-    params={
-      "sensor_name": "self_collision",
-      "force_threshold": 2.5
-    },
+    params={"sensor_name": "self_collision", "force_threshold": 2.5},
   ),
-
-  "dof_pos_limits": RewardTermCfg(
-    func=joint_pos_limits,
-    weight=-1.0
-  ),
-
+  "dof_pos_limits": RewardTermCfg(func=joint_pos_limits, weight=-1.0),
   "soft_landing": RewardTermCfg(
     func=soft_landing,
     weight=-1e-5,
