@@ -5,18 +5,22 @@ velocity or ground truth foot contact forces). The critic group usually starts w
 actor_terms and adds privileged terms on top.
 """
 
+import torch
+
+from mjlab.asset_zoo.robots.crawler.actuators import LEG_PHASE_OFFSETS
+from mjlab.asset_zoo.robots.crawler.sensors import TERRAIN_SCAN
+from mjlab.envs import ManagerBasedRlEnv
 from mjlab.envs.mdp.observations import (
+  base_ang_vel,
+  base_lin_vel,
   builtin_sensor,
   generated_commands,
+  height_scan,
   joint_pos_rel,
   joint_vel_rel,
   last_action,
   projected_gravity,
-  height_scan,
-  base_lin_vel,
-  base_ang_vel,
 )
-from mjlab.envs import ManagerBasedRlEnv
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.tasks.velocity.mdp.observations import (
   foot_air_time,
@@ -25,11 +29,6 @@ from mjlab.tasks.velocity.mdp.observations import (
   foot_height,
 )
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
-import torch
-
-from mjlab.asset_zoo.robots.crawler.actuators import LEG_PHASE_OFFSETS
-from mjlab.asset_zoo.robots.crawler.sensors import TERRAIN_SCAN
-
 
 # At 200 Hz / decimation 4 = 50 Hz policy. 10 frames = 200 ms,
 # enough to observe roughly one full stride cycle.

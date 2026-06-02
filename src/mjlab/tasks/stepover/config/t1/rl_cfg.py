@@ -1,4 +1,4 @@
-"""RL configuration for the Booster T1 jump task."""
+"""RL configuration for the Booster T1 step-over task."""
 
 from mjlab.rl import (
   RslRlModelCfg,
@@ -7,8 +7,8 @@ from mjlab.rl import (
 )
 
 
-def booster_t1_jump_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-  """Create the RL runner configuration for the Booster T1 jump task."""
+def booster_t1_stepover_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create the RL runner configuration for the Booster T1 step-over task."""
   return RslRlOnPolicyRunnerCfg(
     actor=RslRlModelCfg(
       hidden_dims=(512, 256, 128),
@@ -39,7 +39,7 @@ def booster_t1_jump_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       desired_kl=0.01,
       max_grad_norm=1.0,
     ),
-    experiment_name="t1_jump",
+    experiment_name="t1_stepover",
     save_interval=50,
     num_steps_per_env=24,
     max_iterations=30_000,

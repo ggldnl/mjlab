@@ -8,37 +8,27 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Added a barrier step-over environment for the Booster T1 robot
+  (``Mjlab-StepOver-Booster-T1``). The robot starts standing in front of a
+  full-width barrier and must step over it in place - one leg at a time - and
+  end standing on the far side; there is no walking approach. A swing-foot
+  ``StepOverAbstraction`` places a per-foot via-point above the barrier and
+  rewards the foot for clearing it, supplying the dense guidance the maneuver
+  would otherwise lack. The barrier height grows with a curriculum (row 0 is
+  flat). The foot is actuated, so the via-point is imposed kinematic scaffolding
+  rather than an exact physical template.
+- Added a stair-climbing environment for the Booster T1 robot
+  (``Mjlab-Velocity-Stairs-Booster-T1``). Stair climbing is ordinary terrain
+  locomotion with no underactuated phase for a template model to be exact about,
+  so this is the velocity-tracking task with the terrain swapped for a
+  stairs-only curriculum (row 0 flat, higher rows raising the step height) -
+  deliberately without an abstraction.
 - Added an *abstraction* mechanism (``mjlab.abstraction`` and
   ``AbstractionManager``) for guiding RL with reduced-order template models.
-  An abstraction encodes simple physics about a behavior, samples a per-episode
-  reference, and emits scalar signals (in ``[0, 1]``) that are surfaced to the
-  reward manager as ordinary reward terms and to the policy as observations.
-  The mechanism is opt-in: environments without abstractions use a no-op
-  manager.
-- Added a standing-jump environment for the Booster T1 robot
-  (``Mjlab-Jump-Booster-T1``). The robot spawns on a platform and must jump
-  across a gap to a target on the far side. A ballistic ``JumpAbstraction``
-  supplies the takeoff-velocity, (back-loaded) parabola-tracking, and
-  landing-accuracy signals; stability rewards (upright, posture) are gated to a
-  successful landing near the target so they cannot be farmed by standing or
-  hopping in place; and failure terminations are penalized so the policy cannot
-  escape by tipping over. A terrain-level curriculum starts every environment on
-  flat ground (zero gap, short hop) and widens the gap - and thus the jump
-  distance, via far-platform landing patches - as each environment reliably
-  lands on target.
-- Added a jumping environment for the Booster T1 robot
-  (``Mjlab-Jumping-Booster-T1``). It extends the flat velocity-tracking task
-  with a static box obstacle: the robot is commanded to walk straight forward
-  into a rigid barrier and must jump over it to keep tracking its forward
-  velocity. The task enables whole-body collision so the obstacle is a genuine
-  barrier and shapes the leap with foot-clearance and obstacle-crossing rewards.
-- Added a dribbling environment for the Booster T1 robot
-  (``Mjlab-Dribbling-Booster-T1``). It extends the flat velocity-tracking task
-  with a soccer ball: the robot tracks its (forward-biased) commanded velocity
-  while keeping the ball a dribbling distance in front of it and matching the
-  ball's velocity to the command. A reward curriculum first lets the policy
-  learn to walk (ball rewards at zero weight) and then ramps up the
-  ball-position and ball-velocity rewards.
+  An abstraction encodes simple physics about a behavior and produces a
+  per-episode reference that is consumed DeepMimic-style - as a reference plus a
+  feasibility tube - rather than as a reward to be maximized. The mechanism is
+  opt-in: environments without abstractions use a no-op manager.
 - Added velocity tracking environments for the Booster T1 robot
   (``Mjlab-Velocity-Flat-Booster-T1`` and
   ``Mjlab-Velocity-Rough-Booster-T1``), mirroring the existing Unitree G1

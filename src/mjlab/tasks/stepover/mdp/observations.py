@@ -1,4 +1,4 @@
-"""Observation terms for the jump task."""
+"""Observation terms for the step-over task."""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ def abstraction_obs(
 ) -> torch.Tensor:
   """Expose an abstraction's reference to the policy.
 
-  ``key`` selects which reference tensor to return (e.g. ``"target"`` for the
-  landing target in the base frame, ``"takeoff_velocity"``, or ``"phase"``).
+  ``key`` selects which reference tensor to return (e.g. ``"barrier"``,
+  ``"via_points"``, ``"phase"``, or ``"feet_crossed"``).
   """
   term = cast(Abstraction, env.abstraction_manager.get_term(abstraction_name))
   return term.get_obs(key)

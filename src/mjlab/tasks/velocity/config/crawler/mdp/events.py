@@ -7,7 +7,12 @@ reset (every episode), or interval (randomly during an episode). This is where t
 Keeping this separate from rewards/observations lets us swap DR profiles independently
 """
 
-from mjlab.envs.mdp.dr import body_com_offset, geom_friction, encoder_bias
+from mjlab.asset_zoo.robots.crawler.actuators import (
+  MG90S_VELOCITY_LIMIT,
+  SMALLEST_ABS_LIM,
+)
+from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME, FOOT_COLLISION_NAMES
+from mjlab.envs.mdp.dr import body_com_offset, encoder_bias, geom_friction
 from mjlab.envs.mdp.events import (
   push_by_setting_velocity,
   reset_joints_by_offset,
@@ -15,13 +20,6 @@ from mjlab.envs.mdp.events import (
 )
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-
-from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME, FOOT_COLLISION_NAMES
-from mjlab.asset_zoo.robots.crawler.actuators import (
-  SMALLEST_ABS_LIM,
-  MG90S_VELOCITY_LIMIT,
-)
-
 
 events = {
   "reset_base": EventTermCfg(

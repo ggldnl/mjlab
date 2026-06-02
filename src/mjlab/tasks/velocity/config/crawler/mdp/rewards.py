@@ -10,28 +10,27 @@ the gradient competition.
 
 import torch
 
-from mjlab.envs.mdp import action_rate_l2, joint_pos_limits
-from mjlab.managers import RewardTermCfg, SceneEntityCfg
-from mjlab.tasks.velocity.mdp import (
-  feet_slip,
-  feet_air_time,
-  self_collision_cost,
-  track_angular_velocity,
-  track_linear_velocity,
-  variable_posture,
-  feet_swing_height,
-  soft_landing,
-)
-from mjlab.envs import ManagerBasedRlEnv
-from mjlab.utils.lab_api.math import quat_apply_inverse
-
-from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME, FOOT_SITE_NAMES
 from mjlab.asset_zoo.robots.crawler.actuators import (
   COXA_JOINT_REGEX,
   FEMUR_JOINT_REGEX,
+  LEG_PHASE_OFFSETS,
   TIBIA_JOINT_REGEX,
 )
-from mjlab.asset_zoo.robots.crawler.actuators import LEG_PHASE_OFFSETS
+from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME, FOOT_SITE_NAMES
+from mjlab.envs import ManagerBasedRlEnv
+from mjlab.envs.mdp import action_rate_l2, joint_pos_limits
+from mjlab.managers import RewardTermCfg, SceneEntityCfg
+from mjlab.tasks.velocity.mdp import (
+  feet_air_time,
+  feet_slip,
+  feet_swing_height,
+  self_collision_cost,
+  soft_landing,
+  track_angular_velocity,
+  track_linear_velocity,
+  variable_posture,
+)
+from mjlab.utils.lab_api.math import quat_apply_inverse
 
 
 def phase_contact_reward(

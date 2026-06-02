@@ -3,9 +3,8 @@ Curriculum: how difficulty ramps over training (e.g. expanding velocity ranges a
 """
 
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
-from mjlab.tasks.velocity.mdp.curriculums import commands_vel
 from mjlab.tasks.velocity.mdp import reward_weight
-
+from mjlab.tasks.velocity.mdp.curriculums import commands_vel
 
 _HORIZON = 24
 

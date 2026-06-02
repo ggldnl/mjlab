@@ -1,6 +1,6 @@
-"""Box obstacle entity for the jumping task.
+"""Static box obstacle entity.
 
-A static rectangular obstacle the robot must jump over. The box has no freejoint,
+A static rectangular obstacle the robot must clear. The box has no freejoint,
 so mjlab auto-wraps it as a *mocap* body: it still participates in collisions (a
 rigid, immovable barrier) but is never moved by physics, and its pose can be set
 per-environment at reset via :func:`reset_root_state_uniform`.

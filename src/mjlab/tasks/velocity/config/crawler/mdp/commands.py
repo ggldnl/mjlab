@@ -5,9 +5,8 @@ Commands: what goals are sampled and sent to the policy each step (e.g. target v
 import math
 from typing import Dict
 
-from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.managers import CommandTermCfg
-
+from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 
 commands: Dict[str, CommandTermCfg] = {
   "twist": UniformVelocityCommandCfg(

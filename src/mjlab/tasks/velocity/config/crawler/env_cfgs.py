@@ -6,24 +6,21 @@ It also owns the things that don't fit elsewhere:
 - sim_cfg(): MuJoCo solver parameters (timestep, iteration counts, contact model)
 """
 
+from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME
+from mjlab.asset_zoo.robots.crawler.crawler_constants import get_crawler_robot_cfg
+from mjlab.asset_zoo.robots.crawler.sensors import SENSORS
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.scene import SceneCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
-from mjlab.viewer import ViewerConfig
-
-from mjlab.asset_zoo.robots.crawler.crawler_constants import get_crawler_robot_cfg
-from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME
-from mjlab.asset_zoo.robots.crawler.sensors import SENSORS
-
+from mjlab.tasks.velocity.config.crawler.mdp import observations
 from mjlab.tasks.velocity.config.crawler.mdp.actions import actions
 from mjlab.tasks.velocity.config.crawler.mdp.commands import commands
 from mjlab.tasks.velocity.config.crawler.mdp.curriculums import curriculum
-from mjlab.tasks.velocity.config.crawler.mdp.terminations import terminations
 from mjlab.tasks.velocity.config.crawler.mdp.events import events
-from mjlab.tasks.velocity.config.crawler.mdp import observations
 from mjlab.tasks.velocity.config.crawler.mdp.rewards import rewards
-
+from mjlab.tasks.velocity.config.crawler.mdp.terminations import terminations
 from mjlab.terrains import TerrainEntityCfg
+from mjlab.viewer import ViewerConfig
 
 
 def scene_cfg(num_envs: int = 2048) -> SceneCfg:

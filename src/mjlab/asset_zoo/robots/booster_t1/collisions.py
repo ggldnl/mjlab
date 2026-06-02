@@ -20,7 +20,7 @@ FEET_ONLY_COLLISION = CollisionCfg(
   friction=(0.6,),
 )
 
-# Feet collision with inter-foot contacts enabled (for dribbling)
+# Feet collision with inter-foot contacts enabled
 # - Foot geoms collide with environment (bit 0) AND each other (bit 1)
 # - contype=3 (bits 0+1), conaffinity=3 (bits 0+1)
 # - Ground must have contype=1 (default) so bit 0 matches

@@ -1,5 +1,7 @@
 """Booster T1 velocity environment configurations."""
 
+from dataclasses import replace
+
 from mjlab.asset_zoo.robots import (
   T1_ACTION_SCALE,
   get_t1_robot_cfg,
@@ -18,6 +20,7 @@ from mjlab.sensor import (
 )
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
+from mjlab.terrains.config import STAIRS_TERRAINS_CFG
 
 # Trunk is the floating base; the IMU site and subtree angular momentum sensor
 # both live on it.
@@ -164,6 +167,33 @@ def booster_t1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         cfg.scene.terrain.terrain_generator.num_cols = 5
         cfg.scene.terrain.terrain_generator.num_rows = 5
         cfg.scene.terrain.terrain_generator.border_width = 10.0
+
+  return cfg
+
+
+def booster_t1_stairs_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create Booster T1 stair-climbing velocity configuration.
+
+  The task is just the rough-terrain velocity setup with the terrain swapped
+  for a stairs-only curriculum (row 0 is flat; higher rows raise the step
+  height). The policy is blind-proprioceptive plus the existing height-scan;
+  the terrain-level curriculum promotes envs that walk far enough on their
+  current step height.
+  """
+
+  cfg = booster_t1_rough_env_cfg(play=play)
+
+  assert cfg.scene.terrain is not None
+  cfg.scene.terrain.terrain_generator = replace(STAIRS_TERRAINS_CFG)
+  cfg.scene.terrain.terrain_generator.curriculum = not play
+  # Start every env on the flat row and let the curriculum raise the steps.
+  cfg.scene.terrain.max_init_terrain_level = 0
+
+  if play:
+    assert cfg.scene.terrain.terrain_generator is not None
+    cfg.scene.terrain.terrain_generator.num_rows = 5
+    cfg.scene.terrain.terrain_generator.num_cols = 5
+    cfg.scene.terrain.terrain_generator.border_width = 10.0
 
   return cfg
 
