@@ -1,7 +1,17 @@
-from mjlab.envs.mdp import *  # noqa: F401, F403
+"""MDP terms for the crawler velocity task.
 
-from .curriculums import *  # noqa: F403
-from .events import *  # noqa: F403
-from .observations import *  # noqa: F403
-from .rewards import *  # noqa: F403
-from .terminations import *  # noqa: F403
+Re-exports the shared velocity MDP plus the crawler-specific abstraction and the
+thin helpers that wire abstraction signals/references into the reward and
+observation managers.
+"""
+
+from mjlab.tasks.velocity.mdp import *  # noqa: F401, F403
+
+from .abstractions import (
+  TrotGaitAbstraction as TrotGaitAbstraction,
+)
+from .abstractions import (
+  TrotGaitAbstractionCfg as TrotGaitAbstractionCfg,
+)
+from .observations import abstraction_obs as abstraction_obs
+from .rewards import abstraction_signal as abstraction_signal

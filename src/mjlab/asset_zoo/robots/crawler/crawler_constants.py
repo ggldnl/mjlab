@@ -14,9 +14,7 @@ from mjlab.asset_zoo.robots.crawler.actuators import INIT_STATE
 
 
 LOCAL_FOLDER = Path(__file__).parent
-CRAWLER_DESCRIPTION_PATH: Path = (
-  LOCAL_FOLDER / "xmls" / "crawler_scaled" / "crawler_scaled.xml"
-)
+CRAWLER_DESCRIPTION_PATH: Path = LOCAL_FOLDER / "xmls" / "crawler" / "crawler.xml"
 assert CRAWLER_DESCRIPTION_PATH.exists()
 
 

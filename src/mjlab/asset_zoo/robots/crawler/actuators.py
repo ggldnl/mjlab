@@ -47,7 +47,7 @@ JOINT_NAMES = [
 LEG_PHASE_OFFSETS = torch.tensor([0.0, math.pi, 0.0, math.pi])
 
 # Scale actuator parameters: a small robot is difficult to simulate in mjlab
-SCALE = 10.0
+SCALE = 1.0
 MASS_SCALE = SCALE**3
 INERTIA_SCALE = SCALE**5
 TORQUE_SCALE = SCALE**4
@@ -131,9 +131,19 @@ TIBIA_ACTUATOR = BuiltinPositionActuatorCfg(
 
 # Default (standing) joint positions. They define "action = 0"
 # (the neutral posture the policy holds when outputting zeros).
+#
+# These must place the feet *below* the base so the robot stands on them.
+# On this model that requires a POSITIVE femur: femur=+0.5 puts the feet ~4.8 cm
+# below the base, giving an upright stance with all four feet planted and no
+# body/leg ground contact (verified in sim). Negative femur folds the legs
+# upward (feet above the base) and the robot rests on its hips -- do not use it.
 COXA_DEFAULT = 0.00
-FEMUR_DEFAULT = -0.20
-TIBIA_DEFAULT = -1.45
+FEMUR_DEFAULT = 0.50
+TIBIA_DEFAULT = -1.00
+
+# Base height (m) the robot holds at the neutral stance above, measured in sim.
+# Used as the height-reward target and to set a sane spawn height.
+NOMINAL_BASE_HEIGHT = 0.048 * SCALE
 
 # Joint hard limits
 COXA_LIMS = (-0.785, 0.785)
@@ -144,11 +154,10 @@ SMALLEST_ABS_LIM = min([abs(lim) for lim in [*COXA_LIMS, *FEMUR_LIMS, *TIBIA_LIM
 _SOFT = 0.9  # fraction of hard limits used as soft limits
 
 # Robot standing initially, no need to learn how to get up.
-# We need to manually tune the initial height. Using a kinematic
-# model to derive this will defy the sole purpose of using DRL:
-# it's difficult to have models for complex robots.
+# Spawn just above the neutral stance height so the feet settle onto the
+# ground instead of free-falling the body onto it each reset.
 INIT_STATE = EntityCfg.InitialStateCfg(
-  pos=(0.0, 0.0, 0.05 * SCALE),
+  pos=(0.0, 0.0, NOMINAL_BASE_HEIGHT + 0.005),
   joint_pos={
     COXA_JOINT_REGEX: COXA_DEFAULT,
     FEMUR_JOINT_REGEX: FEMUR_DEFAULT,
@@ -205,9 +214,26 @@ def _joint_value_dict(
   }
 
 
-COXA_SCALE = _scale_from_default(COXA_LIMS, COXA_DEFAULT)
-FEMUR_SCALE = _scale_from_default(FEMUR_LIMS, FEMUR_DEFAULT)
-TIBIA_SCALE = _scale_from_default(TIBIA_LIMS, TIBIA_DEFAULT)
+# Per-joint action ranges (rad), i.e. the max excursion from the neutral stance
+# that action = +/-1 commands. These are set PER JOINT from what a real gait
+# needs, not as one uniform fraction:
+#
+#   coxa  - the propulsion joint. Its swing is ~horizontal (dz~=0), so a large
+#           range barely affects tipping but directly sets stride length. An
+#           open-loop trot needs ~+/-0.5 rad of coxa to walk at ~0.11 m/s; the
+#           earlier uniform 0.35x fraction capped it at 0.247 rad, starving
+#           propulsion and pushing the policy toward drag/vibration exploits.
+#   femur - the lift joint. It moves the foot vertically and shifts the CoM, so
+#           it dominates tipping; keep it moderate (the open-loop gait only needs
+#           ~0.4 rad of lift).
+#   tibia - secondary shaping; moderate.
+#
+# All stay within the soft joint limits from their defaults
+# (coxa 0+/-0.5 < 0.707, femur 0.5+/-0.45 in [0.05,0.95] < 1.41, tibia
+# -1.0+/-0.45 in [-1.45,-0.55] < 2.12).
+COXA_SCALE = 0.50
+FEMUR_SCALE = 0.45
+TIBIA_SCALE = 0.45
 
 ACTION_SCALE = _joint_value_dict(COXA_SCALE, FEMUR_SCALE, TIBIA_SCALE)
 ACTION_OFFSET = _joint_value_dict(COXA_DEFAULT, FEMUR_DEFAULT, TIBIA_DEFAULT)

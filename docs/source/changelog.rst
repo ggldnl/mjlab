@@ -8,6 +8,37 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Added two flat-terrain velocity-tracking environments for the crawler
+  quadruped: a classic reward-shaped task (``Mjlab-Velocity-Flat-Crawler``) and
+  an abstraction-guided variant (``Mjlab-Velocity-Flat-Crawler-Abstraction``).
+  Both reuse the shared velocity factory but re-scale the command speeds,
+  tracking kernel, observation noise, foot-height targets, and disturbances to
+  the ~60 g robot's actual envelope (the factory defaults are sized for
+  metre-scale robots and leave this one with a flat, gradient-free reward). The
+  abstraction variant adds a ``TrotGaitAbstraction`` template model: a diagonal
+  trot gait clock plus a leashed velocity-integrated reference path, surfaced as
+  dense ``gait``/``clearance``/``path`` reward signals and fed to the policy as a
+  gait-clock and path-error observation, to guide the tip-prone robot toward a
+  trot it is too unstable to discover by random exploration.
+- Added ``encode-policy``, a script that encodes a trained locomotion policy's
+  behavior into a latent space and decodes it. It rolls out the policy to collect
+  short ``(observation, action)`` windows, trains a per-trajectory autoencoder
+  whose decoder is conditioned on a single latent ``z`` (and deliberately denied
+  the velocity command, so ``z`` must carry the behavioral intent), then drives
+  the viewer with the decoded policy for a chosen ``z``. Supports ``collect``,
+  ``train``, ``play``, and ``all`` phases.
+- Added a waving (greeting) environment for the Booster T1 robot
+  (``Mjlab-Waving-Booster-T1``). The robot stands on flat ground and waves one
+  arm to greet: a phase-driven target raises the right arm into a greeting pose
+  and swings it back and forth, a ``wave_arm`` reward tracks the arm against it,
+  and a posture reward holds the rest of the body standing. There is no
+  locomotion command and no curriculum.
+- Added a running environment for the Booster T1 robot
+  (``Mjlab-Velocity-Running-Booster-T1``). Running is the flat velocity task
+  pushed to aggressive forward speeds: the command is biased toward fast forward
+  sprints with no standing envs, a velocity curriculum ramps the top speed up
+  over training, and a positive air-time reward credits the longer airborne
+  strides that distinguish a run from a walk.
 - Added a barrier step-over environment for the Booster T1 robot
   (``Mjlab-StepOver-Booster-T1``). The robot starts standing in front of a
   full-width barrier and must step over it in place - one leg at a time - and
@@ -56,6 +87,12 @@ Changed
 Fixed
 ^^^^^
 
+- Fixed the velocity joystick GUI crashing in the Viser viewer when a
+  command axis is disabled (range upper bound ``0.0``, as in the T1 running
+  play config) or configured wider than ``10.0``. The per-axis "Max" slider
+  hard-coded its bounds to ``[0.1, 10.0]`` and asserted when the initial
+  value fell outside them; the bounds now widen to include the configured
+  value.
 - Fixed ``ContactSensor.compute_first_contact`` and ``compute_first_air``
   occasionally missing events when a contact began or ended right at the
   last physics substep of a control step. ``current_contact_time`` /

@@ -1,5 +1,7 @@
 """RL configuration for Booster T1 velocity task."""
 
+from dataclasses import replace
+
 from mjlab.rl import (
   RslRlModelCfg,
   RslRlOnPolicyRunnerCfg,
@@ -44,3 +46,12 @@ def booster_t1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     num_steps_per_env=24,
     max_iterations=30_000,
   )
+
+
+def booster_t1_running_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create RL runner configuration for the Booster T1 running task.
+
+  Identical to the velocity runner aside from the experiment name; running is
+  the same policy architecture trained against a faster command distribution.
+  """
+  return replace(booster_t1_ppo_runner_cfg(), experiment_name="t1_running")

@@ -231,3 +231,38 @@ def booster_t1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     twist_cmd.ranges.ang_vel_z = (-0.7, 0.7)
 
   return cfg
+
+
+def booster_t1_running_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create Booster T1 flat-terrain running configuration.
+
+  This is the flat velocity-tracking task with a higher top forward speed. The
+  sampled command range and the final velocity-curriculum stage are raised so
+  the policy is trained to track fast forward velocities; everything else
+  (rewards, events, the gentle curriculum ramp from slow speeds) is left
+  identical to the flat task so it still trains from scratch.
+  """
+  cfg = booster_t1_flat_env_cfg(play=play)
+
+  # Raise the top forward speed. The command curriculum still starts slow, so
+  # the policy bootstraps from walking before being asked to sprint.
+  twist_cmd = cfg.commands["twist"]
+  assert isinstance(twist_cmd, UniformVelocityCommandCfg)
+  twist_cmd.ranges.lin_vel_x = (-2.0, 4.0)
+
+  if not play:
+    # Same staged ramp as the flat task, with one extra stage that pushes the
+    # top speed from 3.0 to 4.0 m/s once the earlier stages are mastered.
+    command_vel = cfg.curriculum["command_vel"]
+    command_vel.params["velocity_stages"] = [
+      {"step": 0, "lin_vel_x": (-1.0, 1.0), "ang_vel_z": (-0.5, 0.5)},
+      {"step": 5000 * 24, "lin_vel_x": (-1.5, 2.0), "ang_vel_z": (-0.7, 0.7)},
+      {"step": 10000 * 24, "lin_vel_x": (-2.0, 3.0)},
+      {"step": 15000 * 24, "lin_vel_x": (-2.0, 4.0)},
+    ]
+  else:
+    # Play at fast forward speeds.
+    twist_cmd.ranges.lin_vel_x = (-1.5, 4.0)
+    twist_cmd.ranges.ang_vel_z = (-0.7, 0.7)
+
+  return cfg
