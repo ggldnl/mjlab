@@ -170,7 +170,9 @@ def crawler_velocity_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     FEMUR_JOINT_REGEX: 0.3,
     TIBIA_JOINT_REGEX: 0.4,
   }
-  cfg.rewards["pose"].params["std_running"] = dict(cfg.rewards["pose"].params["std_walking"])
+  cfg.rewards["pose"].params["std_running"] = dict(
+    cfg.rewards["pose"].params["std_walking"]
+  )
   cfg.rewards["pose"].params["walking_threshold"] = 0.03
   cfg.rewards["pose"].params["running_threshold"] = 0.15
 

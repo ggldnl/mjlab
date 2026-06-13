@@ -1,4 +1,5 @@
 wandb/
+data/
 logs/
 onnx/
 videos/
