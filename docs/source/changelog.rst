@@ -8,18 +8,29 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
-- Added two flat-terrain velocity-tracking environments for the crawler
-  quadruped: a classic reward-shaped task (``Mjlab-Velocity-Flat-Crawler``) and
-  an abstraction-guided variant (``Mjlab-Velocity-Flat-Crawler-Abstraction``).
-  Both reuse the shared velocity factory but re-scale the command speeds,
-  tracking kernel, observation noise, foot-height targets, and disturbances to
-  the ~60 g robot's actual envelope (the factory defaults are sized for
-  metre-scale robots and leave this one with a flat, gradient-free reward). The
-  abstraction variant adds a ``TrotGaitAbstraction`` template model: a diagonal
-  trot gait clock plus a leashed velocity-integrated reference path, surfaced as
-  dense ``gait``/``clearance``/``path`` reward signals and fed to the policy as a
-  gait-clock and path-error observation, to guide the tip-prone robot toward a
-  trot it is too unstable to discover by random exploration.
+# TODO We should remove legacy stuff
+
+- Added a controllable crawler locomotion policy trained by *gait-guided* RL.
+  Training this tip-prone robot from scratch with PPO never discovered a gait, so
+  the open-loop gait is used as a dense reference reward instead. A
+  ``GaitController`` (diagonal-trot foot-trajectory central pattern generator plus
+  per-leg damped-least-squares inverse kinematics) defines, for each foot, a
+  target position in the base frame as a closed-form function of
+  ``(phase, vx, vy, wz)`` -- no inverse kinematics or precomputed table at
+  training time, fully vectorized on the GPU. ``Mjlab-Velocity-Flat-Crawler``
+  (standard PPO via ``VelocityOnPolicyRunner``) rewards the robot's feet for
+  tracking that reference, so the policy learns the joint actions that make the
+  feet follow the trot (discovering the leg IK implicitly), while also optimizing
+  the real velocity-tracking task so it can exceed the open-loop gait and -- with
+  pushes and domain randomization -- learn disturbance robustness. A strong
+  no-slip penalty plants the stance feet, which turns the base-frame foot
+  reference into actual locomotion rather than stepping in place. Observations
+  stay deployable: IMU (projected gravity, gyro) and joint encoders, the command,
+  and a gait clock; the foot reference is a training-only reward signal, so the
+  policy never observes feet. The gait also doubles as a headless diagnostic
+  (``python -m mjlab.asset_zoo.robots.crawler.gait --sweep``) reporting
+  achieved-versus-commanded base velocity, tip angle, foot contacts and actuator
+  saturation.
 - Added ``encode-policy``, a script that encodes a trained locomotion policy's
   behavior into a latent space and decodes it. It rolls out the policy to collect
   short ``(observation, action)`` windows, trains a per-trajectory autoencoder
