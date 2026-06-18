@@ -3,8 +3,7 @@
 Registers a flat-terrain velocity task for the crawler quadruped, trained by
 *gait-guided* RL: standard PPO with a dense foot-trajectory reference reward
 derived from the open-loop gait (see ``env_cfgs``). Uses the standard
-``VelocityOnPolicyRunner``. The behavioral-cloning ``CrawlerDistillRunner`` in
-``distill_runner.py`` is kept but not used.
+``VelocityOnPolicyRunner``.
 """
 
 from mjlab.tasks.registry import register_mjlab_task
