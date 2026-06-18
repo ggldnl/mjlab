@@ -1,117 +1,185 @@
-"""Crawler velocity environment configurations.
+"""Crawler velocity environment: gait-guided reinforcement learning (Option 2).
 
-Two flat-terrain velocity-tracking tasks for the ~60 g crawler quadruped:
+Instead of cloning the open-loop gait, we use it as a dense *reference reward*.
+The gait's central pattern generator gives, for each foot, a target position in
+the base frame as a closed-form function of ``(phase, vx, vy, wz)`` -- no inverse
+kinematics, no precomputed table, fully vectorized on the GPU. The reward is the
+closeness of the robot's actual feet to that reference, so PPO learns the joint
+actions that make the feet follow the trot (it discovers the IK implicitly,
+closed-loop). On top of that it optimizes the real velocity-tracking task, so the
+policy can *exceed* the open-loop gait and -- with pushes and domain
+randomization during training -- learn the disturbance robustness that pure
+imitation cannot give.
 
-- ``crawler_velocity_flat_env_cfg``: the *classic* setup. It reuses the shared
-  ``make_velocity_env_cfg`` factory (the same one Go1/T1 use) and re-tunes it for
-  a tiny, tip-prone robot. The single most important change is matching the
-  command speeds, the tracking kernel, the observation noise, and the foot-height
-  targets to the robot's actual scale - the factory defaults are sized for
-  metre-scale robots moving at 1-3 m/s, which gives this robot a flat,
-  gradient-free reward and explains why training never took off.
+Why this works where from-scratch PPO failed: the foot reference is a dense,
+phase-locked signal available from the first step, which bootstraps the gait and
+sidesteps the exploration dead-ends (standing, spinning) that a sparse
+velocity-only reward fell into.
 
-- ``crawler_velocity_abstraction_env_cfg``: the classic setup *plus* the trot
-  gait-clock + velocity-path abstraction, which hands the policy the rhythm and
-  the "where is forward" signal it is too tip-prone to discover on its own.
-
-Both run on flat ground with no terrain/command curriculum so the only thing the
-policy has to solve is "trot at the commanded velocity without tipping".
+Observations stay deployable: IMU (projected gravity, gyro) + joint encoders, the
+command, and a gait clock so the policy can phase-lock to the reference. The
+foot-reference reward reads sim foot positions, but those are training-only -- the
+policy never observes feet, so it deploys from IMU + encoders alone.
 """
 
 from __future__ import annotations
 
 import math
 
-from mjlab.asset_zoo.robots.crawler.actuators import (
-  ACTION_SCALE,
-  COXA_JOINT_REGEX,
-  FEMUR_JOINT_REGEX,
-  LEG_PHASE_OFFSETS,
-  TIBIA_JOINT_REGEX,
-)
+import numpy as np
+import torch
+
+from mjlab.asset_zoo.robots.crawler.actuators import ACTION_SCALE
 from mjlab.asset_zoo.robots.crawler.collisions import (
   BASE_NAME,
   FOOT_COLLISION_NAMES,
   FOOT_SITE_NAMES,
 )
 from mjlab.asset_zoo.robots.crawler.crawler_constants import get_crawler_robot_cfg
-from mjlab.asset_zoo.robots.crawler.sensors import (
-  FEET_GROUND,
-  FOOT_HEIGHT_SCAN,
-  IMU,
-  NONFEET_GROUND,
-  SELF_COLLISION,
-)
-from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.asset_zoo.robots.crawler.gait import GaitController, GaitParams
+from mjlab.asset_zoo.robots.crawler.sensors import FEET_GROUND, IMU
+from mjlab.entity import Entity
+from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
-from mjlab.managers.observation_manager import ObservationTermCfg
+from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
-from mjlab.tasks.velocity.config.crawler import mdp
-from mjlab.tasks.velocity.config.crawler.mdp.abstractions import TrotGaitAbstractionCfg
-from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg, self_collision_cost
+from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.tasks.velocity import mdp
+from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg, is_alive
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
+from mjlab.utils.lab_api.math import quat_apply_inverse
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
-# The crawler's open-loop diagonal trot tops out around ~0.12 m/s; command the
-# robot inside its physical envelope so the velocity-tracking reward actually has
-# a reachable target (and therefore a gradient).
-_LIN_VEL_X = (-0.12, 0.15)
-_LIN_VEL_Y = (-0.08, 0.08)
-_ANG_VEL_Z = (-1.0, 1.0)
+# Stride frequency of the reference gait (Hz). The gait-clock observation and the
+# foot-reference reward both derive their phase from this.
+GAIT_FREQUENCY = 2.5
 
-# Velocity-tracking kernel widths. These must be small relative to the commanded
-# speeds: with the factory's std=0.5 a robot standing still while commanded
-# 0.12 m/s still collects ~94% of the reward, so moving is "not worth it".
-_TRACK_LIN_STD = 0.05
-_TRACK_ANG_STD = 0.25
-
-# Swing-foot clearance for a ~5 cm-tall robot. The factory's 0.1 m target is
-# taller than the whole robot.
-_SWING_HEIGHT = 0.015
-
-_ABSTRACTION_NAME = "trot"
+# Command envelope, matched to the gait's verified physical reach.
+LIN_VEL_X = (-0.10, 0.10)
+LIN_VEL_Y = (-0.05, 0.05)
+ANG_VEL_Z = (-0.6, 0.6)
 
 
-def _flat_sensors():
-  """Scene sensors for the flat crawler task.
+def gait_clock(env: ManagerBasedRlEnv, frequency: float) -> torch.Tensor:
+  """Sin/cos of the trot phase, per env, derived from episode time."""
+  t = env.episode_length_buf.float() * env.step_dt
+  phase = 2.0 * math.pi * frequency * t
+  return torch.stack((torch.sin(phase), torch.cos(phase)), dim=-1)
 
-  The crawler's IMU sensors live in ``sensors.py`` (not the MJCF), so they must
-  be attached here for the factory's ``robot/imu_*`` observations to resolve. No
-  terrain raycast on flat ground; the foot-height scan stays for foot clearance.
+
+# Lazily-built, device-keyed reference parameters (nominal foot stance + gait
+# shape), read from the GaitController so the reference matches the open-loop gait
+# exactly. Built once per device on first reward evaluation (not at import).
+_REF_CACHE: dict[str, dict] = {}
+
+
+def _gait_reference(device: torch.device | str) -> dict:
+  key = str(device)
+  if key not in _REF_CACHE:
+    g = GaitController(GaitParams(frequency=GAIT_FREQUENCY))
+    _REF_CACHE[key] = {
+      "nominal": torch.tensor(
+        g.nominal_foot_base, dtype=torch.float32, device=device
+      ),  # (4, 3)
+      "offsets": torch.tensor(
+        np.asarray(g.params.phase_offsets), dtype=torch.float32, device=device
+      ),  # (4,)
+      "duty": float(g.params.duty),
+      "swing": float(g.params.swing_height),
+      "max_stride": float(g.params.max_stride),
+      "freq": float(g.params.frequency),
+    }
+  return _REF_CACHE[key]
+
+
+def _foot_reference(
+  phase: torch.Tensor, command: torch.Tensor, ref: dict
+) -> torch.Tensor:
+  """Reference foot positions in the base frame, shape (B, 4, 3).
+
+  Vectorized copy of ``GaitController._foot_targets_base``: stance feet sweep from
+  +half to -half (pushing the body along +(v + wz x r)); swing feet return with a
+  sinusoidal lift.
   """
-  return (*IMU, FEET_GROUND, NONFEET_GROUND, SELF_COLLISION, FOOT_HEIGHT_SCAN)
+  nominal = ref["nominal"]  # (4, 3)
+  r = nominal[:, :2]  # (4, 2)
+  duty, swing, max_stride, freq = (
+    ref["duty"],
+    ref["swing"],
+    ref["max_stride"],
+    ref["freq"],
+  )
+  vx, vy, wz = command[:, 0:1], command[:, 1:2], command[:, 2:3]  # (B, 1)
+  reach_x = vx - wz * r[:, 1][None, :]  # (B, 4)
+  reach_y = vy + wz * r[:, 0][None, :]  # (B, 4)
+  half = torch.stack((reach_x, reach_y), dim=-1) * (duty / (2.0 * freq))  # (B, 4, 2)
+  norm = torch.linalg.norm(half, dim=-1, keepdim=True)
+  half = half * torch.clamp(max_stride / norm.clamp(min=1e-9), max=1.0)
+
+  s = (phase[:, None] + ref["offsets"][None, :] / (2.0 * math.pi)) % 1.0  # (B, 4)
+  stance = s < duty
+  prog_st = (s / duty).clamp(0.0, 1.0)
+  prog_sw = ((s - duty) / (1.0 - duty)).clamp(0.0, 1.0)
+  xy_st = half * (1.0 - 2.0 * prog_st).unsqueeze(-1)
+  xy_sw = half * (2.0 * prog_sw - 1.0).unsqueeze(-1)
+  xy = torch.where(stance.unsqueeze(-1), xy_st, xy_sw)  # (B, 4, 2)
+  z = torch.where(
+    stance, torch.zeros_like(s), swing * torch.sin(math.pi * prog_sw)
+  )  # (B, 4)
+  return nominal[None] + torch.cat((xy, z.unsqueeze(-1)), dim=-1)  # (B, 4, 3)
+
+
+def gait_foot_tracking(
+  env: ManagerBasedRlEnv,
+  std: float,
+  command_name: str,
+  asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+  """Dense reward: match the feet to the gait's reference foot trajectory."""
+  asset: Entity = env.scene[asset_cfg.name]
+  ref = _gait_reference(env.device)
+  phase = (env.episode_length_buf.float() * env.step_dt * ref["freq"]) % 1.0
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  target = _foot_reference(phase, command[:, :3], ref)  # (B, 4, 3)
+
+  foot_w = asset.data.site_pos_w[:, asset_cfg.site_ids, :]  # (B, 4, 3)
+  base_pos = asset.data.root_link_pos_w[:, None, :]  # (B, 1, 3)
+  base_quat = asset.data.root_link_quat_w[:, None, :].expand(-1, target.shape[1], -1)
+  foot_b = quat_apply_inverse(base_quat, foot_w - base_pos)  # (B, 4, 3)
+
+  err = torch.sum((foot_b - target) ** 2, dim=(1, 2))  # (B,)
+  return torch.exp(-err / std**2)
 
 
 def crawler_velocity_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Classic flat-terrain velocity-tracking config for the crawler."""
+  """Flat-terrain crawler env trained by gait-guided RL (foot-reference reward)."""
   cfg = make_velocity_env_cfg()
 
   ##
-  # Simulation: finer timestep for the small, stiff (50 Hz) position servos and
-  # the many small contacts. decimation 10 @ 0.002 s keeps 50 Hz control.
+  # Simulation: fine timestep for the small, stiff (50 Hz) servos; decimation 10
+  # @ 0.002 s keeps 50 Hz control.
   ##
   cfg.sim.nconmax = 35
   cfg.sim.njmax = 300
   cfg.sim.contact_sensor_maxmatch = 500
   cfg.sim.mujoco.timestep = 0.002
-  cfg.sim.mujoco.ccd_iterations = 500
+  cfg.sim.mujoco.ccd_iterations = 50
   cfg.sim.mujoco.cone = "elliptic"
   cfg.sim.mujoco.impratio = 10
   cfg.decimation = 10
 
   ##
-  # Robot + flat terrain.
+  # Robot + flat terrain. IMU for observations, foot-ground contact for slip.
   ##
   cfg.scene.entities = {"robot": get_crawler_robot_cfg()}
   assert cfg.scene.terrain is not None
   cfg.scene.terrain.terrain_type = "plane"
   cfg.scene.terrain.terrain_generator = None
-
-  cfg.scene.sensors = _flat_sensors()
+  cfg.scene.sensors = (*IMU, FEET_GROUND)
 
   ##
-  # Actions: per-joint scale tuned to the propulsion/lift each joint needs (see
-  # actuators.py). use_default_offset centers actions on the neutral stance.
+  # Actions: per-joint scale, centered on the neutral stance.
   ##
   joint_pos_action = cfg.actions["joint_pos"]
   assert isinstance(joint_pos_action, JointPositionActionCfg)
@@ -119,103 +187,114 @@ def crawler_velocity_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   joint_pos_action.use_default_offset = True
 
   ##
-  # Observations: drop the height scan (no terrain to scan) and rescale the noise
-  # to the robot. The factory's ±0.5 m/s velocimeter noise swamps a 0.12 m/s
-  # signal; ±1.5 rad/s joint-velocity noise is similarly oversized.
+  # Observations: deployable sensor set (IMU + encoders) + command + gait clock.
+  # No velocimeter, no contact sensing, no height scan. The policy never observes
+  # feet -- the foot reference is a reward signal only.
   ##
-  for group in ("actor", "critic"):
-    cfg.observations[group].terms.pop("height_scan", None)
-  actor = cfg.observations["actor"].terms
-  actor["base_lin_vel"].noise = Unoise(n_min=-0.05, n_max=0.05)
-  actor["joint_vel"].noise = Unoise(n_min=-0.5, n_max=0.5)
+  terms = {
+    "base_ang_vel": ObservationTermCfg(
+      func=mdp.builtin_sensor,
+      params={"sensor_name": "robot/imu_ang_vel"},
+      noise=Unoise(n_min=-0.2, n_max=0.2),
+    ),
+    "projected_gravity": ObservationTermCfg(
+      func=mdp.projected_gravity,
+      noise=Unoise(n_min=-0.05, n_max=0.05),
+    ),
+    "joint_pos": ObservationTermCfg(
+      func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01)
+    ),
+    "joint_vel": ObservationTermCfg(
+      func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5)
+    ),
+    "actions": ObservationTermCfg(func=mdp.last_action),
+    "command": ObservationTermCfg(
+      func=mdp.generated_commands, params={"command_name": "twist"}
+    ),
+    "gait_clock": ObservationTermCfg(
+      func=gait_clock, params={"frequency": GAIT_FREQUENCY}
+    ),
+  }
+  cfg.observations = {
+    "actor": ObservationGroupCfg(
+      terms=dict(terms), concatenate_terms=True, enable_corruption=True
+    ),
+    "critic": ObservationGroupCfg(
+      terms=dict(terms), concatenate_terms=True, enable_corruption=False
+    ),
+  }
 
   ##
-  # Commands: small ranges, no heading auto-turn fighting the tiny ang command.
+  # Commands.
   ##
   twist = cfg.commands["twist"]
   assert isinstance(twist, UniformVelocityCommandCfg)
-  twist.ranges.lin_vel_x = _LIN_VEL_X
-  twist.ranges.lin_vel_y = _LIN_VEL_Y
-  twist.ranges.ang_vel_z = _ANG_VEL_Z
+  twist.ranges.lin_vel_x = LIN_VEL_X
+  twist.ranges.lin_vel_y = LIN_VEL_Y
+  twist.ranges.ang_vel_z = ANG_VEL_Z
   twist.ranges.heading = (-math.pi, math.pi)
+  twist.heading_control_stiffness = 0.25
+  twist.rel_standing_envs = 0.1
   twist.viz.z_offset = 0.1
 
   ##
-  # Rewards.
+  # Rewards. The foot reference bootstraps the gait; velocity tracking is the
+  # task and lets the policy exceed the open-loop gait; the rest keep it upright
+  # and smooth.
   ##
-  cfg.rewards["track_linear_velocity"].weight = 2.0
-  cfg.rewards["track_linear_velocity"].params["std"] = _TRACK_LIN_STD
-  cfg.rewards["track_angular_velocity"].weight = 1.5
-  cfg.rewards["track_angular_velocity"].params["std"] = _TRACK_ANG_STD
-
-  # Keeping upright is the robot's hardest constraint, so weight it strongly.
-  cfg.rewards["upright"].weight = 0.0
-  cfg.rewards["upright"].params["asset_cfg"].body_names = (BASE_NAME,)
-
-  # Posture: hold the neutral stance tightly when standing, open up while moving
-  # so the gait is free to deviate.
-  cfg.rewards["pose"].weight = 0.0
-  cfg.rewards["pose"].params["asset_cfg"].joint_names = (
-    COXA_JOINT_REGEX,
-    FEMUR_JOINT_REGEX,
-    TIBIA_JOINT_REGEX,
-  )
-  cfg.rewards["pose"].params["std_standing"] = {
-    COXA_JOINT_REGEX: 0.05,
-    FEMUR_JOINT_REGEX: 0.1,
-    TIBIA_JOINT_REGEX: 0.1,
+  foot_asset = SceneEntityCfg("robot", site_names=FOOT_SITE_NAMES)
+  cfg.rewards = {
+    "gait_foot_tracking": RewardTermCfg(
+      func=gait_foot_tracking,
+      weight=2.0,
+      params={"std": 0.03, "command_name": "twist", "asset_cfg": foot_asset},
+    ),
+    "track_linear_velocity": RewardTermCfg(
+      func=mdp.track_linear_velocity,
+      weight=1.0,
+      params={"command_name": "twist", "std": 0.1},
+    ),
+    "track_angular_velocity": RewardTermCfg(
+      func=mdp.track_angular_velocity,
+      weight=0.5,
+      params={"command_name": "twist", "std": 0.5},
+    ),
+    "upright": RewardTermCfg(
+      func=mdp.upright,
+      weight=0.5,
+      params={
+        "std": math.sqrt(0.2),
+        "asset_cfg": SceneEntityCfg("robot", body_names=(BASE_NAME,)),
+      },
+    ),
+    "alive": RewardTermCfg(func=is_alive, weight=0.25),
+    "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.05),
+    "dof_pos_limits": RewardTermCfg(func=mdp.joint_pos_limits, weight=-1.0),
+    # Anti-gaming: the foot reference is in the base frame, so a policy could
+    # satisfy it by oscillating/rocking the base and slipping the feet instead of
+    # walking. Planting the stance feet (no-slip) makes the reference's backward
+    # foot sweep translate the base, and the flat-orientation penalty kills the
+    # rocking. Together they turn "follow the reference" into real locomotion.
+    "foot_slip": RewardTermCfg(
+      func=mdp.feet_slip,
+      weight=-2.0,
+      params={
+        "sensor_name": "feet_ground_contact",
+        "command_name": "twist",
+        "command_threshold": 0.02,
+        "asset_cfg": foot_asset,
+      },
+    ),
+    "flat_orientation": RewardTermCfg(
+      func=mdp.flat_orientation_l2,
+      weight=-0.5,
+      params={"asset_cfg": SceneEntityCfg("robot", body_names=(BASE_NAME,))},
+    ),
   }
-  cfg.rewards["pose"].params["std_walking"] = {
-    COXA_JOINT_REGEX: 0.2,
-    FEMUR_JOINT_REGEX: 0.3,
-    TIBIA_JOINT_REGEX: 0.4,
-  }
-  cfg.rewards["pose"].params["std_running"] = dict(
-    cfg.rewards["pose"].params["std_walking"]
-  )
-  cfg.rewards["pose"].params["walking_threshold"] = 0.03
-  cfg.rewards["pose"].params["running_threshold"] = 0.15
-
-  # A small positive air-time reward to break the standing local optimum; stride
-  # timing is short for a fast, small gait (~2.5 Hz).
-  cfg.rewards["air_time"].weight = 0.5
-  cfg.rewards["air_time"].params["threshold_min"] = 0.1
-  cfg.rewards["air_time"].params["threshold_max"] = 0.3
-  cfg.rewards["air_time"].params["command_threshold"] = 0.03
-
-  # Foot shaping, re-targeted to the robot's height.
-  cfg.rewards["foot_clearance"].weight = -0.5
-  cfg.rewards["foot_clearance"].params["target_height"] = _SWING_HEIGHT
-  cfg.rewards["foot_clearance"].params["asset_cfg"].site_names = FOOT_SITE_NAMES
-  cfg.rewards["foot_clearance"].params["command_threshold"] = 0.03
-  cfg.rewards["foot_swing_height"].weight = -0.1
-  cfg.rewards["foot_swing_height"].params["target_height"] = _SWING_HEIGHT
-  cfg.rewards["foot_swing_height"].params["command_threshold"] = 0.03
-  cfg.rewards["foot_slip"].weight = -0.05
-  cfg.rewards["foot_slip"].params["asset_cfg"].site_names = FOOT_SITE_NAMES
-  cfg.rewards["foot_slip"].params["command_threshold"] = 0.03
-
-  cfg.rewards["body_ang_vel"].weight = 0.0
-  cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = (BASE_NAME,)
-  cfg.rewards["angular_momentum"].weight = 0.0
-  cfg.rewards["action_rate_l2"].weight = -0.05
-
-  # Structural guards: penalize the base/legs scraping the ground and self
-  # collisions. Forces are tiny at this scale, so the thresholds are low.
-  cfg.rewards["nonfeet_ground"] = RewardTermCfg(
-    func=self_collision_cost,
-    weight=-1.0,
-    params={"sensor_name": "nonfeet_ground_contact", "force_threshold": 0.5},
-  )
-  cfg.rewards["self_collisions"] = RewardTermCfg(
-    func=self_collision_cost,
-    weight=-0.2,
-    params={"sensor_name": "self_collision", "force_threshold": 0.5},
-  )
 
   ##
-  # Events: shrink the disturbances to the robot's scale. A 0.5 m/s push (factory
-  # default) is several times the robot's top speed.
+  # Events: resets + disturbances/domain randomization. Unlike the open-loop gait,
+  # RL can learn to reject these, which is the whole point of training a policy.
   ##
   cfg.events["reset_base"].params["pose_range"] = {
     "x": (-0.3, 0.3),
@@ -243,15 +322,11 @@ def crawler_velocity_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   }
 
   ##
-  # Terminations: only time-out and tipping on flat ground.
+  # Terminations: time-out + tipping on flat ground.
   ##
   cfg.terminations.pop("out_of_terrain_bounds", None)
   cfg.terminations["fell_over"].params["limit_angle"] = math.radians(60.0)
 
-  ##
-  # No terrain/command curriculum on flat: keep the task stationary so the policy
-  # only has to solve "trot at the commanded speed".
-  ##
   cfg.curriculum = {}
 
   ##
@@ -268,72 +343,5 @@ def crawler_velocity_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.episode_length_s = int(1e9)
     cfg.observations["actor"].enable_corruption = False
     cfg.events.pop("push_robot", None)
-    cfg.curriculum = {}
-
-  return cfg
-
-
-def crawler_velocity_abstraction_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Flat crawler velocity task guided by the trot gait-clock + path abstraction.
-
-  Starts from the classic flat config and layers on the abstraction: its
-  reference (gait clock + path error) is fed to the policy, and its three dense
-  signals (gait, clearance, path) become positive reward terms. The hand-built
-  ``air_time`` shaping is dropped because the gait signal supersedes it.
-  """
-  cfg = crawler_velocity_flat_env_cfg(play=play)
-
-  ##
-  # Abstraction.
-  ##
-  cfg.abstractions = {
-    _ABSTRACTION_NAME: TrotGaitAbstractionCfg(
-      base_body_name=BASE_NAME,
-      foot_site_names=FOOT_SITE_NAMES,
-      leg_phase_offsets=tuple(LEG_PHASE_OFFSETS.tolist()),
-      swing_height=_SWING_HEIGHT,
-      path_std=_TRACK_LIN_STD,
-      debug_vis=True,
-    )
-  }
-
-  ##
-  # Observations: expose the gait clock and the path error to both actor and
-  # critic so the policy can phase-lock to the schedule it is scored against.
-  ##
-  for group in ("actor", "critic"):
-    terms = cfg.observations[group].terms
-    terms["gait_clock"] = ObservationTermCfg(
-      func=mdp.abstraction_obs,
-      params={"abstraction_name": _ABSTRACTION_NAME, "key": "gait_clock"},
-    )
-    terms["path_error"] = ObservationTermCfg(
-      func=mdp.abstraction_obs,
-      params={"abstraction_name": _ABSTRACTION_NAME, "key": "path_error"},
-    )
-
-  ##
-  # Rewards: the abstraction signals drive the behavior. The gait signal replaces
-  # the hand-built air-time shaping; the path signal complements the (kept, but
-  # lighter) instantaneous velocity-tracking reward.
-  ##
-  cfg.rewards.pop("air_time", None)
-  cfg.rewards["track_linear_velocity"].weight = 1.0
-  cfg.rewards["track_angular_velocity"].weight = 1.0
-  cfg.rewards["trot_path"] = RewardTermCfg(
-    func=mdp.abstraction_signal,
-    weight=2.0,
-    params={"abstraction_name": _ABSTRACTION_NAME, "signal_name": "path"},
-  )
-  cfg.rewards["trot_gait"] = RewardTermCfg(
-    func=mdp.abstraction_signal,
-    weight=1.0,
-    params={"abstraction_name": _ABSTRACTION_NAME, "signal_name": "gait"},
-  )
-  cfg.rewards["trot_clearance"] = RewardTermCfg(
-    func=mdp.abstraction_signal,
-    weight=1.0,
-    params={"abstraction_name": _ABSTRACTION_NAME, "signal_name": "clearance"},
-  )
 
   return cfg
