@@ -2,7 +2,7 @@
 
 Two roles:
 
-* It is the **plant model the analytic skills are tuned against** -- the skills in
+* It is the model the analytic skills are tuned against -- the skills in
   :mod:`mjlab.tasks.diffdrive.skills` read physical parameters (mass, inertia, the
   wheel-torque mapping) from a :class:`DiffDrive` instance. These parameters mirror
   ``diffdrive.xml``, so a skill tuned here behaves the same on the MuJoCo model.
@@ -82,6 +82,29 @@ class DiffDrive:
     tau_r = half * (f + m / self.half_axle)
     return np.stack([tau_l, tau_r], axis=-1)
 
+  def twist_to_torque(
+    self,
+    state: np.ndarray,
+    v_des: float,
+    omega_des: float,
+    kp_v: float = 12.0,
+    kp_w: float = 120.0,
+  ) -> np.ndarray:
+    """Track a desired body twist ``(v_des, omega_des)`` -> wheel torques (a PD).
+
+    This is the one low-level controller shared by every skill and bridge: they
+    only choose a target twist, this turns it into wheel torques (and the actuator
+    limit clips it). Tracking a turn's ``(0, omega)`` from a fast state therefore
+    brakes and spins at once -- which the wheels cannot do, hence the skid.
+
+    The gains are high because MuJoCo's wheel/contact friction resists the
+    commanded twist far more than the idealized :class:`DiffDrive` parameters
+    predict; they are tuning knobs, not physical constants.
+    """
+    f_des = self.mass * kp_v * (v_des - state[..., V])
+    m_des = self.inertia * kp_w * (omega_des - state[..., OMEGA])
+    return self.body_to_wheel(f_des, m_des)
+
   # Numpy simulator (offline analysis only; the viewer uses MuJoCo).
 
   def deriv(self, s: np.ndarray, u: np.ndarray) -> np.ndarray:
@@ -117,3 +140,18 @@ class DiffDrive:
       s = self.step(s, controller(s))
       traj[t + 1] = s
     return traj
+
+
+def state_from_mjdata(data) -> np.ndarray:
+  """Read ``[x, y, theta, v, omega]`` from a MuJoCo ``MjData`` for diffdrive.xml.
+
+  qpos = ``[x, y, z, qw, qx, qy, qz, wheel_l, wheel_r]``; for planar motion only
+  the yaw of the orientation and the in-plane velocities matter.
+  """
+  x, y = float(data.qpos[0]), float(data.qpos[1])
+  qw, qx, qy, qz = (float(q) for q in data.qpos[3:7])
+  theta = np.arctan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+  vx, vy = float(data.qvel[0]), float(data.qvel[1])
+  v = vx * np.cos(theta) + vy * np.sin(theta)  # forward (body-x) speed
+  omega = float(data.qvel[5])  # yaw rate
+  return np.array([x, y, theta, v, omega])
