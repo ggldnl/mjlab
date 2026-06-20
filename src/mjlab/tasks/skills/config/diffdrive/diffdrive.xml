@@ -3,7 +3,7 @@
 
   <default>
     <default class="wheel">
-      <joint type="hinge" axis="0 1 0" damping="0.01"/>
+      <joint type="hinge" axis="0 1 0" damping="0.0001"/>
       <geom type="cylinder" size="0.06 0.02" material="wheel"
             friction="1.5 0.02 0.001" mass="0.2"/>
     </default>
@@ -29,9 +29,10 @@
       <!-- Heading marker so forward (+x) is visible. -->
       <geom name="nose" type="box" pos="0.13 0 0" size="0.02 0.02 0.02"
             material="heading" mass="0.001"/>
-      <!-- Rear caster: low friction so it slides freely (non-driven support). -->
+      <!-- Rear caster: a near-frictionless support point (non-driven), so the only
+           traction is at the wheels and there is no stiction threshold to overcome. -->
       <geom name="caster" type="sphere" pos="-0.10 0 -0.04" size="0.02"
-            material="caster" friction="0.05 0.005 0.0001" mass="0.05"/>
+            material="caster" friction="0.0001 0.0001 0.0001" condim="1" mass="0.05"/>
 
       <body name="left_wheel" pos="0.06 0.11 0">
         <joint name="left_wheel" class="wheel"/>
@@ -45,7 +46,7 @@
   </worldbody>
 
   <actuator>
-    <motor name="left_wheel" joint="left_wheel" gear="1" ctrllimited="true" ctrlrange="-2 2"/>
-    <motor name="right_wheel" joint="right_wheel" gear="1" ctrllimited="true" ctrlrange="-2 2"/>
+    <motor name="left_wheel" joint="left_wheel" gear="1" ctrllimited="true" ctrlrange="-0.6 0.6"/>
+    <motor name="right_wheel" joint="right_wheel" gear="1" ctrllimited="true" ctrlrange="-0.6 0.6"/>
   </actuator>
 </mujoco>
