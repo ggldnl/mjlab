@@ -1,13 +1,10 @@
 """
-Bridges: what to command between skills.
+The do-nothing baseline bridge.
 
-* InstantBridge   the do-nothing baseline: it performs no transition and defers to
-                  the next skill immediately. It is the reference for "no bridging"
-                  Since the robot arrives at a junction carrying cross-axis momentum
-                  that the next skill cannot steer out, this bridge won't work.
-
-* LearnedBridge   the actual learned policy that should solve the problem, code
-                  in `bridge_env.py`
+InstantBridge performs no transition and defers to the next skill immediately. It
+is the reference for "no bridging": since the robot arrives at a junction carrying
+cross-axis momentum that the next skill cannot steer out, this bridge won't work,
+and that failure is the whole motivation for a real bridge.
 """
 
 from __future__ import annotations

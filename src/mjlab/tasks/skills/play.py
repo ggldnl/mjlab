@@ -1,13 +1,12 @@
 """View an analytic policy on a MuJoCo model -- the dummy-agent analog of play.py.
 
-``mjlab/scripts/play.py`` drives a trained checkpoint through a ManagerBasedRlEnv.
+`mjlab/scripts/play.py` drives a trained checkpoint through a ManagerBasedRlEnv.
 The controllers here are plain Python (skills, FSMs, bridges) with no network and
-no manager env, so this runs any callable ``policy(model, data) -> ctrl`` directly
+no manager env, so this runs any callable `policy(model, data) -> ctrl` directly
 on a raw MuJoCo model in a viser viewer.
 
-Library use: ``run(model_path, policy, on_reset=...)`` (what experiment.py calls).
-Standalone: ``uv run python -m mjlab.tasks.skills.play --model <path> --agent zero``
-to eyeball a bare model with a zero / random policy.
+    run(model_path, policy, on_reset=...)  # what experiment.py calls
+    uv run python -m mjlab.tasks.skills.play --model <path> --agent zero  # bare model with a zero/random policy
 """
 
 from __future__ import annotations
@@ -35,17 +34,21 @@ def run(
   decimation: int = 4,
   on_reset: ResetHook | None = None,
   status: StatusFn | None = None,
+  gui: Callable[..., None] | None = None,
 ) -> None:
-  """Run ``policy`` on ``model`` (an MjModel or an XML path) in a viser viewer.
+  """Run `policy` on `model` (an MjModel or an XML path) in a viser viewer.
 
   The policy is evaluated once per control step; the simulation then advances
-  ``decimation`` physics steps with that control held. ``on_reset`` runs after every
-  ``mj_resetData`` (e.g. to reset a controller's internal state or the start pose).
+  `decimation` physics steps with that control held. `on_reset` runs after every
+  `mj_resetData` (e.g. to reset a controller's internal state or the start pose).
 
-  Side-panel controls mirror ``scripts/play.py``: a Play/Pause toggle, Step (advance
+  Side-panel controls mirror `scripts/play.py`: a Play/Pause toggle, Step (advance
   one control step while paused), Reset Environment (keeps the play/pause state), and
-  Slower / 1x / Faster speed buttons. If ``status`` is given, its ``label -> value``
-  rows are shown live in an Info box. Loops forever.
+  Slower / 1x / Faster speed buttons. If `status` is given, its `label -> value`
+  rows are shown live in an Info box. If `gui` is given it is called as
+  `gui(server, reset)` with the viser server and the reset function, so a caller can
+  add its own controls (e.g. pick the skill or spawn cell) and apply them by calling
+  `reset`. Loops forever.
   """
   # Local imports: keep the viewer's heavy deps out of the import path of callers
   # that only use this module as a type/lib reference.
@@ -97,12 +100,15 @@ def run(
     if on_reset is not None:
       on_reset(model, data)
     mujoco.mj_forward(model, data)
+    scene.update_from_mjdata(data)  # show the reset pose even while paused
     ui["pending"] = 0
 
   pause_btn.on_click(on_pause)
   step_btn.on_click(on_step)
   reset_btn.on_click(lambda _: reset())
   speed_btns.on_click(on_speed)
+  if gui is not None:
+    gui(server, reset)
   reset()
 
   def render_status() -> None:

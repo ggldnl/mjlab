@@ -46,10 +46,27 @@ from mjlab.tasks.skills.interfaces import Bridge
 
 X, Y, THETA, V, OMEGA = STATE
 
-# Bridges selectable from the CLI. The default, instant, is the do-nothing baseline.
-# The learned bridge (trained via bridge_env.py) will be wired in once its deployment
-# wrapper exists.
-BRIDGES: dict[str, type[Bridge]] = {"instant": InstantBridge}
+
+def make_bridge(
+  name: str,
+  *,
+  checkpoint: str | None,
+  world: GridWorld,
+  speeds: dict[int, float],
+  mode: str,
+) -> Bridge:
+  """Build the bridge selected from the CLI.
+
+  instant is the do-nothing baseline. learned loads the trained policy (the ONNX
+  file exported during training) and needs a checkpoint path.
+  """
+  if name == "learned":
+    if checkpoint is None:
+      raise ValueError("--checkpoint is required for the learned bridge.")
+    from mjlab.tasks.skills.experiments.diffdrive.bridge.policy import LearnedBridge
+
+    return LearnedBridge(checkpoint, world, speeds, mode=mode)
+  return InstantBridge()
 
 
 def corridor_speeds(
@@ -79,17 +96,9 @@ def start_state(world: GridWorld, *, speed: float = 1.0) -> np.ndarray:
   return np.array([x, y, heading, speed, 0.0])
 
 
-# The simulated experiment (MuJoCo physics is the truth for control + collision).
-
-
 @dataclass
 class Experiment:
-  """Drives the diff-drive through the maze under the controller + bridge.
-
-  Each control tick (:meth:`policy`) senses the robot, asks the controller for a command
-  (active skill, or the bridge mid-switch), and turns it into wheel torques. Leaving a
-  corridor (a wall) sets ``crashed`` and the robot brakes. State is whatever MuJoCo says.
-  """
+  """Drives the diff-drive through the maze under the controller + bridge."""
 
   world: GridWorld
   robot: DiffDrive
@@ -143,9 +152,9 @@ def run_episode(
   decimation: int = 4,
   max_steps: int = 2000,
 ) -> np.ndarray:
-  """Step physics headlessly until the robot crashes or ``max_steps`` elapse.
+  """Step physics headlessly until the robot crashes or `max_steps` elapse.
 
-  Returns the ``(N, 5)`` reduced-state track (for the matplotlib backend).
+  Returns the (N, 5) reduced-state track (for the matplotlib backend).
   """
   data = mujoco.MjData(model)
   experiment.reset(model, data)
@@ -198,23 +207,32 @@ def main() -> None:
 
   @dataclass
   class Args:
-    bridge: str = "instant"  # which bridge to use (default: the do-nothing baseline)
+    bridge: Literal["instant", "learned"] = (
+      "instant"  # which bridge to use (default: the do-nothing baseline)
+    )
+    mode: Literal["cruise", "hold"] = (
+      "cruise"  # skill mode: "cruise" (non-steering) or "hold" (heading-hold)
+    )
     backend: Literal["viser", "mpl"] = "viser"
     cell: float = 1.0
     # Per-corridor cruise speeds (alternating). The robot droops below these under
     # bounded torque, but fast corridors still carry more residual speed into a junction
-    # than slow ones -- and adjacent corridors differ, so a switch must change speed too.
-    slow: float = 1.3
-    fast: float = 2.2
+    # than slow ones
+    slow: float = 0.5
+    fast: float = 1.5
     decimation: int = 4  # physics steps per control tick (control dt = 0.02 s)
     max_steps: int = 2000  # offline episode cap
+    checkpoint: str | None = None  # ONNX policy path, required by the learned bridge
 
   args = tyro.cli(Args)
   world = GridWorld(cell=args.cell)
   robot = DiffDrive()
   speeds = corridor_speeds(world, slow=args.slow, fast=args.fast)
-  bridge = BRIDGES[args.bridge]()
-  controller = CorridorController(world, corridor_skills(world, speeds), bridge)
+  bridge = make_bridge(
+    args.bridge, checkpoint=args.checkpoint, world=world, speeds=speeds, mode=args.mode
+  )
+  skills = corridor_skills(world, speeds, mode=args.mode)
+  controller = CorridorController(world, skills, bridge)
   experiment = Experiment(
     world=world,
     robot=robot,

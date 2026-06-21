@@ -123,8 +123,12 @@ class CorridorController(Controller):
     self.reset()
 
   def reset(self) -> None:
-    self.current = min(self.skills)   # first corridor in the sequence
-    self.target = None                # corridor we are switching to, else None
+    self.current = min(self.skills)  # first corridor in the sequence
+    self.target = None  # corridor we are switching to, else None
+    for skill in self.skills.values():  # re-arm latched skills (e.g. CorridorSkill)
+      reset = getattr(skill, "reset", None)
+      if callable(reset):
+        reset()
 
   @property
   def switching(self) -> bool:

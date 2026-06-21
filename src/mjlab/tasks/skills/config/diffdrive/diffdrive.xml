@@ -29,9 +29,14 @@
       <!-- Heading marker so forward (+x) is visible. -->
       <geom name="nose" type="box" pos="0.13 0 0" size="0.02 0.02 0.02"
             material="heading" mass="0.001"/>
-      <!-- Rear caster: a near-frictionless support point (non-driven), so the only
-           traction is at the wheels and there is no stiction threshold to overcome. -->
-      <geom name="caster" type="sphere" pos="-0.10 0 -0.04" size="0.02"
+      <!-- Rear caster: a frictionless support point (non-driven), so the only traction
+           is at the wheels and there is no stiction threshold to overcome. priority="1"
+           is essential: without it MuJoCo mixes the caster's condim=1 with the floor's
+           condim=3, so the contact silently gains the floor's friction. A barely-touching
+           high-friction rear point then stick-slips, which bounces the robot and makes it
+           yaw off its heading. The higher priority makes the caster's own frictionless
+           condim=1 win, which is what keeps the robot driving straight. -->
+      <geom name="caster" type="sphere" pos="-0.10 0 -0.04" size="0.02" priority="1"
             material="caster" friction="0.0001 0.0001 0.0001" condim="1" mass="0.05"/>
 
       <body name="left_wheel" pos="0.06 0.11 0">
