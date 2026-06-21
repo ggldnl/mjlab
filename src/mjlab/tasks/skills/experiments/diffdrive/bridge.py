@@ -6,7 +6,8 @@ Bridges: what to command between skills.
                   Since the robot arrives at a junction carrying cross-axis momentum
                   that the next skill cannot steer out, this bridge won't work.
 
-* LearnedBridge   the actual learned policy that should solve the problem.
+* LearnedBridge   the actual learned policy that should solve the problem, code
+                  in `bridge_env.py`
 """
 
 from __future__ import annotations
@@ -29,9 +30,3 @@ class InstantBridge(Bridge):
 
   def step(self, state: State) -> tuple[Command, bool]:
     return self._to_skill(state), True
-
-
-class LearnedBridge(Bridge):
-  """Learned bridge."""
-
-  pass

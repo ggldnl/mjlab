@@ -29,7 +29,7 @@ import mujoco
 import numpy as np
 
 from mjlab.tasks.skills import play
-from mjlab.tasks.skills.experiments.diffdrive.bridge import InstantBridge, LearnedBridge
+from mjlab.tasks.skills.experiments.diffdrive.bridge import InstantBridge
 from mjlab.tasks.skills.experiments.diffdrive.controller import (
   CorridorController,
   travel_directions,
@@ -46,8 +46,10 @@ from mjlab.tasks.skills.interfaces import Bridge
 
 X, Y, THETA, V, OMEGA = STATE
 
-# Bridges selectable from the CLI. The default, `instant`, is the do-nothing baseline.
-BRIDGES: dict[str, type[Bridge]] = {"instant": InstantBridge, "learned": LearnedBridge}
+# Bridges selectable from the CLI. The default, instant, is the do-nothing baseline.
+# The learned bridge (trained via bridge_env.py) will be wired in once its deployment
+# wrapper exists.
+BRIDGES: dict[str, type[Bridge]] = {"instant": InstantBridge}
 
 
 def corridor_speeds(
@@ -212,12 +214,12 @@ def main() -> None:
   robot = DiffDrive()
   speeds = corridor_speeds(world, slow=args.slow, fast=args.fast)
   bridge = BRIDGES[args.bridge]()
-  controller = CorridorController(world, corridor_skills(speeds), bridge)
+  controller = CorridorController(world, corridor_skills(world, speeds), bridge)
   experiment = Experiment(
     world=world,
     robot=robot,
     controller=controller,
-    start=start_state(world, speed=speeds[min(world.corridors)]),
+    start=start_state(world, speed=0.0),  # rest at the first cell; the skill ramps up
   )
   model = build_model(world, robot)
 
