@@ -79,7 +79,7 @@ class BridgeCommandCfg(CommandTermCfg):
   entity_name: str
   slow: float = 1.3
   fast: float = 2.2
-  mode: str = "cruise"
+  mode: str = "hold"
   cell: float = 1.0
   seed: int = 0
   resampling_time_range: tuple[float, float] = (1.0e9, 1.0e9)

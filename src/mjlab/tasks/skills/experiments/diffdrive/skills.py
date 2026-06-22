@@ -34,7 +34,7 @@ from mjlab.tasks.skills.experiments.diffdrive.controller import (
   travel_directions,
 )
 from mjlab.tasks.skills.experiments.diffdrive.gridworld import HORIZONTAL, GridWorld
-from mjlab.tasks.skills.experiments.diffdrive.robot import THETA, V, X, Y
+from mjlab.tasks.skills.experiments.diffdrive.robot import OMEGA, THETA, V, X, Y
 from mjlab.tasks.skills.interfaces import Command, State
 
 CRUISE, HOLD = "cruise", "hold"
@@ -74,27 +74,28 @@ def _entry_cell(world: GridWorld, cid: int) -> tuple[int, int]:
 class CorridorSkill:
   """One corridor's cruise policy together with its initiation set.
 
-  TODO: update docstring, make sure disabling connection between initiation set and initial
-    window is a good idea
-  The skill starts only from its initiation set: the early window of the corridor (within
-  `window` cells of the geometric start, measured along the travel direction), on the
-  centerline, aligned, at a moderate speed. Membership is a fact about the dynamic state,
-  not the exact cell: a state that is aligned and centered near the start is in, a state
-  with the wrong heading or cross-axis momentum (what a junction arrival looks like) is
-  out, even at the same place. The skill decides this once, on the first call after a
-  reset, and latches it. Started inside the set it runs, and keeps running as it leaves
-  the window. Started anywhere else it does nothing (zero twist), because the policy has
-  no idea what to command from a state it was never meant to begin from. Getting the robot
-  from where it arrives (the junction corner, wrong heading) into this set is the bridge's
-  job, not the skill's.
+  The skill starts only from its initiation set: on the centerline, aligned with the
+  travel direction, at a moderate speed. Membership is a fact about the dynamic state,
+  not the cell: a state that is centered and aligned is in, a state with the wrong
+  heading or cross-axis momentum (what a junction arrival looks like) is out, even at the
+  same place. Position along the corridor does not enter the test, because it does not
+  enter the policy: from a centered, aligned, moderate-speed state, driving straight holds
+  the corridor all the way to the exit no matter how far in the robot starts.
+
+  The skill decides membership once, on the first call after a reset, and latches it.
+  Started inside the set it runs, and keeps running for the rest of the corridor. Started
+  anywhere else it does nothing (zero twist), because the policy has no idea what to
+  command from a state it was never meant to begin from. Getting the robot from where it
+  arrives (the junction corner, wrong heading) into this set is the bridge's job, not the
+  skill's.
   """
 
   world: GridWorld
   cid: int
   speed: float
   mode: str = CRUISE
-  kp: float = 2.0  # heading-hold gain (hold mode only)
-  # window: float = 1.5  # initiation-set length in cells, from the start along travel
+  kp: float = 0.8  # heading-hold positional gain (hold mode only)
+  kd: float = 2.0  # heading-hold derivative gain (hold mode only)
   d_tol: float = 0.12  # max |lateral offset| from the centerline in the initiation set
   phi_tol: float = math.radians(15.0)  # max heading error in the initiation set
   speed_band: tuple[float, float] = (
@@ -103,15 +104,12 @@ class CorridorSkill:
   )  # start speed (rest allowed, too-fast not)
   heading: float = field(init=False)  # travel direction as an angle
   entry: tuple[int, int] = field(init=False)  # the geometric-start cell
-  _entry_xy: tuple[float, float] = field(init=False, repr=False)  # its world center
   _active: bool | None = field(init=False, default=None, repr=False)
 
   def __post_init__(self) -> None:
     dx, dy = travel_directions(self.world)[self.cid]
     self.heading = math.atan2(dy, dx)
     self.entry = _entry_cell(self.world, self.cid)
-    ex, ey = self.world.cell_center(*self.entry)
-    self._entry_xy = (float(ex), float(ey))
     self._active = None
 
   @property
@@ -127,13 +125,6 @@ class CorridorSkill:
     """Signed heading error to the corridor's travel direction."""
     return _wrap(theta - self.heading)
 
-  """
-  def along_distance(self, x: float, y: float) -> float:
-    # Distance from the geometric start along the travel direction, in metres.
-    ex, ey = self._entry_xy
-    return (x - ex) * math.cos(self.heading) + (y - ey) * math.sin(self.heading)
-  """
-
   def __call__(self, state: State) -> Command:
     if self._active is None:  # first call after a reset: decide whether to start
       self._active = self.initiation_set(state)
@@ -141,26 +132,16 @@ class CorridorSkill:
       return np.zeros(2)
     if self.mode == HOLD:
       phi = self.heading_error(float(state[THETA]))
-      return np.array([self.speed, -self.kp * phi])
+      phi_dot = float(state[OMEGA])  # heading fixed, so phi_dot = theta_dot = omega
+      return np.array([self.speed, -self.kp * phi - self.kd * phi_dot])
     return np.array([self.speed, 0.0])
 
   def initiation_set(self, state: State) -> bool:
+    """Whether the skill may be started from state: centered on the centerline, aligned
+    with the travel direction, and at a moderate speed. Position along the corridor does
+    not matter.
     """
-    Whether the skill may be started from state: inside the early window of the
-    corridor, centered, aligned, and at a moderate speed.
-
-    Initiation set:
-    - the along-corridor distance from the geometric start is within window (1.5 cells)
-    + the lateral offset and heading error are within tolerance
-    + speed is in band
-    """
-
     x, y = float(state[X]), float(state[Y])
-    """
-    s = self.along_distance(x, y)
-    if not 0.0 <= s <= self.window * self.world.cell:
-      return False
-    """
     if abs(float(self.world.offset(self.cid, x, y))) > self.d_tol:
       return False
     if abs(self.heading_error(float(state[THETA]))) > self.phi_tol:

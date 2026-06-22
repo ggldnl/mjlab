@@ -43,9 +43,20 @@ M_POS = 0.6
 M_HEAD = math.radians(45.0)
 M_SPEED = 1.0
 
-# Rollout harvesting.
-WINDOW_STEPS = 200  # control ticks of the next skill's early tube to record
-N_INTERRUPTS = 48  # interrupt states harvested per corridor transition
+# Rollout harvesting. One duration, in seconds, sets both saved windows: the next
+# skill's early tube (the bridge's candidate goals) and the previous skill's approach to
+# the junction (the states leading up to an interrupt). Seconds, not a raw tick count, so
+# the horizon stays meaningful independent of the control rate.
+CONTROL_DT = TIMESTEP * DECIMATION  # seconds per control tick (0.02 s)
+WINDOW_SECONDS = 1.0  # duration of each saved window
+WINDOW_STEPS = round(WINDOW_SECONDS / CONTROL_DT)  # control ticks per window
+N_INTERRUPTS = 50  # interrupt states harvested per corridor transition
+
+# The target tube is harvested as a family of rollouts, one per sampled initiation
+# state, then reduced to a single representative the bridge aims to join. A complex robot
+# has no single perfect start, only an initiation set, so the tube is a family, not a line.
+WINDOW_SAMPLES = 24  # initiation-set rollouts forming the target tube family
+WINDOW_REPRESENTATIVE = "medoid"  # how to reduce the family: "medoid" or "mean"
 
 OBS_DIM = 7
 ACTION_DIM = 2

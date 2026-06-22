@@ -1,7 +1,6 @@
 """Harvest the data the bridge is built from, by rolling out the real skills.
 
-We never invent a representative junction. Instead we take the skills and the world
-as they are and run them, in the real simulator, to collect two things:
+We collect two things:
 
 * windows  the early stretch of each skill's tube, i.e. the states it actually
            passes through just after it starts. These are the candidate states the
@@ -32,7 +31,9 @@ from mjlab.tasks.skills.experiments.diffdrive.controller import junction_map
 from mjlab.tasks.skills.experiments.diffdrive.experiment import build_model
 from mjlab.tasks.skills.experiments.diffdrive.gridworld import GridWorld
 from mjlab.tasks.skills.experiments.diffdrive.robot import (
+  THETA,
   DiffDrive,
+  V,
   X,
   Y,
 )
@@ -54,12 +55,6 @@ class Harvest:
   transitions: list[tuple[int, int]]
   interrupts: np.ndarray
   windows: np.ndarray
-
-
-def _entry_state(skill: CorridorSkill, speed: float) -> np.ndarray:
-  """Reduced state at the skill's geometric start, aligned, at the given speed."""
-  ex, ey = skill.world.cell_center(*skill.entry)
-  return np.array([float(ex), float(ey), skill.heading, speed, 0.0])
 
 
 def _rollout(
@@ -100,20 +95,118 @@ def _rollout(
   return np.asarray(track)
 
 
+def _initiation_start(
+  skill: CorridorSkill, rng: np.random.Generator, *, speed: float | None = None
+) -> np.ndarray:
+  """A random start inside the skill's initiation set, at the entry cell.
+
+  Jitters the lateral offset and heading within the initiation tolerances. The start
+  speed is sampled across the band, unless `speed` is given: the window family pins it to
+  rest so its rollouts ramp up together and stay time-aligned.
+  """
+  half = skill.d_tol * 0.7
+  phi = skill.phi_tol * 0.7
+  ex, ey = skill.world.cell_center(*skill.entry)
+  lateral = (-math.sin(skill.heading), math.cos(skill.heading))
+  offset = rng.uniform(-half, half)
+  v = rng.uniform(0.0, min(1.2, skill.speed)) if speed is None else speed
+  return np.array(
+    [
+      float(ex) + offset * lateral[0],
+      float(ey) + offset * lateral[1],
+      skill.heading + rng.uniform(-phi, phi),
+      v,
+      0.0,
+    ]
+  )
+
+
+def window_family(
+  model: mujoco.MjModel,
+  robot: DiffDrive,
+  skill: CorridorSkill,
+  window_steps: int,
+  count: int,
+  rng: np.random.Generator,
+) -> list[np.ndarray]:
+  """A family of the skill's early tubes, one rollout per sampled initiation state.
+
+  A complex robot has no single perfect start, only an initiation set, so the tube is a
+  family rather than one line. Each member starts from a jittered initiation state (here
+  the spatial part, lateral offset and heading, from rest, so the ramps stay aligned) and
+  is rolled forward. Members are clipped to their common length so they can be compared
+  and combined into one representative.
+  """
+  tracks: list[np.ndarray] = []
+  for _ in range(count * 4):
+    if len(tracks) >= count:
+      break
+    start = _initiation_start(skill, rng, speed=0.0)
+    track = _rollout(model, robot, skill, start, max_steps=window_steps)
+    if len(track) > 1:
+      tracks.append(track)
+  if not tracks:
+    raise RuntimeError(f"No window rollouts for skill {skill.cid}.")
+  common = min(len(t) for t in tracks)
+  return [t[:common] for t in tracks]
+
+
+def _traj_distance(a: np.ndarray, b: np.ndarray) -> float:
+  """Summed per-step pose-and-speed distance between two equal-length tracks."""
+  dpos = np.hypot(a[:, X] - b[:, X], a[:, Y] - b[:, Y])
+  dyaw = a[:, THETA] - b[:, THETA]
+  dhead = np.abs(np.arctan2(np.sin(dyaw), np.cos(dyaw)))
+  dspd = np.abs(a[:, V] - b[:, V])
+  return float(
+    (config.W_POS * dpos + config.W_HEAD * dhead + config.W_SPEED * dspd).sum()
+  )
+
+
+def representative(family: list[np.ndarray], method: str = "medoid") -> np.ndarray:
+  """One representative tube from a family of equal-length tracks.
+
+  medoid  the member closest to all the others: a real, feasible rollout, robust to
+          outliers. The safe default.
+  mean    the pointwise average, with a circular mean for the heading. Simple, but the
+          average of feasible tracks need not itself be feasible.
+  """
+  stack = np.stack(family)  # [count, m, 5]
+  if method == "mean":
+    out = stack.mean(axis=0)
+    th = stack[:, :, THETA]
+    out[:, THETA] = np.arctan2(np.sin(th).mean(axis=0), np.cos(th).mean(axis=0))
+    return out
+  if method == "medoid":
+    total = np.zeros(len(family))
+    for i in range(len(family)):
+      for j in range(i + 1, len(family)):
+        d = _traj_distance(stack[i], stack[j])
+        total[i] += d
+        total[j] += d
+    return stack[int(total.argmin())].copy()
+  raise ValueError(f"Unknown representative method: {method!r}")
+
+
 def harvest_window(
   model: mujoco.MjModel,
   robot: DiffDrive,
   skill: CorridorSkill,
   window_steps: int,
+  *,
+  samples: int = config.WINDOW_SAMPLES,
+  rng: np.random.Generator | None = None,
+  method: str = config.WINDOW_REPRESENTATIVE,
 ) -> np.ndarray:
-  """The early window of a skill's tube: its first `window_steps` states from rest.
+  """A representative early window of a skill's tube, the single line the bridge aims at.
 
-  The skill begins at its entry cell at rest and ramps up, exactly as it does in the
-  experiment, so the window holds the real low-to-cruise states the bridge can aim at.
+  The tube is harvested as a family of initiation-set rollouts (window_family) and reduced
+  to one representative (representative). This generalizes the old single ideal line: with
+  a complex robot there is no one perfect start, so we sample the initiation set and pick a
+  central member. The window still holds the real low-to-cruise states from rest.
   """
-  start = _entry_state(skill, speed=0.0)
-  track = _rollout(model, robot, skill, start, max_steps=window_steps)
-  return track[: window_steps + 1]
+  rng = np.random.default_rng(0) if rng is None else rng
+  family = window_family(model, robot, skill, window_steps, samples, rng)
+  return representative(family, method)
 
 
 def interrupt_tracks(
@@ -132,25 +225,11 @@ def interrupt_tracks(
   back. The interrupt states are the last row of each track; the full tracks also show
   where the previous skill carries the robot, which is what the visualizer draws.
   """
-  half = skill.d_tol * 0.7
-  phi = skill.phi_tol * 0.7
-  v_hi = min(1.2, skill.speed)
-  ex, ey = skill.world.cell_center(*skill.entry)
-  lateral = (-math.sin(skill.heading), math.cos(skill.heading))
   tracks: list[np.ndarray] = []
   for _ in range(count * 8):
     if len(tracks) >= count:
       break
-    offset = rng.uniform(-half, half)
-    start = np.array(
-      [
-        float(ex) + offset * lateral[0],
-        float(ey) + offset * lateral[1],
-        skill.heading + rng.uniform(-phi, phi),
-        rng.uniform(0.0, v_hi),
-        0.0,
-      ]
-    )
+    start = _initiation_start(skill, rng)
     track = _rollout(model, robot, skill, start, max_steps=600, stop_cell=junction_cell)
     last = track[-1]
     r, c = skill.world.world_to_cell(float(last[X]), float(last[Y]))
@@ -208,7 +287,7 @@ def harvest_transitions(
   windows: list[np.ndarray] = []
   for src, (cell, tgt) in sorted(junction_map(world).items()):
     transitions.append((src, tgt))
-    window = harvest_window(model, robot, skills[tgt], window_steps)
+    window = harvest_window(model, robot, skills[tgt], window_steps, rng=rng)
     windows.append(_fix_length(window, m))
     inter = harvest_interrupts(model, robot, skills[src], cell, n_interrupts, rng)
     interrupts.append(_fix_length(inter, n_interrupts))
@@ -221,14 +300,16 @@ def harvest_windows(
   mode: str,
   *,
   window_steps: int = config.WINDOW_STEPS,
+  seed: int = 0,
 ) -> dict[int, np.ndarray]:
   """The early window of every corridor's skill, keyed by corridor id (for deployment)."""
   robot = DiffDrive()
   model = build_model(world, robot)
   skills = corridor_skills(world, speeds, mode=mode)
   m = window_steps + 1
+  rng = np.random.default_rng(seed)
   return {
-    cid: _fix_length(harvest_window(model, robot, skill, window_steps), m)
+    cid: _fix_length(harvest_window(model, robot, skill, window_steps, rng=rng), m)
     for cid, skill in skills.items()
   }
 
@@ -246,11 +327,12 @@ def main() -> None:
 
   * the source skill's interrupt rollouts: many semi-transparent ghost robots driving
     corridor src from jittered starts to the junction corner, where the previous skill
-    leaves the robot. They are translucent so the spread of rollouts stays legible, and
-    their endpoints (the interrupt states, what `N_INTERRUPTS` samples) are marked.
-  * the target skill's window: the early tube of skill tgt from rest, drawn as a bright
-    path with its sampled states as points -- the window the bridge may aim at. A ghost
-    replays it in the target color.
+    leaves the robot. Their endpoints (the interrupt states, what N_INTERRUPTS samples)
+    are marked with diamonds, and the last window_seconds of every rollout are drawn as
+    points: the approach states a same-duration window before the interrupt would save.
+  * the target skill's tube family: one rollout per sampled initiation state, each a
+    thin line. Their representative (medoid or mean) is the bright path, with dots for
+    the states it saves, the single window the bridge aims to join. A ghost replays it.
 
   A dropdown picks the transition; Play/Pause/Step/Reset and the speed buttons mirror
   the experiment and skills viewers.
@@ -277,11 +359,13 @@ def main() -> None:
   @_dataclass
   class Args:
     cell: float = 1.0  # metres per grid cell
-    mode: str = "cruise"  # skill mode: "cruise" (non-steering) or "hold"
+    mode: str = "hold"  # skill mode: "cruise" (non-steering) or "hold"
     slow: float = 0.5  # slow-corridor cruise speed (m/s)
     fast: float = 1.5  # fast-corridor cruise speed (m/s)
     rollouts: int = 16  # source interrupt rollouts to overlay per transition
-    window_steps: int = config.WINDOW_STEPS  # control ticks of the target window
+    window_seconds: float = config.WINDOW_SECONDS  # duration of each saved window
+    samples: int = config.WINDOW_SAMPLES  # target tube rollouts (the family)
+    representative: str = config.WINDOW_REPRESENTATIVE  # family summary: medoid or mean
     alpha: float = 0.35  # ghost-robot opacity
     seed: int = 0
 
@@ -293,6 +377,7 @@ def main() -> None:
   skills = corridor_skills(world, speeds, mode=args.mode)
   model = build_model(world, robot)
   transitions = sorted(junction_map(world).items())  # [(src, (cell, tgt)), ...]
+  window_steps = round(args.window_seconds / config.CONTROL_DT)  # states per window
   n_src = max(1, args.rollouts)
   num_envs = n_src + 1  # +1 ghost replays the target window
 
@@ -355,6 +440,7 @@ def main() -> None:
   ghosts: list = []
   decor: list = []
   label = ""
+  n_fam = 0
 
   def line(name: str, track: np.ndarray, color: np.ndarray, width: float):
     pts = np.column_stack([track[:, X], track[:, Y], np.full(len(track), 0.03)]).astype(
@@ -372,7 +458,7 @@ def main() -> None:
     )
 
   def build_transition(idx: int) -> None:
-    nonlocal frame, length, xpos, xquat, ghosts, decor, label
+    nonlocal frame, length, xpos, xquat, ghosts, decor, label, n_fam
     src, (corner, tgt) = transitions[idx]
     rng = np.random.default_rng(args.seed)
     accepted = interrupt_tracks(model, robot, skills[src], corner, n_src, rng)
@@ -380,7 +466,11 @@ def main() -> None:
       raise RuntimeError(f"No source rollouts reached corner {corner}.")
     # Cycle the accepted tracks up to n_src so the ghost count stays fixed.
     src_tracks = [accepted[i % len(accepted)] for i in range(n_src)]
-    window = harvest_window(model, robot, skills[tgt], args.window_steps)
+    # The target tube is a family of initiation-set rollouts; the bridge aims at a single
+    # representative of it (medoid or mean).
+    family = window_family(model, robot, skills[tgt], window_steps, args.samples, rng)
+    window = representative(family, args.representative)
+    n_fam = len(family)
 
     xpos, xquat = pose_frames(src_tracks + [window])
     length = xpos.shape[0]
@@ -412,17 +502,27 @@ def main() -> None:
     for handle in decor:
       handle.remove()
     decor = [line(f"/paths/src{j}", t, rgb(src), 1.5) for j, t in enumerate(accepted)]
+    # Target tube family: each initiation-set rollout as a thin line, and the chosen
+    # representative as a bright line with its saved states as dots.
+    decor += [line(f"/paths/fam{j}", t, rgb(tgt), 0.8) for j, t in enumerate(family)]
     decor.append(line("/paths/window", window, rgb(tgt), 4.0))
-    decor.append(points("/paths/window_pts", window, rgb(tgt), 0.04, "circle"))
+    decor.append(points("/paths/window_pts", window, rgb(tgt), 0.01, "circle"))
+    # The same-duration window before each interrupt: the last window_steps states of
+    # every source rollout, the approach states a pre-interrupt window would save.
+    pre = np.concatenate([t[-window_steps:] for t in accepted], axis=0)
+    decor.append(points("/paths/interrupt_window", pre, rgb(src), 0.01, "circle"))
     # Interrupt states: where the source rollouts end (what N_INTERRUPTS samples).
     ends = np.array([t[-1] for t in accepted])
-    decor.append(points("/paths/interrupts", ends, rgb(src), 0.06, "diamond"))
+    decor.append(points("/paths/interrupts", ends, rgb(src), 0.01, "diamond"))
+
+    """
     cx, cy = (float(v) for v in world.cell_center(*corner))
     decor.append(
       server.scene.add_icosphere(
         "/paths/corner", radius=0.08, color=(245, 215, 60), position=(cx, cy, 0.03)
       )
     )
+    """
 
   def show(f: int) -> None:
     for i, handle in enumerate(ghosts):
@@ -480,9 +580,10 @@ def main() -> None:
     rows = {
       "transition": label,
       "rollouts (src)": f"{n_src}",
-      "window steps (tgt)": f"{args.window_steps}",
+      "window": f"{args.window_seconds:g} s ({window_steps} states)",
+      "target family": f"{n_fam} rollouts via {args.representative}",
       "frame": f"{frame + 1}/{length}",
-      "legend": "ghosts = rollouts, bright path + dots = window",
+      "legend": "thin tgt lines = tube family, bright line + dots = representative",
     }
     body = "".join(f"<strong>{k}:</strong> {v}<br/>" for k, v in rows.items())
     info.content = (
@@ -492,7 +593,7 @@ def main() -> None:
 
   build_transition(0)
   show(0)
-  control_dt = config.TIMESTEP * config.DECIMATION
+  control_dt = config.CONTROL_DT
   while True:
     if not ui["paused"]:
       frame = (frame + 1) % length

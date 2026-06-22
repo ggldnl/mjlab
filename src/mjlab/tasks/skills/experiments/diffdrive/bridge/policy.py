@@ -31,7 +31,7 @@ class LearnedBridge(Bridge):
     checkpoint: str,
     world: GridWorld,
     speeds: dict[int, float],
-    mode: str = "cruise",
+    mode: str = "hold",
   ) -> None:
     import onnxruntime  # local: keep onnxruntime off the package import path
 
