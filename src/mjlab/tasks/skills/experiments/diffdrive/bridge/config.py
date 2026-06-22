@@ -44,7 +44,7 @@ M_HEAD = math.radians(45.0)
 M_SPEED = 1.0
 
 # Rollout harvesting.
-WINDOW_STEPS = 40  # control ticks of the next skill's early tube to record
+WINDOW_STEPS = 200  # control ticks of the next skill's early tube to record
 N_INTERRUPTS = 48  # interrupt states harvested per corridor transition
 
 OBS_DIM = 7
