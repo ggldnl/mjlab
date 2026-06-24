@@ -210,7 +210,12 @@ def main() -> None:
     mode: Literal["cruise", "hold"] = (
       "cruise"  # skill mode: "cruise" (non-steering) or "hold" (heading-hold)
     )
-    backend: Literal["viser", "mpl"] = "viser"
+    idle: Literal["zero", "coast"] = (
+      "coast"  # outside a skill's initiation set: "zero" (stop) or "coast" (keep motion)
+    )
+    backend: Literal["viser", "mpl"] = (
+      "viser"
+    )
     cell: float = 1.0
     # Per-corridor cruise speeds (alternating). The robot droops below these under
     # bounded torque, but fast corridors still carry more residual speed into a junction
@@ -228,7 +233,7 @@ def main() -> None:
   bridge = make_bridge(
     args.bridge, checkpoint=args.checkpoint, world=world, speeds=speeds, mode=args.mode
   )
-  skills = corridor_skills(world, speeds, mode=args.mode)
+  skills = corridor_skills(world, speeds, mode=args.mode, idle=args.idle)
   controller = CorridorController(world, skills, bridge)
   experiment = Experiment(
     world=world,
