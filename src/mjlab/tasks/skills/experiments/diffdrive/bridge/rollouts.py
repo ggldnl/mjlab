@@ -27,7 +27,6 @@ import mujoco
 import numpy as np
 
 from mjlab.tasks.skills.experiments.diffdrive.bridge import config
-from mjlab.tasks.skills.experiments.diffdrive.controller import junction_map
 from mjlab.tasks.skills.experiments.diffdrive.experiment import build_model
 from mjlab.tasks.skills.experiments.diffdrive.gridworld import GridWorld
 from mjlab.tasks.skills.experiments.diffdrive.robot import (
@@ -285,7 +284,7 @@ def harvest_transitions(
   transitions: list[tuple[int, int]] = []
   interrupts: list[np.ndarray] = []
   windows: list[np.ndarray] = []
-  for src, (cell, tgt) in sorted(junction_map(world).items()):
+  for src, (cell, tgt) in sorted(world.junction_map().items()):
     transitions.append((src, tgt))
     window = harvest_window(model, robot, skills[tgt], window_steps, rng=rng)
     windows.append(_fix_length(window, m))
@@ -347,7 +346,6 @@ def main() -> None:
   from mjviser import ViserMujocoScene
   from mjviser.conversions import merge_geoms
 
-  from mjlab.tasks.skills.experiments.diffdrive.controller import junction_map
   from mjlab.tasks.skills.experiments.diffdrive.experiment import (
     build_model,
     corridor_speeds,
@@ -376,7 +374,7 @@ def main() -> None:
   speeds = corridor_speeds(world, slow=args.slow, fast=args.fast)
   skills = corridor_skills(world, speeds, mode=args.mode)
   model = build_model(world, robot)
-  transitions = sorted(junction_map(world).items())  # [(src, (cell, tgt)), ...]
+  transitions = sorted(world.junction_map().items())  # [(src, (cell, tgt)), ...]
   window_steps = round(args.window_seconds / config.CONTROL_DT)  # states per window
   n_src = max(1, args.rollouts)
   num_envs = n_src + 1  # +1 ghost replays the target window

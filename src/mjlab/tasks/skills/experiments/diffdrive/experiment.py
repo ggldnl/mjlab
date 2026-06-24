@@ -30,10 +30,7 @@ import numpy as np
 
 from mjlab.tasks.skills import play
 from mjlab.tasks.skills.experiments.diffdrive.bridge import InstantBridge
-from mjlab.tasks.skills.experiments.diffdrive.controller import (
-  CorridorController,
-  travel_directions,
-)
+from mjlab.tasks.skills.experiments.diffdrive.controller import CorridorController
 from mjlab.tasks.skills.experiments.diffdrive.gridworld import (
   HORIZONTAL,
   GridWorld,
@@ -86,7 +83,7 @@ def start_state(world: GridWorld, *, speed: float = 1.0) -> np.ndarray:
   """Robot at the first corridor's start cell, aligned with its axis, already cruising."""
   first = min(world.corridors)
   corr = world.corridor(first)
-  dx, dy = travel_directions(world)[first]
+  dx, dy = world.travel_directions()[first]
   heading = math.atan2(dy, dx)
   lo, hi = world.extent(corr)  # world span along the axis
   sign = dx + dy  # +1 or -1 (one component is 0)

@@ -125,6 +125,22 @@ class Corridor:
     """The grid index held fixed: the run's row if horizontal, its column if vertical."""
     return self.start_cell[self.orientation]
 
+  def axis_coord(self, cell: tuple[int, int]) -> float:
+    """Position of `cell` along the corridor's axis, increasing in the +x/+y sense."""
+    r, c = cell
+    return float(c) if self.orientation == HORIZONTAL else float(-r)
+
+  def entry_cell(self, direction: tuple[int, int]) -> tuple[int, int]:
+    """The endpoint a traversal in `direction` starts from (the tail of travel).
+
+    A corridor is driven from this end toward the far one; which end that is depends
+    only on the travel direction, which the grid supplies (it knows the neighbours).
+    """
+    dx, dy = direction
+    if self.orientation == HORIZONTAL:
+      return self.cells[0] if dx > 0 else self.cells[-1]
+    return self.cells[-1] if dy > 0 else self.cells[0]
+
   def __repr__(self) -> str:
     if self.orientation == HORIZONTAL:
       return f"Corridor(row={self.constant}, cols={self.lo}->{self.hi})"
@@ -182,6 +198,74 @@ class Grid:
   def what_corridor(self, r: int, c: int) -> int:
     return self.grid[r, c]
 
+  # Junctions and travel: pure topology, derived from the corridors. Once the
+  # corridors are known the junctions follow, so this is the grid's to compute.
+
+  def _adjacency_cell(self, k: int, n: int) -> tuple[int, int] | None:
+    """A cell of corridor k orthogonally adjacent to corridor n (or None)."""
+    others = set(self.corridor(n).cells)
+    for r, c in self.corridor(k).cells:
+      if any(
+        (r + dr, c + dc) in others for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1))
+      ):
+        return (r, c)
+    return None
+
+  def _junction_cell(self, k: int, nxt: int) -> tuple[int, int] | None:
+    """The cell at which to hand corridor k over to nxt the turn corner.
+
+    At an overlap junction (nxt crosses k's line) it is nxt's cell on that line,
+    which the robot reaches naturally. At a side branch where k's straight path never
+    enters nxt, it is k's own last cell beside nxt (past which the robot would
+    hit the wall). The corner trigger covers both; "entered the next corridor"
+    only covers the overlap case.
+    """
+    corr = self.corridor(k)
+    axis = corr.orientation  # grid index k holds constant: 0 if H (row), 1 if V (col)
+    const = corr.constant
+    overlap = self._adjacency_cell(nxt, k)  # a cell of nxt touching k
+    if overlap is not None and overlap[axis] == const:
+      return overlap
+    return self._adjacency_cell(k, nxt)
+
+  def junction_map(self) -> dict[int, tuple[tuple[int, int], int]]:
+    """Per active corridor: the cell at which to switch, and the corridor to switch to.
+
+    Corridors are numbered in traversal order, so this walks 1 -> 2 -> ... -> n.
+    """
+    order = sorted(self.corridors)
+    out: dict[int, tuple[tuple[int, int], int]] = {}
+    for k, nxt in zip(order[:-1], order[1:], strict=True):
+      cell = self._junction_cell(k, nxt)
+      if cell is not None:
+        out[k] = (cell, nxt)
+    return out
+
+  def travel_directions(self) -> dict[int, tuple[int, int]]:
+    """Unit travel vector per corridor, from its k-1 junction toward its k+1 one.
+
+    Corridor k is entered from k-1 and exited toward k+1; the cruise direction
+    points entry -> exit along the axis. The first/last corridor (no predecessor/successor)
+    points toward/away from its one junction instead.
+    """
+    directions: dict[int, tuple[int, int]] = {}
+    for cid, corr in self.corridors.items():
+      entry = self._adjacency_cell(cid, cid - 1) if cid - 1 in self.corridors else None
+      exit_ = self._adjacency_cell(cid, cid + 1) if cid + 1 in self.corridors else None
+      coords = [corr.axis_coord(cell) for cell in corr.cells]
+      centroid = sum(coords) / len(coords)
+      if entry is not None and exit_ is not None:
+        delta = corr.axis_coord(exit_) - corr.axis_coord(entry)
+      elif exit_ is not None:
+        delta = corr.axis_coord(exit_) - centroid
+      elif entry is not None:
+        delta = centroid - corr.axis_coord(entry)
+      else:
+        delta = 1.0
+      d = 1 if delta >= 0 else -1
+      directions[cid] = (d, 0) if corr.orientation == HORIZONTAL else (0, d)
+    return directions
+
 
 @dataclass(frozen=True)
 class GridWorld(World):
@@ -209,6 +293,12 @@ class GridWorld(World):
 
   def corridor(self, cid: int) -> Corridor:
     return self.grid.corridor(cid)
+
+  def junction_map(self) -> dict[int, tuple[tuple[int, int], int]]:
+    return self.grid.junction_map()
+
+  def travel_directions(self) -> dict[int, tuple[int, int]]:
+    return self.grid.travel_directions()
 
   @property
   def nrows(self) -> int:

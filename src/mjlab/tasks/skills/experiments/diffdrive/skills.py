@@ -29,11 +29,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from mjlab.tasks.skills.experiments.diffdrive.controller import (
-  _adjacency_cell,
-  travel_directions,
-)
-from mjlab.tasks.skills.experiments.diffdrive.gridworld import HORIZONTAL, GridWorld
+from mjlab.tasks.skills.experiments.diffdrive.gridworld import GridWorld
 from mjlab.tasks.skills.experiments.diffdrive.robot import OMEGA, THETA, V, X, Y
 from mjlab.tasks.skills.interfaces import Command, State
 
@@ -43,31 +39,6 @@ CRUISE, HOLD = "cruise", "hold"
 def _wrap(angle: float) -> float:
   """Wrap an angle to (-pi, pi]."""
   return math.atan2(math.sin(angle), math.cos(angle))
-
-
-def _entry_cell(world: GridWorld, cid: int) -> tuple[int, int]:
-  """The corridor's geometric start: the cell a full traversal begins from.
-
-  It is the corridor endpoint nearest the junction with the previous corridor, since a
-  corridor is entered near its start and driven toward the next corridor at the far end.
-  The first corridor has no predecessor, so it is the end opposite the exit.
-
-  This is deliberately not where the robot arrives. The robot comes in at the junction
-  corner, a different cell (and facing the wrong way), so it is never in the initiation
-  set on arrival. Closing that gap is exactly the bridge's job.
-  """
-  if cid - 1 in world.corridors:
-    cell = _adjacency_cell(world, cid, cid - 1)
-    if cell is not None:
-      corr = world.corridor(cid)
-      d_start = abs(cell[0] - corr.start_cell[0]) + abs(cell[1] - corr.start_cell[1])
-      d_end = abs(cell[0] - corr.end_cell[0]) + abs(cell[1] - corr.end_cell[1])
-      return corr.start_cell if d_start < d_end else corr.end_cell
-  corr = world.corridor(cid)
-  dx, dy = travel_directions(world)[cid]
-  if corr.orientation == HORIZONTAL:
-    return corr.cells[0] if dx > 0 else corr.cells[-1]
-  return corr.cells[-1] if dy > 0 else corr.cells[0]
 
 
 @dataclass
@@ -107,9 +78,9 @@ class CorridorSkill:
   _active: bool | None = field(init=False, default=None, repr=False)
 
   def __post_init__(self) -> None:
-    dx, dy = travel_directions(self.world)[self.cid]
+    dx, dy = self.world.travel_directions()[self.cid]
     self.heading = math.atan2(dy, dx)
-    self.entry = _entry_cell(self.world, self.cid)
+    self.entry = self.world.corridor(self.cid).entry_cell((dx, dy))
     self._active = None
 
   @property

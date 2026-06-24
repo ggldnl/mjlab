@@ -14,86 +14,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from mjlab.tasks.skills.experiments.diffdrive.gridworld import (
-  HORIZONTAL,
-  Corridor,
-  GridWorld,
-)
+from mjlab.tasks.skills.experiments.diffdrive.gridworld import GridWorld
 from mjlab.tasks.skills.experiments.diffdrive.robot import X, Y
 from mjlab.tasks.skills.interfaces import Bridge, Command, Controller, Skill, State
-
-
-def _adjacency_cell(world: GridWorld, k: int, n: int) -> tuple[int, int] | None:
-  """A cell of corridor k orthogonally adjacent to corridor n (or None)."""
-  others = set(world.corridor(n).cells)
-  for r, c in world.corridor(k).cells:
-    if any((r + dr, c + dc) in others for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1))):
-      return (r, c)
-  return None
-
-
-def _axis_coord(corr: Corridor, cell: tuple[int, int]) -> float:
-  """Position of `cell` along the corridor's axis, increasing in the +x/+y sense."""
-  r, c = cell
-  return float(c) if corr.orientation == HORIZONTAL else float(-r)
-
-
-def _junction_cell(world: GridWorld, k: int, nxt: int) -> tuple[int, int] | None:
-  """The cell at which to hand corridor k over to nxt the turn corner.
-
-  At an overlap junction (nxt crosses k's line) it is nxt's cell on that line,
-  which the robot reaches naturally. At a side branch where k's straight path never
-  enters nxt, it is k's own last cell beside nxt (past which the robot would
-  hit the wall). The corner trigger covers both; "entered the next corridor"
-  only covers the overlap case.
-  """
-  corr = world.corridor(k)
-  axis = corr.orientation  # the grid index k holds constant: 0 (row) if H, 1 (col) if V
-  const = corr.constant
-  overlap = _adjacency_cell(world, nxt, k)  # a cell of nxt touching k
-  if overlap is not None and overlap[axis] == const:
-    return overlap
-  return _adjacency_cell(world, k, nxt)
-
-
-def junction_map(world: GridWorld) -> dict[int, tuple[tuple[int, int], int]]:
-  """Per active corridor: the cell at which to switch, and the corridor to switch to.
-
-  Corridors are numbered in traversal order, so this walks 1 -> 2 -> ... -> n.
-  """
-  order = sorted(world.corridors)
-  out: dict[int, tuple[tuple[int, int], int]] = {}
-  for k, nxt in zip(order[:-1], order[1:], strict=True):
-    cell = _junction_cell(world, k, nxt)
-    if cell is not None:
-      out[k] = (cell, nxt)
-  return out
-
-
-def travel_directions(world: GridWorld) -> dict[int, tuple[int, int]]:
-  """Unit travel vector per corridor, from its k-1 junction toward its k+1 one.
-
-  Corridor k is entered from k-1 and exited toward k+1; the cruise direction
-  points entry -> exit along the axis. The first/last corridor (no predecessor/successor)
-  points toward/away from its one junction instead.
-  """
-  directions: dict[int, tuple[int, int]] = {}
-  for cid, corr in world.corridors.items():
-    entry = _adjacency_cell(world, cid, cid - 1) if cid - 1 in world.corridors else None
-    exit_ = _adjacency_cell(world, cid, cid + 1) if cid + 1 in world.corridors else None
-    coords = [_axis_coord(corr, cell) for cell in corr.cells]
-    centroid = sum(coords) / len(coords)
-    if entry is not None and exit_ is not None:
-      delta = _axis_coord(corr, exit_) - _axis_coord(corr, entry)
-    elif exit_ is not None:
-      delta = _axis_coord(corr, exit_) - centroid
-    elif entry is not None:
-      delta = centroid - _axis_coord(corr, entry)
-    else:
-      delta = 1.0
-    d = 1 if delta >= 0 else -1
-    directions[cid] = (d, 0) if corr.orientation == HORIZONTAL else (0, d)
-  return directions
 
 
 class CorridorController(Controller):
@@ -115,7 +38,7 @@ class CorridorController(Controller):
 
     # World related stuff
     self.world = world
-    self._junctions = junction_map(world)
+    self._junctions = world.junction_map()
 
     # Current and next skill (set by reset)
     self.current: int = 1

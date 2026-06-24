@@ -29,7 +29,6 @@ from mjlab.tasks.skills.experiments.diffdrive.bridge.rollouts import (
   interrupt_tracks,
   window_family,
 )
-from mjlab.tasks.skills.experiments.diffdrive.controller import junction_map
 from mjlab.tasks.skills.experiments.diffdrive.experiment import (
   build_model,
   corridor_speeds,
@@ -110,7 +109,7 @@ def harvest_dataset(
   transitions: list[tuple[int, int]] = []
   end_windows: list[np.ndarray] = []
   start_windows: list[np.ndarray] = []
-  for src, (cell, tgt) in sorted(junction_map(world).items()):
+  for src, (cell, tgt) in sorted(world.junction_map().items()):
     transitions.append((src, tgt))
     approaches = interrupt_tracks(model, robot, skills[src], cell, n_end, rng)
     if not approaches:
