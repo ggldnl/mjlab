@@ -1,23 +1,17 @@
 """Per-corridor skills with an explicit initiation set.
 
-A skill follows one straight corridor.
-A skill is valid only from its initiation set: states at the entry cell, centered on
-the corridor, aligned with the travel direction, at a moderate speed. Started there it
-sails to the exit. Started anywhere else (the wrong heading and cross-axis momentum a
-junction leaves behind) the non-steering policy drives straight into a wall. Carrying
-the robot from a junction into the next skill's initiation set is the bridge's job, not
-the skill's.
+A skill follows one straight corridor with a heading-hold policy: it commands a forward
+speed and a yaw rate that rotates the robot back toward the corridor direction (like a
+cartpole stabilizing to upright). It never corrects lateral offset and cannot make the
+90 degree junction turn.
 
-Two running modes:
+A skill is valid only from its initiation set: centered on the corridor, aligned with the
+travel direction, at a moderate speed. Started there it sails to the exit. Started anywhere
+else (the wrong heading and cross-axis momentum a junction leaves behind) it cannot recover.
+Carrying the robot from a junction into the next skill's initiation set is the bridge's job,
+not the skill's.
 
-  cruise  non-steering, command (v, 0). Never steers, so it holds a corridor only from
-          an already aligned state. This is the literal reading of "a skill must not do
-          the bridge's steering".
-  hold    heading-hold, command (v, -kp * phi). Rotates back toward the corridor
-          direction (like cartpole balance stabilizing to upright) but never corrects
-          lateral offset and cannot make the 90 degree junction turn.
-
-    skills = corridor_skills(world, corridor_speeds(world), mode="cruise")
+    skills = corridor_skills(world, corridor_speeds(world))
     controller = CorridorController(world, skills, bridge)
 """
 
@@ -33,7 +27,6 @@ from mjlab.tasks.skills.experiments.diffdrive.gridworld import GridWorld
 from mjlab.tasks.skills.experiments.diffdrive.robot import OMEGA, THETA, V, X, Y
 from mjlab.tasks.skills.interfaces import Command, State
 
-CRUISE, HOLD = "cruise", "hold"
 ZERO, COAST = "zero", "coast"
 
 
@@ -44,7 +37,7 @@ def _wrap(angle: float) -> float:
 
 @dataclass
 class CorridorSkill:
-  """One corridor's cruise policy together with its initiation set.
+  """One corridor's heading-hold policy together with its initiation set.
 
   The skill starts only from its initiation set: on the centerline, aligned with the
   travel direction, at a moderate speed. Membership is a fact about the dynamic state,
@@ -66,10 +59,9 @@ class CorridorSkill:
   world: GridWorld
   cid: int
   speed: float
-  mode: str = CRUISE
   idle: str = ZERO  # outside the initiation set: ZERO (stop) or COAST (keep motion)
-  kp: float = 0.8  # heading-hold positional gain (hold mode only)
-  kd: float = 2.0  # heading-hold derivative gain (hold mode only)
+  kp: float = 0.8  # heading-hold positional gain
+  kd: float = 2.0  # heading-hold derivative gain
   d_tol: float = 0.12  # max |lateral offset| from the centerline in the initiation set
   phi_tol: float = math.radians(15.0)  # max heading error in the initiation set
   speed_band: tuple[float, float] = (
@@ -106,11 +98,9 @@ class CorridorSkill:
       if self.idle == COAST:
         return np.array([float(state[V]), 0.0])  # keep current heading and speed
       return np.zeros(2)  # brake to a stop
-    if self.mode == HOLD:
-      phi = self.heading_error(float(state[THETA]))
-      phi_dot = float(state[OMEGA])  # heading fixed, so phi_dot = theta_dot = omega
-      return np.array([self.speed, -self.kp * phi - self.kd * phi_dot])
-    return np.array([self.speed, 0.0])
+    phi = self.heading_error(float(state[THETA]))
+    phi_dot = float(state[OMEGA])  # heading fixed, so phi_dot = theta_dot = omega
+    return np.array([self.speed, -self.kp * phi - self.kd * phi_dot])
 
   def initiation_set(self, state: State) -> bool:
     """Whether the skill may be started from state: centered on the centerline, aligned
@@ -127,25 +117,22 @@ class CorridorSkill:
 
 
 def corridor_skills(
-  world: GridWorld, speeds: Mapping[int, float], mode: str = CRUISE, idle: str = ZERO
+  world: GridWorld, speeds: Mapping[int, float], idle: str = ZERO
 ) -> dict[int, CorridorSkill]:
-  """One CorridorSkill per corridor, each at its target speed, mode, and idle behavior."""
+  """One CorridorSkill per corridor, each at its target speed and idle behavior."""
   return {
-    cid: CorridorSkill(world, cid, speeds[cid], mode=mode, idle=idle)
-    for cid in world.corridors
+    cid: CorridorSkill(world, cid, speeds[cid], idle=idle) for cid in world.corridors
   }
 
 
 def main() -> None:
   """Visualize one skill on the grid world, choosing the skill and spawn in the viewer.
 
-  Side-panel controls pick the corridor (which skill runs), the mode, the idle behavior
-  (what the skill does outside its initiation set: stop or keep its motion), the spawn
-  cell (row, col), the heading offset from the corridor direction (0 = aligned), and the
-  start speed. Changing any of them respawns the robot. The Info box shows whether the
-  skill is RUNNING (started inside its initiation set) or IDLE (started anywhere else).
-  To see the idle behavior, spawn off the centerline or at an angle so the skill does not
-  start. The CLI flags just set the initial selection.
+  Side-panel controls pick the corridor (which skill runs), the spawn cell (row, col), the
+  heading offset from the corridor direction (0 = aligned), and the start speed. Changing
+  any of them respawns the robot. The Info box shows whether the skill is RUNNING (started
+  inside its initiation set) or IDLE (started anywhere else). The CLI flags just set the
+  initial selection.
 
       uv run python -m mjlab.tasks.skills.experiments.diffdrive.skills
       uv run python -m mjlab.tasks.skills.experiments.diffdrive.skills --corridor 3
@@ -164,7 +151,6 @@ def main() -> None:
   @_dataclass
   class Args:
     corridor: int = 1  # initial corridor whose skill to run
-    mode: str = CRUISE  # initial mode: "cruise" (non-steering) or "hold" (heading-hold)
     idle: str = COAST  # initial idle behavior: "zero" (stop) or "coast" (keep motion)
     cell: tuple[int, int] | None = (
       None  # initial spawn (row, col); default = entry cell
@@ -177,26 +163,20 @@ def main() -> None:
   world = GridWorld(cell=args.world_cell)
   robot = DiffDrive()
   speeds = corridor_speeds(world)
-  skills_by_mode = {m: corridor_skills(world, speeds, mode=m) for m in (CRUISE, HOLD)}
+  skills = corridor_skills(world, speeds)
 
   @_dataclass
   class Sel:
     cid: int
-    mode: str
     idle: str
     row: int
     col: int
     heading_deg: float
     speed: float
 
-  init_cell = (
-    args.cell
-    if args.cell is not None
-    else skills_by_mode[args.mode][args.corridor].entry
-  )
+  init_cell = args.cell if args.cell is not None else skills[args.corridor].entry
   sel = Sel(
     cid=args.corridor,
-    mode=args.mode,
     idle=args.idle,
     row=int(init_cell[0]),
     col=int(init_cell[1]),
@@ -206,7 +186,7 @@ def main() -> None:
   state_box = {"s": np.zeros(5)}
 
   def current_skill() -> CorridorSkill:
-    return skills_by_mode[sel.mode][sel.cid]
+    return skills[sel.cid]
 
   def current_start() -> np.ndarray:
     skill = current_skill()
@@ -235,7 +215,7 @@ def main() -> None:
     here = int(world.corridor_at(float(s[X]), float(s[Y])))
     return {
       "corridor (position)": str(here) if here else "wall",
-      "skill": f"corridor {sel.cid} ({sel.mode})",
+      "skill": f"corridor {sel.cid}",
       "entry cell (initiation set)": str(skill.entry),
       "spawn cell": f"({sel.row}, {sel.col})",
       "state": "RUNNING" if skill.active else f"IDLE -> {sel.idle}",
@@ -249,12 +229,6 @@ def main() -> None:
     options = [str(cid) for cid in sorted(world.corridors)]
     with server.gui.add_folder("Skill / spawn"):
       cid_dd = server.gui.add_dropdown("Corridor", options, initial_value=str(sel.cid))
-      mode_dd = server.gui.add_dropdown("Mode", (CRUISE, HOLD), initial_value=sel.mode)
-      """
-      idle_dd = server.gui.add_dropdown(
-        "Idle (outside set)", (ZERO, COAST), initial_value=sel.idle
-      )
-      """
       row_in = server.gui.add_number(
         "Spawn row", initial_value=sel.row, min=0, max=world.nrows - 1, step=1
       )
@@ -271,8 +245,6 @@ def main() -> None:
 
     def apply(_=None) -> None:
       sel.cid = int(cid_dd.value)
-      sel.mode = mode_dd.value
-      sel.idle = idle_dd.value
       sel.row = int(row_in.value)
       sel.col = int(col_in.value)
       sel.heading_deg = float(head_sl.value)
@@ -280,13 +252,13 @@ def main() -> None:
       reset()
 
     def snap_to_entry(_=None) -> None:
-      entry = skills_by_mode[mode_dd.value][int(cid_dd.value)].entry
+      entry = skills[int(cid_dd.value)].entry
       row_in.value, col_in.value = int(entry[0]), int(entry[1])
       apply()
 
     cid_dd.on_update(snap_to_entry)  # picking a corridor snaps the spawn to its entry
     snap_btn.on_click(snap_to_entry)
-    for handle in (mode_dd, idle_dd, row_in, col_in, head_sl, speed_sl):
+    for handle in (row_in, col_in, head_sl, speed_sl):
       handle.on_update(apply)
 
   play.run(model, policy, decimation=4, on_reset=on_reset, status=status, gui=gui)

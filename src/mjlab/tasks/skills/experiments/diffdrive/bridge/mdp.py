@@ -1,17 +1,22 @@
 """MDP terms wiring the bridge into a manager-based RL environment.
 
-The task is general: only the dataset (skill1's end windows and skill2's start windows)
-defines it. Each episode resets the robot to a harvested interrupt, where skill1 leaves
-it, and names a goal on skill2's tube. The policy is rewarded for reaching the tube while
-spending little effort, with no reference to walls or any diffdrive-specific geometry.
+The task is defined only by the dataset of couples (one skill1 end trajectory, one skill2
+start trajectory per entry). Each episode picks a couple and drops the robot at the
+interrupt, where skill1 leaves it. The robot's recent history (the tail of skill1's end
+trajectory) is part of the observation, so the policy knows what it was doing. The bridge
+then drives onto skill2's recorded start trajectory and is rewarded for tracking it: a
+moving reference walks along the recorded trajectory, advancing to the next recorded state
+whenever the robot gets close, so the policy learns to reach a join point and then follow
+the rest of the trajectory. There is no reference to walls or any diffdrive-specific
+geometry; effort is penalized.
 
-* BridgeCommand  on reset, drops the robot at an interrupt and picks a goal: a state on
-                 skill2's representative tube, with a short segment of the tube around it
-                 counting as reached.
-* TwistAction    turns the policy's twist into wheel torques, the same servo the deployed
-                 bridge uses.
-* reward and termination functions read the robot and the tube: a bonus for reaching the
-  tube, a penalty on effort, and termination on arrival or timeout.
+* BridgeCommand  on reset, picks a couple and a start index, drops the robot at the
+                 interrupt, seeds the history, and publishes the moving reference state.
+* TwistAction    turns the policy's twist into wheel torques, the same servo deployment
+                 uses.
+* reward and termination functions read the robot and the reference: closeness to the
+  advancing reference (tracking), an effort penalty, and success when the reference has
+  been tracked to the end.
 
 It is loaded only through bridge_env_cfg (its name keeps it out of mjlab's task
 auto-import), so importing torch and the simulator here is fine.
@@ -22,14 +27,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
-import numpy as np
 import torch
 
 from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 from mjlab.tasks.skills.experiments.diffdrive.bridge import features
 from mjlab.tasks.skills.experiments.diffdrive.bridge.dataset import harvest_dataset
-from mjlab.tasks.skills.experiments.diffdrive.bridge.rollouts import representative
 from mjlab.tasks.skills.experiments.diffdrive.experiment import CONFIG, corridor_speeds
 from mjlab.tasks.skills.experiments.diffdrive.gridworld import GridWorld
 from mjlab.tasks.skills.experiments.diffdrive.robot import (
@@ -50,7 +53,7 @@ if TYPE_CHECKING:
 COMMAND_NAME = "bridge"
 
 
-# Command term: reset to an interrupt, aim at a state on the next skill's tube.
+# Command term: pick a couple, drop at the interrupt, walk a reference along skill2's tube.
 
 
 @dataclass(kw_only=True)
@@ -60,7 +63,6 @@ class BridgeCommandCfg(CommandTermCfg):
   entity_name: str
   slow: float = 0.5
   fast: float = 1.5
-  mode: str = "hold"
   cell: float = 1.0
   seed: int = 0
   resampling_time_range: tuple[float, float] = (1.0e9, 1.0e9)
@@ -70,13 +72,15 @@ class BridgeCommandCfg(CommandTermCfg):
 
 
 class BridgeCommand(CommandTerm):
-  """Per-episode interrupt and tube goal, built entirely from the dataset.
+  """Per-episode couple, interrupt, history, and the moving reference on skill2's tube.
 
-  On reset it samples a transition, places the robot at one of skill1's harvested
-  interrupt states, and picks a goal: a state on skill2's representative tube. A short
-  segment of the tube ending at that state counts as having reached it, which gives the
-  policy a fatter, connected target instead of a single point. The goal is published in
-  world frame so the goal-relative observations and rewards need no per-env bookkeeping.
+  On reset it samples a couple (one skill1 end trajectory, one skill2 start trajectory) and
+  a start index along the start trajectory, places the robot at the interrupt (the last
+  state of the end trajectory), and seeds the history from the end trajectory's tail. Each
+  step it advances a reference index along the start trajectory whenever the robot is within
+  track_tol of the current reference, and publishes that reference state as the goal. The
+  goal is in world frame so the goal-relative observation and reward need no per-env
+  bookkeeping.
   """
 
   cfg: BridgeCommandCfg
@@ -87,36 +91,31 @@ class BridgeCommand(CommandTerm):
 
     world = GridWorld(cell=cfg.cell)
     speeds = corridor_speeds(world, slow=cfg.slow, fast=cfg.fast)
-    dataset = harvest_dataset(world, speeds, cfg.mode, seed=cfg.seed)
-    # skill1 leaves the robot at the last state of each end-window rollout.
-    interrupts = dataset.end_windows[:, :, -1, :]  # [T, N, 5]
-    # skill2's tube, reduced to one representative line per transition.
-    reps = np.stack(
-      [representative(list(sw), CONFIG.representative) for sw in dataset.start_windows]
-    )  # [T, L, 5]
-
-    self._interrupts = torch.as_tensor(
-      interrupts, dtype=torch.float32, device=self.device
-    )
-    self._reps = torch.as_tensor(reps, dtype=torch.float32, device=self.device)
-    # One scale per transition (each tube's own spread), not pooled across junctions:
-    # pooling would mix different corridor places and headings and make the merge test
-    # far too lenient.
-    tubes = torch.as_tensor(
+    dataset = harvest_dataset(world, speeds, seed=cfg.seed)
+    self._end = torch.as_tensor(
+      dataset.end_windows, dtype=torch.float32, device=self.device
+    )  # [T, C, L, 5]
+    self._start = torch.as_tensor(
       dataset.start_windows, dtype=torch.float32, device=self.device
-    )
-    self._scale = torch.stack([features.tube_scale(tube) for tube in tubes])  # [T, 4]
-    self._num_transitions = self._reps.shape[0]
-    self._rep_len = self._reps.shape[1]
-    self._segment_len = min(CONFIG.merge_segment, self._rep_len)
+    )  # [T, C, L, 5]
+    # One scale per junction (its tube's own spread), so "close to the reference" is a
+    # dimensionless test that does not mix different junctions.
+    self._scale = torch.stack(
+      [features.tube_scale(tube) for tube in self._start]
+    )  # [T, 4]
+    self._num_junctions, self._num_couples, self._traj_len = self._start.shape[:3]
+    self._history_len = CONFIG.history_len
 
     self._origin_xy = env.scene.env_origins[:, :2].clone()
     left = self.robot.find_joints("left_wheel")[0][0]
     right = self.robot.find_joints("right_wheel")[0][0]
     self._wheel_ids = torch.tensor([left, right], device=self.device)
 
+    self._t = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+    self._c = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+    self._r = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
     self._goal = torch.zeros(self.num_envs, 5, device=self.device)
-    self._segment = torch.zeros(self.num_envs, self._segment_len, 5, device=self.device)
+    self._history = torch.zeros(self.num_envs, self._history_len, 2, device=self.device)
     self._env_scale = torch.zeros(
       self.num_envs, self._scale.shape[1], device=self.device
     )
@@ -125,42 +124,58 @@ class BridgeCommand(CommandTerm):
   def command(self) -> torch.Tensor:
     return self._goal
 
-  def reached(self) -> torch.Tensor:
-    """Whether the robot is on the tube (within the normalized arrival threshold)."""
-    scale = self._env_scale.unsqueeze(1)  # [N, 1, 4], per env's transition
-    dist = features.tube_distance(_robot_state(self), self._segment, scale)
-    return dist.amin(dim=-1) < CONFIG.arrival_threshold
+  @property
+  def history(self) -> torch.Tensor:
+    """The recent (v, omega) window, flattened: [num_envs, 2 * history_len]."""
+    return self._history.reshape(self.num_envs, -1)
+
+  def distance_to_goal(self, state: torch.Tensor) -> torch.Tensor:
+    """Normalized distance from each robot state to its current reference: [num_envs]."""
+    scale = self._env_scale.unsqueeze(1)  # [N, 1, 4], per env's junction
+    return features.tube_distance(state, self._goal.unsqueeze(1), scale).squeeze(1)
+
+  def at_end(self) -> torch.Tensor:
+    """Whether the reference has been tracked to the last recorded state."""
+    return self._r >= self._traj_len - 1
+
+  def _reference_world(self) -> torch.Tensor:
+    """The current reference state per env, in world frame: [num_envs, 5]."""
+    ref = self._start[self._t, self._c, self._r].clone()
+    ref[:, :2] += self._origin_xy
+    return ref
 
   def _update_metrics(self) -> None:
     pass
 
   def _update_command(self) -> None:
-    pass
+    state = _robot_state(self)
+    close = self.distance_to_goal(state) < CONFIG.track_tol
+    self._r = torch.where(close & ~self.at_end(), self._r + 1, self._r)
+    self._goal = self._reference_world()
+    recent = state[:, [V, OMEGA]].unsqueeze(1)  # [N, 1, 2]
+    self._history = torch.cat([self._history[:, 1:, :], recent], dim=1)
 
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     k = len(env_ids)
     if k == 0:
       return
     device = self.device
-    t = torch.randint(self._num_transitions, (k,), device=device)
-    j = torch.randint(self._interrupts.shape[1], (k,), device=device)
-    interrupt = self._interrupts[t, j]  # [k, 5], grid-local
+    t = torch.randint(self._num_junctions, (k,), device=device)
+    c = torch.randint(self._num_couples, (k,), device=device)
+    r = torch.randint(self._traj_len, (k,), device=device)  # where to start tracking
+    self._t[env_ids] = t
+    self._c[env_ids] = c
+    self._r[env_ids] = r
+    self._env_scale[env_ids] = self._scale[t]
 
-    idx = torch.randint(self._rep_len, (k,), device=device)  # merge target index
-    goal_local = self._reps[t, idx]  # [k, 5]
-    # The segment of the tube ending at the target (the part that leads into it).
-    offsets = torch.arange(self._segment_len - 1, -1, -1, device=device)
-    seg_idx = (idx.unsqueeze(1) - offsets).clamp_min(0)  # [k, segment_len]
-    segment_local = self._reps[t.unsqueeze(1), seg_idx]  # [k, segment_len, 5]
+    couple_end = self._end[t, c]  # [k, L, 5], the skill1 end trajectory
+    interrupt = couple_end[:, -1]  # [k, 5], where skill1 hands off
+    self._history[env_ids] = couple_end[:, -self._history_len :][:, :, [V, OMEGA]]
 
     origin = self._origin_xy[env_ids]
-    goal_world = goal_local.clone()
-    goal_world[:, :2] += origin
-    self._goal[env_ids] = goal_world
-    segment_world = segment_local.clone()
-    segment_world[:, :, :2] += origin.unsqueeze(1)
-    self._segment[env_ids] = segment_world
-    self._env_scale[env_ids] = self._scale[t]
+    goal = self._start[t, c, r].clone()  # [k, 5], first reference on skill2's tube
+    goal[:, :2] += origin
+    self._goal[env_ids] = goal
 
     self._write_interrupt(env_ids, interrupt, origin)
 
@@ -269,20 +284,22 @@ def _robot_state(term: BridgeCommand) -> torch.Tensor:
   )
 
 
-# Observation.
+# Observation: where the moving reference is, plus the recent-motion history.
 
 
 def bridge_observation(env: ManagerBasedRlEnv) -> torch.Tensor:
   term = _term(env)
-  return features.observation(_robot_state(term), term.command)
+  goal_relative = features.observation(_robot_state(term), term.command)
+  return torch.cat([goal_relative, term.history], dim=-1)
 
 
-# Rewards: a bonus for reaching the tube, a penalty on effort. Nothing else.
+# Rewards: track the advancing reference, spend little effort. Nothing else.
 
 
-def arrival(env: ManagerBasedRlEnv) -> torch.Tensor:
-  """One on the step the robot reaches the tube, else zero (a bonus)."""
-  return _term(env).reached().float()
+def tracking(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Closeness to the current reference state, in (0, 1] (a smooth tracking reward)."""
+  term = _term(env)
+  return torch.exp(-term.distance_to_goal(_robot_state(term)))
 
 
 def effort(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -290,8 +307,8 @@ def effort(env: ManagerBasedRlEnv) -> torch.Tensor:
   return torch.sum(env.action_manager.action**2, dim=-1)
 
 
-# Terminations: success on reaching the tube, plus the time budget.
+# Termination: success once the reference has been tracked to the end.
 
 
-def reached_tube(env: ManagerBasedRlEnv) -> torch.Tensor:
-  return _term(env).reached()
+def tracked_to_end(env: ManagerBasedRlEnv) -> torch.Tensor:
+  return _term(env).at_end()

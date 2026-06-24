@@ -57,12 +57,12 @@ class Config:
   timestep: float = 0.005
   decimation: int = 4
 
-  # Rollout harvesting. window_seconds sets the length of both saved windows; seconds, not
-  # a raw tick count, keep the horizon meaningful independent of the control rate.
+  # Rollout harvesting. window_seconds sets the length of both windows; seconds, not a raw
+  # tick count, keep the horizon meaningful independent of the control rate. The dataset
+  # stores couples_per_junction (skill1 end, skill2 start) trajectory couples per junction.
   window_seconds: float = 1.0
-  n_interrupts: int = 100  # end-window rollouts per transition (skill1)
-  window_samples: int = 100  # start-window rollouts per transition (skill2)
-  representative: str = "medoid"  # reduce a family to one line: "medoid" or "mean"
+  couples_per_junction: int = 100
+  representative: str = "medoid"  # reduce skill2's tube to one line for inference
 
   # Closeness weights used by the rollout medoid when picking a representative tube.
   w_pos: float = 1.0
@@ -82,12 +82,13 @@ class Config:
   kv: float = 3.0
   torque_limit: float = 0.6
 
-  # Bridge training. The reward is an arrival bonus minus an effort penalty, and success
-  # is reaching the next skill's tube within a normalized state distance. merge_segment is
-  # how many tube states (ending at the chosen target) count as having reached it.
-  arrival_threshold: float = 1.0  # normalized state distance counted as "on the tube"
-  merge_segment: int = 5  # tube states around the target that count as reaching it
-  arrival_bonus: float = 50.0  # reward for reaching the tube
+  # Bridge training. The bridge drives the robot onto skill2's recorded trajectory and is
+  # rewarded for tracking it: the reference advances to the next recorded state once the
+  # robot is within track_tol (normalized distance). history_len recent (v, omega) pairs
+  # feed the policy so it knows what the robot was just doing.
+  track_tol: float = 1.0  # normalized distance at which the reference advances
+  history_len: int = 5  # recent (v, omega) pairs in the observation
+  track_weight: float = 1.0  # reward for closeness to the advancing reference
   effort_weight: float = 0.01  # penalty weight on the squared action (energy)
 
   @property
@@ -110,7 +111,6 @@ def make_bridge(
   checkpoint: str | None,
   world: GridWorld,
   speeds: dict[int, float],
-  mode: str,
 ) -> Bridge:
   """Build the bridge selected from the CLI.
 
@@ -122,7 +122,7 @@ def make_bridge(
       raise ValueError("--checkpoint is required for the learned bridge.")
     from mjlab.tasks.skills.experiments.diffdrive.bridge.policy import LearnedBridge
 
-    return LearnedBridge(checkpoint, world, speeds, mode=mode)
+    return LearnedBridge(checkpoint, world, speeds)
   return InstantBridge()
 
 
@@ -267,9 +267,6 @@ def main() -> None:
     bridge: Literal["instant", "learned"] = (
       "instant"  # which bridge to use (default: the do-nothing baseline)
     )
-    mode: Literal["cruise", "hold"] = (
-      "cruise"  # skill mode: "cruise" (non-steering) or "hold" (heading-hold)
-    )
     idle: Literal["zero", "coast"] = (
       "coast"  # outside a skill's initiation set: "zero" (stop) or "coast" (keep motion)
     )
@@ -289,9 +286,9 @@ def main() -> None:
   robot = DiffDrive()
   speeds = corridor_speeds(world, slow=args.slow, fast=args.fast)
   bridge = make_bridge(
-    args.bridge, checkpoint=args.checkpoint, world=world, speeds=speeds, mode=args.mode
+    args.bridge, checkpoint=args.checkpoint, world=world, speeds=speeds
   )
-  skills = corridor_skills(world, speeds, mode=args.mode, idle=args.idle)
+  skills = corridor_skills(world, speeds, idle=args.idle)
   controller = CorridorController(world, skills, bridge)
   experiment = Experiment(
     world=world,

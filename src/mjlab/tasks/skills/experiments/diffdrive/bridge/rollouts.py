@@ -284,8 +284,8 @@ def main() -> None:
 
   * the source skill's interrupt rollouts: many semi-transparent ghost robots driving
     corridor src from jittered starts to the junction corner, where the previous skill
-    leaves the robot. Their endpoints (the interrupt states, what CONFIG.n_interrupts samples)
-    are marked with diamonds, and the last window_seconds of every rollout are drawn as
+    leaves the robot. Their endpoints (the interrupt states, the last state of each end
+    window) are marked with diamonds, and the last window_seconds of every rollout are drawn as
     points: the approach states a same-duration window before the interrupt would save.
   * the target skill's tube family: one rollout per sampled initiation state, each a
     thin line. Their representative (medoid or mean) is the bright path, with dots for
@@ -313,12 +313,11 @@ def main() -> None:
   @_dataclass
   class Args:
     cell: float = 1.0  # metres per grid cell
-    mode: str = "hold"  # skill mode: "cruise" (non-steering) or "hold"
     slow: float = 0.5  # slow-corridor cruise speed (m/s)
     fast: float = 1.5  # fast-corridor cruise speed (m/s)
     rollouts: int = 16  # source interrupt rollouts to overlay per transition
     window_seconds: float = CONFIG.window_seconds  # duration of each saved window
-    samples: int = CONFIG.window_samples  # target tube rollouts (the family)
+    samples: int = CONFIG.couples_per_junction  # target tube rollouts (the family)
     representative: str = CONFIG.representative  # family summary: medoid or mean
     alpha: float = 0.35  # ghost-robot opacity
     seed: int = 0
@@ -328,7 +327,7 @@ def main() -> None:
   world = GridWorld(cell=args.cell)
   robot = DiffDrive()
   speeds = corridor_speeds(world, slow=args.slow, fast=args.fast)
-  skills = corridor_skills(world, speeds, mode=args.mode)
+  skills = corridor_skills(world, speeds)
   model = build_model(world, robot)
   transitions = sorted(world.junction_map().items())  # [(src, (cell, tgt)), ...]
   window_steps = round(args.window_seconds / CONFIG.control_dt)  # states per window
@@ -465,7 +464,7 @@ def main() -> None:
     # every source rollout, the approach states a pre-interrupt window would save.
     pre = np.concatenate([t[-window_steps:] for t in accepted], axis=0)
     decor.append(points("/paths/interrupt_window", pre, rgb(src), 0.01, "circle"))
-    # Interrupt states: where the source rollouts end (what CONFIG.n_interrupts samples).
+    # Interrupt states: where the source rollouts end (each end window's last state).
     ends = np.array([t[-1] for t in accepted])
     decor.append(points("/paths/interrupts", ends, rgb(src), 0.01, "diamond"))
 

@@ -99,12 +99,12 @@ def bridge_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   }
 
   rewards = {
-    "arrival": RewardTermCfg(func=mdp.arrival, weight=CONFIG.arrival_bonus),
+    "tracking": RewardTermCfg(func=mdp.tracking, weight=CONFIG.track_weight),
     "effort": RewardTermCfg(func=mdp.effort, weight=-CONFIG.effort_weight),
   }
 
   terminations = {
-    "reached_tube": TerminationTermCfg(func=mdp.reached_tube),
+    "tracked_to_end": TerminationTermCfg(func=mdp.tracked_to_end),
     "time_out": TerminationTermCfg(func=time_out, time_out=True),
   }
 
