@@ -60,8 +60,8 @@ class Config:
   # Rollout harvesting. window_seconds sets the length of both saved windows; seconds, not
   # a raw tick count, keep the horizon meaningful independent of the control rate.
   window_seconds: float = 1.0
-  n_interrupts: int = 50  # end-window rollouts per transition (skill1)
-  window_samples: int = 24  # start-window rollouts per transition (skill2)
+  n_interrupts: int = 100  # end-window rollouts per transition (skill1)
+  window_samples: int = 100  # start-window rollouts per transition (skill2)
   representative: str = "medoid"  # reduce a family to one line: "medoid" or "mean"
 
   # Closeness weights used by the rollout medoid when picking a representative tube.

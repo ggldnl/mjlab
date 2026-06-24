@@ -93,9 +93,16 @@ class LearnedBridge(Bridge):
     return np.array([float(v), float(omega)]), done
 
   def _select(self, state: torch.Tensor, tube: torch.Tensor) -> int:
-    """Pick the tube state with the highest critic value from the current state."""
+    """Pick the tube state with the highest critic value from the current state.
+
+    The exported critic fixes its batch dimension to 1, so the candidate tube states
+    are scored one at a time rather than in a single batched call.
+    """
     obs = features.observation(state.expand(tube.shape[0], 5), tube)  # [L, 7]
-    values = self._critic.run(["actions"], {"obs": obs.numpy().astype(np.float32)})[0]
+    values = [
+      self._critic.run(["actions"], {"obs": row[None].numpy().astype(np.float32)})[0]
+      for row in obs
+    ]
     return int(np.asarray(values).reshape(-1).argmax())
 
   def _infer(self, session, obs: torch.Tensor) -> torch.Tensor:
