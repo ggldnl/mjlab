@@ -44,6 +44,68 @@ from mjlab.tasks.skills.interfaces import Bridge
 X, Y, THETA, V, OMEGA = STATE
 
 
+@dataclass(frozen=True)
+class Config:
+  """Every tunable constant for the experiment, harvesting, training, and deployment.
+
+  Bundled into one object so callers import a single name (CONFIG) instead of a long list.
+  Fields are grouped by what reads them.
+  """
+
+  # Control rate. One control tick = timestep * decimation (0.02 s, 50 Hz). Harvesting and
+  # the training env both step at this rate so their states line up.
+  timestep: float = 0.005
+  decimation: int = 4
+
+  # Rollout harvesting. window_seconds sets the length of both saved windows; seconds, not
+  # a raw tick count, keep the horizon meaningful independent of the control rate.
+  window_seconds: float = 1.0
+  n_interrupts: int = 50  # end-window rollouts per transition (skill1)
+  window_samples: int = 24  # start-window rollouts per transition (skill2)
+  representative: str = "medoid"  # reduce a family to one line: "medoid" or "mean"
+
+  # Goal closeness, shared by the rollout medoid and the training features.
+  w_pos: float = 1.0
+  w_head: float = 0.3
+  w_speed: float = 0.3
+
+  # Twist action mapping: a raw policy 2-vector (~[-1, 1]) becomes a clamped body twist.
+  action_dim: int = 2
+  v_offset: float = 1.0
+  v_scale: float = 1.5
+  omega_scale: float = 4.0
+  v_min: float = -0.5
+  v_max: float = 2.5
+  omega_max: float = 4.0
+
+  # Wheel-velocity servo (matches DiffDrive): torque = kv * (target - actual), clamped.
+  kv: float = 3.0
+  torque_limit: float = 0.6
+
+  # Success tolerances: within these of the goal, the bridge has reached the next tube.
+  pos_tol: float = 0.15
+  head_tol: float = math.radians(20.0)
+  speed_tol: float = 0.4
+
+  # Reward margins (the smooth tracking reward is near 1 within the margin).
+  m_pos: float = 0.6
+  m_head: float = math.radians(45.0)
+  m_speed: float = 1.0
+
+  @property
+  def control_dt(self) -> float:
+    """Seconds per control tick."""
+    return self.timestep * self.decimation
+
+  @property
+  def window_steps(self) -> int:
+    """Control ticks per saved window."""
+    return round(self.window_seconds / self.control_dt)
+
+
+CONFIG = Config()
+
+
 def make_bridge(
   name: str,
   *,
@@ -135,7 +197,7 @@ def build_model(world: GridWorld, robot: DiffDrive) -> mujoco.MjModel:
   """
   spec = build_spec(world)
   robot.attach_to(spec)
-  spec.option.timestep = 0.005
+  spec.option.timestep = CONFIG.timestep
   spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
   model = spec.compile()
   robot.bind(model)
@@ -213,9 +275,7 @@ def main() -> None:
     idle: Literal["zero", "coast"] = (
       "coast"  # outside a skill's initiation set: "zero" (stop) or "coast" (keep motion)
     )
-    backend: Literal["viser", "mpl"] = (
-      "viser"
-    )
+    backend: Literal["viser", "mpl"] = "viser"
     cell: float = 1.0
     # Per-corridor cruise speeds (alternating). The robot droops below these under
     # bounded torque, but fast corridors still carry more residual speed into a junction
