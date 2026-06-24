@@ -1,18 +1,23 @@
-"""Goal-relative features and the goal-closeness metric.
+"""Goal-relative features and a tube-distance metric, shared by training and deployment.
 
-The reduced state is [x, y, theta, v, omega]. Everything here is expressed
-relative to a goal state, so it does not depend on where in the world the switch
-happens: the policy sees the same picture at every junction. The functions
-broadcast, so they work on a single state, a batch of envs, or a whole window of
-candidate goals at once, which is all that training and deployment need.
+The reduced state is [x, y, theta, v, omega]. The observation is expressed relative to a
+goal state, so it does not depend on where in the world the switch happens: the policy
+sees the same picture at every junction. The tube distance measures how close a state is
+to skill2's tube, normalized by the tube's own spread so it needs no hand-tuned weights.
+The functions broadcast, so they work on a single state, a batch of envs, or a whole set
+of candidate goals at once.
 """
 
 from __future__ import annotations
 
 import torch
 
-from mjlab.tasks.skills.experiments.diffdrive.bridge import config
+from mjlab.tasks.skills.experiments.diffdrive.experiment import CONFIG
 from mjlab.tasks.skills.experiments.diffdrive.robot import OMEGA, THETA, V, X, Y
+
+# State dimensions that define "on the tube": pose and speed, not the fast-changing yaw
+# rate (the robot may still be turning as it merges).
+MERGE_DIMS = (X, Y, THETA, V)
 
 
 def _wrap(angle: torch.Tensor) -> torch.Tensor:
@@ -37,16 +42,11 @@ def position_error(
   return forward, lateral
 
 
-def speed_error(state: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
-  """Goal speed minus current speed."""
-  return goal[..., V] - state[..., V]
-
-
 def observation(state: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
   """The bridge's observation: where the goal is and how the robot is moving.
 
   Layout: forward offset, lateral offset, cos and sin of the heading error,
-  current speed, current yaw rate, goal speed. Shape: [..., OBS_DIM].
+  current speed, current yaw rate, goal speed. Shape: [..., 7].
   """
   forward, lateral = position_error(state, goal)
   head = heading_error(state, goal)
@@ -64,34 +64,39 @@ def observation(state: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
   )
 
 
-def goal_distance(state: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
-  """Velocity-aware closeness of a state to a goal (smaller is closer).
+def tube_scale(tube: torch.Tensor) -> torch.Tensor:
+  """Per-dimension scale of a set of tube states, so the distance is dimensionless.
 
-  This is the metric the bridge uses to pick which window state to join: the one
-  closest to the interrupt state at the moment of the switch.
+  The spread (std) of each merge dimension across the tube, floored away from zero. A
+  narrow direction (the tube laterally) gets a small scale, so deviations there count for
+  more; a long direction (along travel) gets a large scale, so merging anywhere along the
+  tube is cheap. This falls out of the data, with no hand-tuned weights.
   """
-  forward, lateral = position_error(state, goal)
-  pos = torch.sqrt(forward * forward + lateral * lateral)
-  head = torch.abs(heading_error(state, goal))
-  spd = torch.abs(speed_error(state, goal))
-  return config.W_POS * pos + config.W_HEAD * head + config.W_SPEED * spd
+  flat = tube.reshape(-1, tube.shape[-1])[:, MERGE_DIMS]
+  return flat.std(dim=0).clamp_min(1e-3)
 
 
-def success(state: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
-  """Whether the robot is within tolerance of the goal in pose and speed."""
-  forward, lateral = position_error(state, goal)
-  pos = torch.sqrt(forward * forward + lateral * lateral)
-  head = torch.abs(heading_error(state, goal))
-  spd = torch.abs(speed_error(state, goal))
-  return (pos < config.POS_TOL) & (head < config.HEAD_TOL) & (spd < config.SPEED_TOL)
+def tube_distance(
+  state: torch.Tensor, tube: torch.Tensor, scale: torch.Tensor
+) -> torch.Tensor:
+  """Normalized distance from state [..., 5] to each tube state [..., K, 5] -> [..., K].
+
+  Per-dimension differences over the merge dimensions (heading wrapped), divided by scale,
+  then a 2-norm. Smaller means closer to the tube.
+  """
+  diff = state.unsqueeze(-2) - tube
+  parts = torch.stack(
+    [diff[..., X], diff[..., Y], _wrap(diff[..., THETA]), diff[..., V]], dim=-1
+  )
+  return torch.linalg.vector_norm(parts / scale, dim=-1)
 
 
 def twist_from_action(raw: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
   """Map a raw policy action to a clamped body twist (v, omega)."""
   v = torch.clamp(
-    raw[..., 0] * config.V_SCALE + config.V_OFFSET, config.V_MIN, config.V_MAX
+    raw[..., 0] * CONFIG.v_scale + CONFIG.v_offset, CONFIG.v_min, CONFIG.v_max
   )
   omega = torch.clamp(
-    raw[..., 1] * config.OMEGA_SCALE, -config.OMEGA_MAX, config.OMEGA_MAX
+    raw[..., 1] * CONFIG.omega_scale, -CONFIG.omega_max, CONFIG.omega_max
   )
   return v, omega

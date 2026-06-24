@@ -21,7 +21,6 @@ Run as a script to inspect what is harvested, one corridor transition at a time:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 
 import mujoco
 import numpy as np
@@ -39,20 +38,6 @@ from mjlab.tasks.skills.experiments.diffdrive.skills import (
   CorridorSkill,
   corridor_skills,
 )
-
-
-@dataclass
-class Harvest:
-  """Per corridor transition: the interrupt states and the next tube's window.
-
-  Arrays are stacked to a fixed length so the env can index them as plain tensors:
-  interrupts is [T, N, 5], windows is [T, M, 5], aligned with transitions (a list
-  of (source, target) corridor ids).
-  """
-
-  transitions: list[tuple[int, int]]
-  interrupts: np.ndarray
-  windows: np.ndarray
 
 
 def _rollout(
@@ -185,28 +170,6 @@ def representative(family: list[np.ndarray], method: str = "medoid") -> np.ndarr
   raise ValueError(f"Unknown representative method: {method!r}")
 
 
-def harvest_window(
-  model: mujoco.MjModel,
-  robot: DiffDrive,
-  skill: CorridorSkill,
-  window_steps: int,
-  *,
-  samples: int = CONFIG.window_samples,
-  rng: np.random.Generator | None = None,
-  method: str = CONFIG.representative,
-) -> np.ndarray:
-  """A representative early window of a skill's tube, the single line the bridge aims at.
-
-  The tube is harvested as a family of initiation-set rollouts (window_family) and reduced
-  to one representative (representative). This generalizes the old single ideal line: with
-  a complex robot there is no one perfect start, so we sample the initiation set and pick a
-  central member. The window still holds the real low-to-cruise states from rest.
-  """
-  rng = np.random.default_rng(0) if rng is None else rng
-  family = window_family(model, robot, skill, window_steps, samples, rng)
-  return representative(family, method)
-
-
 def interrupt_tracks(
   model: mujoco.MjModel,
   robot: DiffDrive,
@@ -308,80 +271,6 @@ def end_window_family(
   return _stack([_tail(t, length) for t in tracks], count)
 
 
-def harvest_interrupts(
-  model: mujoco.MjModel,
-  robot: DiffDrive,
-  skill: CorridorSkill,
-  junction_cell: tuple[int, int],
-  count: int,
-  rng: np.random.Generator,
-) -> np.ndarray:
-  """Interrupt states at the junction corner, spread over the skill's initiation set.
-
-  The reduced state where each accepted rollout (see `interrupt_tracks`) ends, i.e.
-  where the previous skill leaves the robot at the junction corner.
-  """
-  tracks = interrupt_tracks(model, robot, skill, junction_cell, count, rng)
-  if not tracks:
-    raise RuntimeError(f"No interrupt states reached corner {junction_cell}.")
-  return np.asarray([track[-1] for track in tracks])
-
-
-def _fix_length(arr: np.ndarray, length: int) -> np.ndarray:
-  """Pad (by repeating the last row) or truncate `arr` to exactly `length` rows."""
-  if len(arr) >= length:
-    return arr[:length]
-  pad = np.repeat(arr[-1:], length - len(arr), axis=0)
-  return np.concatenate([arr, pad], axis=0)
-
-
-def harvest_transitions(
-  world: GridWorld,
-  speeds: dict[int, float],
-  mode: str,
-  *,
-  window_steps: int = CONFIG.window_steps,
-  n_interrupts: int = CONFIG.n_interrupts,
-  seed: int = 0,
-) -> Harvest:
-  """Roll out every corridor transition and stack its interrupts and target window."""
-  robot = DiffDrive()
-  model = build_model(world, robot)
-  skills = corridor_skills(world, speeds, mode=mode)
-  rng = np.random.default_rng(seed)
-  m = window_steps + 1
-  transitions: list[tuple[int, int]] = []
-  interrupts: list[np.ndarray] = []
-  windows: list[np.ndarray] = []
-  for src, (cell, tgt) in sorted(world.junction_map().items()):
-    transitions.append((src, tgt))
-    window = harvest_window(model, robot, skills[tgt], window_steps, rng=rng)
-    windows.append(_fix_length(window, m))
-    inter = harvest_interrupts(model, robot, skills[src], cell, n_interrupts, rng)
-    interrupts.append(_fix_length(inter, n_interrupts))
-  return Harvest(transitions, np.stack(interrupts), np.stack(windows))
-
-
-def harvest_windows(
-  world: GridWorld,
-  speeds: dict[int, float],
-  mode: str,
-  *,
-  window_steps: int = CONFIG.window_steps,
-  seed: int = 0,
-) -> dict[int, np.ndarray]:
-  """The early window of every corridor's skill, keyed by corridor id (for deployment)."""
-  robot = DiffDrive()
-  model = build_model(world, robot)
-  skills = corridor_skills(world, speeds, mode=mode)
-  m = window_steps + 1
-  rng = np.random.default_rng(seed)
-  return {
-    cid: _fix_length(harvest_window(model, robot, skill, window_steps, rng=rng), m)
-    for cid, skill in skills.items()
-  }
-
-
 # Visualization (kept out of the harvest primitives, like the world's renderer).
 
 # Playback speed multipliers, mirroring the other diffdrive viewers.
@@ -416,12 +305,10 @@ def main() -> None:
   from mjviser.conversions import merge_geoms
 
   from mjlab.tasks.skills.experiments.diffdrive.experiment import (
-    build_model,
     corridor_speeds,
   )
   from mjlab.tasks.skills.experiments.diffdrive.gridworld import _color, build_world
   from mjlab.tasks.skills.experiments.diffdrive.robot import DiffDrive
-  from mjlab.tasks.skills.experiments.diffdrive.skills import corridor_skills
 
   @_dataclass
   class Args:

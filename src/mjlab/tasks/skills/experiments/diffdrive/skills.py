@@ -250,9 +250,11 @@ def main() -> None:
     with server.gui.add_folder("Skill / spawn"):
       cid_dd = server.gui.add_dropdown("Corridor", options, initial_value=str(sel.cid))
       mode_dd = server.gui.add_dropdown("Mode", (CRUISE, HOLD), initial_value=sel.mode)
+      """
       idle_dd = server.gui.add_dropdown(
         "Idle (outside set)", (ZERO, COAST), initial_value=sel.idle
       )
+      """
       row_in = server.gui.add_number(
         "Spawn row", initial_value=sel.row, min=0, max=world.nrows - 1, step=1
       )

@@ -64,7 +64,7 @@ class Config:
   window_samples: int = 24  # start-window rollouts per transition (skill2)
   representative: str = "medoid"  # reduce a family to one line: "medoid" or "mean"
 
-  # Goal closeness, shared by the rollout medoid and the training features.
+  # Closeness weights used by the rollout medoid when picking a representative tube.
   w_pos: float = 1.0
   w_head: float = 0.3
   w_speed: float = 0.3
@@ -82,15 +82,13 @@ class Config:
   kv: float = 3.0
   torque_limit: float = 0.6
 
-  # Success tolerances: within these of the goal, the bridge has reached the next tube.
-  pos_tol: float = 0.15
-  head_tol: float = math.radians(20.0)
-  speed_tol: float = 0.4
-
-  # Reward margins (the smooth tracking reward is near 1 within the margin).
-  m_pos: float = 0.6
-  m_head: float = math.radians(45.0)
-  m_speed: float = 1.0
+  # Bridge training. The reward is an arrival bonus minus an effort penalty, and success
+  # is reaching the next skill's tube within a normalized state distance. merge_segment is
+  # how many tube states (ending at the chosen target) count as having reached it.
+  arrival_threshold: float = 1.0  # normalized state distance counted as "on the tube"
+  merge_segment: int = 5  # tube states around the target that count as reaching it
+  arrival_bonus: float = 50.0  # reward for reaching the tube
+  effort_weight: float = 0.01  # penalty weight on the squared action (energy)
 
   @property
   def control_dt(self) -> float:

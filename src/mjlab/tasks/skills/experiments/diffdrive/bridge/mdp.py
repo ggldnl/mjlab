@@ -1,15 +1,17 @@
 """MDP terms wiring the bridge into a manager-based RL environment.
 
-This module is the only experiment-specific glue the trainer needs:
+The task is general: only the dataset (skill1's end windows and skill2's start windows)
+defines it. Each episode resets the robot to a harvested interrupt, where skill1 leaves
+it, and names a goal on skill2's tube. The policy is rewarded for reaching the tube while
+spending little effort, with no reference to walls or any diffdrive-specific geometry.
 
-* BridgeCommand  a command term that, on every reset, drops the robot at a harvested
-                 interrupt state and publishes the goal it should reach, namely the
-                 window state of the next skill closest to that interrupt.
-* TwistAction    an action term turning the policy's twist into wheel torques, with
-                 the same servo the deployed bridge uses.
-* observation / reward / termination functions read the robot and the goal and turn
-                 them into the learning signal: a smooth pull toward the goal, a bonus
-                 for reaching it, a penalty for leaving the corridors.
+* BridgeCommand  on reset, drops the robot at an interrupt and picks a goal: a state on
+                 skill2's representative tube, with a short segment of the tube around it
+                 counting as reached.
+* TwistAction    turns the policy's twist into wheel torques, the same servo the deployed
+                 bridge uses.
+* reward and termination functions read the robot and the tube: a bonus for reaching the
+  tube, a penalty on effort, and termination on arrival or timeout.
 
 It is loaded only through bridge_env_cfg (its name keeps it out of mjlab's task
 auto-import), so importing torch and the simulator here is fine.
@@ -20,12 +22,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+import numpy as np
 import torch
 
 from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
-from mjlab.tasks.skills.experiments.diffdrive.bridge import config, features, rollouts
-from mjlab.tasks.skills.experiments.diffdrive.experiment import corridor_speeds
+from mjlab.tasks.skills.experiments.diffdrive.bridge import features
+from mjlab.tasks.skills.experiments.diffdrive.bridge.dataset import harvest_dataset
+from mjlab.tasks.skills.experiments.diffdrive.bridge.rollouts import representative
+from mjlab.tasks.skills.experiments.diffdrive.experiment import CONFIG, corridor_speeds
 from mjlab.tasks.skills.experiments.diffdrive.gridworld import GridWorld
 from mjlab.tasks.skills.experiments.diffdrive.robot import (
   BASE_HEIGHT,
@@ -45,31 +50,7 @@ if TYPE_CHECKING:
 COMMAND_NAME = "bridge"
 
 
-class GridQuery:
-  """Vectorized corridor membership test in grid-local coordinates.
-
-  Holds the world's occupancy as a tensor so a whole batch of robot positions can be
-  scored at once: is_free is True inside a corridor and False on a wall or off-grid,
-  which is exactly the crash test.
-  """
-
-  def __init__(self, world: GridWorld, device: str) -> None:
-    occupancy = torch.as_tensor(world.grid.grid != 0, device=device)
-    self._occupancy = occupancy
-    self._cell = world.cell
-    self._nrows = world.nrows
-    self._ncols = world.ncols
-
-  def is_free(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    c = torch.floor(x / self._cell).long()
-    r = self._nrows - 1 - torch.floor(y / self._cell).long()
-    in_bounds = (r >= 0) & (r < self._nrows) & (c >= 0) & (c < self._ncols)
-    rr = r.clamp(0, self._nrows - 1)
-    cc = c.clamp(0, self._ncols - 1)
-    return self._occupancy[rr, cc] & in_bounds
-
-
-# Command term: reset to an interrupt, aim at the matched window state.
+# Command term: reset to an interrupt, aim at a state on the next skill's tube.
 
 
 @dataclass(kw_only=True)
@@ -77,8 +58,8 @@ class BridgeCommandCfg(CommandTermCfg):
   """Configuration for the bridge command term."""
 
   entity_name: str
-  slow: float = 1.3
-  fast: float = 2.2
+  slow: float = 0.5
+  fast: float = 1.5
   mode: str = "hold"
   cell: float = 1.0
   seed: int = 0
@@ -89,12 +70,13 @@ class BridgeCommandCfg(CommandTermCfg):
 
 
 class BridgeCommand(CommandTerm):
-  """Per-episode interrupt and goal for the bridge.
+  """Per-episode interrupt and tube goal, built entirely from the dataset.
 
-  On reset it samples a corridor transition, places the robot at one of that
-  transition's harvested interrupt states, and sets the goal to the next skill's
-  window state closest to that interrupt. The goal is published in world frame so
-  observations and rewards (which are goal-relative) need no per-env bookkeeping.
+  On reset it samples a transition, places the robot at one of skill1's harvested
+  interrupt states, and picks a goal: a state on skill2's representative tube. A short
+  segment of the tube ending at that state counts as having reached it, which gives the
+  policy a fatter, connected target instead of a single point. The goal is published in
+  world frame so the goal-relative observations and rewards need no per-env bookkeeping.
   """
 
   cfg: BridgeCommandCfg
@@ -102,18 +84,31 @@ class BridgeCommand(CommandTerm):
   def __init__(self, cfg: BridgeCommandCfg, env: ManagerBasedRlEnv) -> None:
     super().__init__(cfg, env)
     self.robot: Entity = env.scene[cfg.entity_name]
-    self.world = GridWorld(cell=cfg.cell)
-    self.grid = GridQuery(self.world, self.device)
 
-    speeds = corridor_speeds(self.world, slow=cfg.slow, fast=cfg.fast)
-    harvest = rollouts.harvest_transitions(self.world, speeds, cfg.mode, seed=cfg.seed)
+    world = GridWorld(cell=cfg.cell)
+    speeds = corridor_speeds(world, slow=cfg.slow, fast=cfg.fast)
+    dataset = harvest_dataset(world, speeds, cfg.mode, seed=cfg.seed)
+    # skill1 leaves the robot at the last state of each end-window rollout.
+    interrupts = dataset.end_windows[:, :, -1, :]  # [T, N, 5]
+    # skill2's tube, reduced to one representative line per transition.
+    reps = np.stack(
+      [representative(list(sw), CONFIG.representative) for sw in dataset.start_windows]
+    )  # [T, L, 5]
+
     self._interrupts = torch.as_tensor(
-      harvest.interrupts, dtype=torch.float32, device=self.device
+      interrupts, dtype=torch.float32, device=self.device
     )
-    self._windows = torch.as_tensor(
-      harvest.windows, dtype=torch.float32, device=self.device
+    self._reps = torch.as_tensor(reps, dtype=torch.float32, device=self.device)
+    # One scale per transition (each tube's own spread), not pooled across junctions:
+    # pooling would mix different corridor places and headings and make the merge test
+    # far too lenient.
+    tubes = torch.as_tensor(
+      dataset.start_windows, dtype=torch.float32, device=self.device
     )
-    self._num_transitions = len(harvest.transitions)
+    self._scale = torch.stack([features.tube_scale(tube) for tube in tubes])  # [T, 4]
+    self._num_transitions = self._reps.shape[0]
+    self._rep_len = self._reps.shape[1]
+    self._segment_len = min(CONFIG.merge_segment, self._rep_len)
 
     self._origin_xy = env.scene.env_origins[:, :2].clone()
     left = self.robot.find_joints("left_wheel")[0][0]
@@ -121,10 +116,20 @@ class BridgeCommand(CommandTerm):
     self._wheel_ids = torch.tensor([left, right], device=self.device)
 
     self._goal = torch.zeros(self.num_envs, 5, device=self.device)
+    self._segment = torch.zeros(self.num_envs, self._segment_len, 5, device=self.device)
+    self._env_scale = torch.zeros(
+      self.num_envs, self._scale.shape[1], device=self.device
+    )
 
   @property
   def command(self) -> torch.Tensor:
     return self._goal
+
+  def reached(self) -> torch.Tensor:
+    """Whether the robot is on the tube (within the normalized arrival threshold)."""
+    scale = self._env_scale.unsqueeze(1)  # [N, 1, 4], per env's transition
+    dist = features.tube_distance(_robot_state(self), self._segment, scale)
+    return dist.amin(dim=-1) < CONFIG.arrival_threshold
 
   def _update_metrics(self) -> None:
     pass
@@ -136,20 +141,26 @@ class BridgeCommand(CommandTerm):
     k = len(env_ids)
     if k == 0:
       return
-    n_inter = self._interrupts.shape[1]
-    n_win = self._windows.shape[1]
-    t = torch.randint(self._num_transitions, (k,), device=self.device)
-    j = torch.randint(n_inter, (k,), device=self.device)
+    device = self.device
+    t = torch.randint(self._num_transitions, (k,), device=device)
+    j = torch.randint(self._interrupts.shape[1], (k,), device=device)
     interrupt = self._interrupts[t, j]  # [k, 5], grid-local
-    window = self._windows[t]  # [k, M, 5]
 
-    dist = features.goal_distance(interrupt.unsqueeze(1).expand(-1, n_win, -1), window)
-    goal_local = window[torch.arange(k, device=self.device), dist.argmin(dim=1)]
+    idx = torch.randint(self._rep_len, (k,), device=device)  # merge target index
+    goal_local = self._reps[t, idx]  # [k, 5]
+    # The segment of the tube ending at the target (the part that leads into it).
+    offsets = torch.arange(self._segment_len - 1, -1, -1, device=device)
+    seg_idx = (idx.unsqueeze(1) - offsets).clamp_min(0)  # [k, segment_len]
+    segment_local = self._reps[t.unsqueeze(1), seg_idx]  # [k, segment_len, 5]
 
     origin = self._origin_xy[env_ids]
     goal_world = goal_local.clone()
     goal_world[:, :2] += origin
     self._goal[env_ids] = goal_world
+    segment_world = segment_local.clone()
+    segment_world[:, :, :2] += origin.unsqueeze(1)
+    self._segment[env_ids] = segment_world
+    self._env_scale[env_ids] = self._scale[t]
 
     self._write_interrupt(env_ids, interrupt, origin)
 
@@ -207,11 +218,11 @@ class TwistAction(ActionTerm):
     left = self._entity.find_joints("left_wheel")[0][0]
     right = self._entity.find_joints("right_wheel")[0][0]
     self._wheel_ids = torch.tensor([left, right], device=self.device)
-    self._raw = torch.zeros(self.num_envs, config.ACTION_DIM, device=self.device)
+    self._raw = torch.zeros(self.num_envs, CONFIG.action_dim, device=self.device)
 
   @property
   def action_dim(self) -> int:
-    return config.ACTION_DIM
+    return CONFIG.action_dim
 
   @property
   def raw_action(self) -> torch.Tensor:
@@ -228,7 +239,7 @@ class TwistAction(ActionTerm):
     target = torch.stack([left_target, right_target], dim=-1)
     wheel_vel = self._entity.data.joint_vel[:, self._wheel_ids]
     torque = torch.clamp(
-      config.KV * (target - wheel_vel), -config.TORQUE_LIMIT, config.TORQUE_LIMIT
+      CONFIG.kv * (target - wheel_vel), -CONFIG.torque_limit, CONFIG.torque_limit
     )
     self._entity.set_joint_effort_target(torque, joint_ids=self._wheel_ids)
 
@@ -258,20 +269,7 @@ def _robot_state(term: BridgeCommand) -> torch.Tensor:
   )
 
 
-def _crash_mask(term: BridgeCommand) -> torch.Tensor:
-  data = term.robot.data
-  x = data.root_link_pos_w[:, 0] - term._origin_xy[:, 0]
-  y = data.root_link_pos_w[:, 1] - term._origin_xy[:, 1]
-  return ~term.grid.is_free(x, y)
-
-
-def _tolerance(error: torch.Tensor, margin: float) -> torch.Tensor:
-  """A smooth bump, 1 at zero error and decaying to about 0.1 at the margin."""
-  scaled = error / margin * 2.1460
-  return torch.exp(-0.5 * scaled * scaled)
-
-
-# Observations.
+# Observation.
 
 
 def bridge_observation(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -279,47 +277,21 @@ def bridge_observation(env: ManagerBasedRlEnv) -> torch.Tensor:
   return features.observation(_robot_state(term), term.command)
 
 
-# Rewards.
+# Rewards: a bonus for reaching the tube, a penalty on effort. Nothing else.
 
 
-def goal_tracking(env: ManagerBasedRlEnv) -> torch.Tensor:
-  """Smooth pull toward the goal: high when close in position, heading, and speed."""
-  term = _term(env)
-  state, goal = _robot_state(term), term.command
-  forward, lateral = features.position_error(state, goal)
-  pos = torch.sqrt(forward * forward + lateral * lateral)
-  head = torch.abs(features.heading_error(state, goal))
-  spd = torch.abs(features.speed_error(state, goal))
-  return (
-    _tolerance(pos, config.M_POS)
-    * _tolerance(head, config.M_HEAD)
-    * _tolerance(spd, config.M_SPEED)
-  )
+def arrival(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """One on the step the robot reaches the tube, else zero (a bonus)."""
+  return _term(env).reached().float()
 
 
-def goal_reached(env: ManagerBasedRlEnv) -> torch.Tensor:
-  """One on the step the robot enters the goal tolerance, else zero (a bonus)."""
-  term = _term(env)
-  return features.success(_robot_state(term), term.command).float()
-
-
-def crashed(env: ManagerBasedRlEnv) -> torch.Tensor:
-  """One on the step the robot leaves the corridors, else zero (a penalty)."""
-  return _crash_mask(_term(env)).float()
-
-
-def action_magnitude(env: ManagerBasedRlEnv) -> torch.Tensor:
-  """Squared action, to discourage needlessly violent twists (a penalty)."""
+def effort(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Squared action, to discourage spending energy (a penalty)."""
   return torch.sum(env.action_manager.action**2, dim=-1)
 
 
-# Terminations.
+# Terminations: success on reaching the tube, plus the time budget.
 
 
-def reached_goal(env: ManagerBasedRlEnv) -> torch.Tensor:
-  term = _term(env)
-  return features.success(_robot_state(term), term.command)
-
-
-def left_corridor(env: ManagerBasedRlEnv) -> torch.Tensor:
-  return _crash_mask(_term(env))
+def reached_tube(env: ManagerBasedRlEnv) -> torch.Tensor:
+  return _term(env).reached()
