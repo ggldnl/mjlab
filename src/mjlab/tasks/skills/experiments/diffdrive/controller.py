@@ -82,6 +82,9 @@ class CorridorController(Controller):
       nxt = self._decide(state)
       if nxt is not None:  # reached a junction -> start bridging to the next skill
         self.target = nxt
+        rearm = getattr(self.skills[nxt], "reset", None)  # re-check its initiation set
+        if callable(rearm):
+          rearm()
         self.bridge.reset(self.skills[self.current], self.skills[nxt])
     if self.switching:
       command, done = self.bridge.step(state)

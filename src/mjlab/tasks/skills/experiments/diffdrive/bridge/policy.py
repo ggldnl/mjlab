@@ -87,6 +87,7 @@ class LearnedBridge(Bridge):
     self._window: torch.Tensor | None = (
       None  # the two windows encoded, fixed per switch
     )
+    self._reached = False  # latched once the robot is on the tube, hands over to skill2
 
   def observe(self, state: State) -> None:
     """Record the latest state each tick (called even while idle) for skill1's window."""
@@ -98,6 +99,7 @@ class LearnedBridge(Bridge):
     self._merge = None  # selected on the first step, from the interrupt state
     self._history = None
     self._window = None
+    self._reached = False
 
   def step(self, state: State) -> tuple[Command, bool]:
     assert self._target is not None
@@ -116,12 +118,14 @@ class LearnedBridge(Bridge):
     goal = tube[self._merge]
     raw = torch.as_tensor(self._infer(self._actor, self._obs(s, goal)))
     v, omega = features.twist_from_action(raw)
-    reached = bool(
-      features.tube_distance(s, tube, scale)[self._merge] < CONFIG.merge_tol
-    )
+    # Hand over once the robot is on skill2's tube at or past the chosen merge frame, not
+    # only at that exact frame: the executor may settle onto the tube a few frames along, or
+    # drive past the merge point. Latch it so a brief contact is never missed.
+    on_tube = features.tube_distance(s, tube, scale)[self._merge :]
+    self._reached = self._reached or bool(on_tube.min() < CONFIG.merge_tol)
     assert self._history is not None
     self._history = torch.cat([self._history[1:], s[[V, OMEGA]].unsqueeze(0)], dim=0)
-    return np.array([float(v), float(omega)]), reached
+    return np.array([float(v), float(omega)]), self._reached
 
   def _end_window(self, length: int) -> torch.Tensor:
     """Skill1's approach window from the recent-state buffer, padded to length.
