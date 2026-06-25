@@ -1,10 +1,10 @@
-"""The differential-drive robot: the real diffdrive.xml plus its controls.
+"""The differential-drive robot: diffdrive.xml plus its controls.
 
 This class attaches the MuJoCo model into a world, reads the reduced state
 [x, y, theta, v, omega] back from MjData (state_from_mjdata), and turns a
 target-twist command (v*, omega*) into wheel torques via a velocity servo
-(twist_to_torque). The robot is actuated (no fake joints and teleporting)
-so residual speed must be shed through the wheels.
+(twist_to_torque). The robot is actuated so residual speed must be shed
+through the wheels.
 
     uv run python -m mjlab.tasks.skills.experiments.diffdrive.robot
 """

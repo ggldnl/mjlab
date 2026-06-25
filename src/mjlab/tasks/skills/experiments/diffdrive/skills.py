@@ -46,14 +46,6 @@ class CorridorSkill:
   same place. Position along the corridor does not enter the test, because it does not
   enter the policy: from a centered, aligned, moderate-speed state, driving straight holds
   the corridor all the way to the exit no matter how far in the robot starts.
-
-  The skill decides membership once, on the first call after a reset, and latches it.
-  Started inside the set it runs, and keeps running for the rest of the corridor. Started
-  anywhere else it does not drive its policy, because the policy has no idea what to
-  command from a state it was never meant to begin from. What it does instead is set by
-  idle: ZERO brakes to a stop (zero twist); COAST keeps the current heading and speed, so
-  the robot carries on as it arrived. Getting the robot from where it arrives (the
-  junction corner, wrong heading) into this set is the bridge's job, not the skill's.
   """
 
   world: GridWorld

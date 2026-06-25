@@ -82,14 +82,38 @@ class Config:
   kv: float = 3.0
   torque_limit: float = 0.6
 
-  # Bridge training. The bridge drives the robot onto skill2's recorded trajectory and is
-  # rewarded for tracking it: the reference advances to the next recorded state once the
-  # robot is within track_tol (normalized distance). history_len recent (v, omega) pairs
-  # feed the policy so it knows what the robot was just doing.
+  # Bridge training. Each episode commits to one fixed merge frame on skill2's window.
+  # The executor (the policy) first drives to that frame (phase one), then follows the rest
+  # of skill2 as a reference that advances once the robot is within track_tol (phase two).
+  # history_len recent (v, omega) pairs feed the policy so it knows what it was just doing.
   track_tol: float = 1.0  # normalized distance at which the reference advances
+  merge_tol: float = (
+    1.0  # normalized distance counting as having reached the merge frame
+  )
   history_len: int = 5  # recent (v, omega) pairs in the observation
   track_weight: float = 1.0  # reward for closeness to the advancing reference
   effort_weight: float = 0.01  # penalty weight on the squared action (energy)
+
+  # Selector. A separate small net picks the merge frame from the two windows. It stays
+  # dormant during a warmup phase (the executor first learns to reach any commanded frame),
+  # then starts choosing and learning. warmup_steps counts control steps; warmup_target is
+  # the rule that picks the frame meanwhile: random, last, mid, first, or a 0..1 fraction.
+  warmup_steps: int = 6000
+  warmup_target: str = "random"
+  selector_hidden: tuple[int, ...] = (128, 128)
+  selector_lr: float = 1.0e-3
+  selector_entropy: float = 0.01  # keeps the selector exploring early on
+  selector_mode: str = "B"  # B: soonest clean join. A: copy the executor's own return.
+
+  # Option B selector reward (soonest clean join). A choice scores well when the executor
+  # reaches the chosen frame quickly (cost), lands on it cleanly (mismatch), and then
+  # follows the rest of skill2 (track). Picking a frame the executor never reaches is
+  # penalized. Weights are tunable.
+  sel_reach: float = 1.0  # bonus for reaching the chosen frame at all
+  sel_cost: float = 1.0  # penalty on how long reaching took (favors soonest)
+  sel_mismatch: float = 1.0  # penalty on the state mismatch when joining (favors clean)
+  sel_track: float = 1.0  # bonus for then following the rest of skill2
+  sel_unreachable: float = 1.0  # penalty when the chosen frame was never reached
 
   @property
   def control_dt(self) -> float:

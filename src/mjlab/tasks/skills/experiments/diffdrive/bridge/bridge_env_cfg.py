@@ -12,7 +12,7 @@ is exported to ONNX on every checkpoint so the deployed LearnedBridge can load i
 
 from __future__ import annotations
 
-from typing import Any
+from typing import cast
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import time_out
@@ -38,43 +38,67 @@ from mjlab.viewer import ViewerConfig
 ENTITY = "robot"
 
 
-def _export_to_onnx(module: Any, path: str, filename: str) -> None:
-  """Export an rsl_rl MLP model (actor or critic) to ONNX, like the actor export."""
+def _export_selector_to_onnx(
+  selector: mdp.MergeSelector, in_dim: int, path: str, filename: str
+) -> None:
+  """Export the selector net to ONNX (a copy, so training keeps its live net on device)."""
+  import copy
   import os
 
   import torch
 
-  onnx_model = module.as_onnx(verbose=False)
-  onnx_model.to("cpu")
-  onnx_model.eval()
+  net = copy.deepcopy(selector).to("cpu").eval()
   os.makedirs(path, exist_ok=True)
   torch.onnx.export(
-    onnx_model,
-    onnx_model.get_dummy_inputs(),
+    net,
+    (torch.zeros(1, in_dim),),
     os.path.join(path, filename),
     export_params=True,
     opset_version=18,
-    input_names=onnx_model.input_names,
-    output_names=onnx_model.output_names,
+    input_names=["obs"],
+    output_names=["scores"],
     dynamic_axes={},
     dynamo=False,
   )
 
 
 class BridgeOnPolicyRunner(MjlabOnPolicyRunner):
-  """Runner that also exports the actor and critic to ONNX on every checkpoint.
+  """Runner that co-trains the selector and exports the actor and selector to ONNX.
 
-  The critic is exported too because the deployed bridge selects its merge target by
-  reading the critic's value over the candidate states of the next skill's tube.
+  Each iteration, right after the PPO update (where autograd is enabled, unlike the
+  inference-mode rollout), it drives the selector's own REINFORCE step. The actor and the
+  selector are both exported on every checkpoint, so the deployed bridge can pick a merge
+  frame with the selector and then drive to it with the actor.
   """
+
+  def __init__(self, env, train_cfg, log_dir=None, device="cpu") -> None:
+    super().__init__(env, train_cfg, log_dir, device)
+    self._bridge = cast(
+      mdp.BridgeCommand,
+      self.env.unwrapped.command_manager.get_term(mdp.COMMAND_NAME),
+    )
+    base_update = self.alg.update
+
+    def update() -> dict:
+      losses = base_update()
+      losses.update(self._bridge.update_selector())
+      return losses
+
+    # Replace the PPO update with the wrapped one. The dynamic set is deliberate: it keeps
+    # the monkeypatch off the type checker, which would otherwise read a plain assignment
+    # as shadowing the base method.
+    setattr(self.alg, "update", update)  # noqa: B010
 
   def save(self, path: str, infos=None) -> None:
     super().save(path, infos)
     policy_dir, filename, _ = self._get_export_paths(path)
     try:
       self.export_policy_to_onnx(str(policy_dir), filename)
-      _export_to_onnx(
-        self.alg.critic, str(policy_dir), filename.replace(".onnx", "_critic.onnx")
+      _export_selector_to_onnx(
+        self._bridge.selector,
+        self._bridge.window_dim,
+        str(policy_dir),
+        filename.replace(".onnx", "_selector.onnx"),
       )
     except Exception as exc:  # export must never break training
       print(f"[WARN] ONNX export failed (training continues): {exc}")

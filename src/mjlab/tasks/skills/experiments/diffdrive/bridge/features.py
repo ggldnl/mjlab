@@ -64,6 +64,45 @@ def observation(state: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
   )
 
 
+def to_reference(states: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+  """Express each state in a reference pose's frame, position-independent.
+
+  states is [..., L, 5] and ref is [..., 5]. The output is [..., L, 6]: forward and lateral
+  offset in the reference heading frame, cos and sin of the heading error, then the state's
+  own speed and yaw rate. Encoding a window this way makes it look the same wherever in the
+  world the switch happens, so the selector and executor see the junction, not the place.
+  """
+  ref = ref.unsqueeze(-2)  # broadcast the reference over the L frames
+  forward, lateral = position_error(ref, states)
+  head = heading_error(ref, states)
+  return torch.stack(
+    [
+      forward,
+      lateral,
+      torch.cos(head),
+      torch.sin(head),
+      states[..., V],
+      states[..., OMEGA],
+    ],
+    dim=-1,
+  )
+
+
+def window_features(
+  end_window: torch.Tensor, start_window: torch.Tensor
+) -> torch.Tensor:
+  """Encode a couple of windows, both relative to the interrupt, flattened to one vector.
+
+  The interrupt is the last frame of skill1's end window; it is the reference both windows
+  are expressed in. The result is [..., (Le + Ls) * 6], the input the selector reads to
+  pick a merge frame and the context the executor carries through the bridge.
+  """
+  ref = end_window[..., -1, :]
+  end = to_reference(end_window, ref)
+  start = to_reference(start_window, ref)
+  return torch.cat([end.flatten(-2), start.flatten(-2)], dim=-1)
+
+
 def tube_scale(tube: torch.Tensor) -> torch.Tensor:
   """Per-dimension scale of a set of tube states, so the distance is dimensionless.
 
