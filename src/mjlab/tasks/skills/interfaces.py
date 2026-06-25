@@ -80,6 +80,14 @@ class Robot(ABC):
 class Bridge(ABC):
   """What to command between skills."""
 
+  def observe(self, state: State) -> None:  # noqa: B027
+    """Record the latest state each tick, even while this bridge is idle.
+
+    The controller calls this every step so a bridge can keep a short history of the states
+    leading up to a switch. The default ignores it; a bridge that needs the approach window
+    (the learned bridge) overrides it.
+    """
+
   @abstractmethod
   def reset(self, from_skill: Skill, to_skill: Skill) -> None:
     """Begin a transition from from_skill to to_skill."""

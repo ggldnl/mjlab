@@ -12,14 +12,15 @@ The actor and the selector are the two ONNX files exported during training (the 
 file is the actor file with a _selector suffix). Skill2's tube is reharvested here the same
 way training built it, so deployment needs only the checkpoints plus the skills.
 
-At a switch the bridge does not have skill1's real approach window (it only starts running
-once the switch fires), so the selector's skill1 window is approximated by the current
-state, held for the window's length. The interrupt state, which carries the motion the
-merge has to be compatible with, is exact.
+The selector also needs skill1's approach window. The controller hands every state to the
+bridge through observe, even while skill1 is active, so the bridge keeps a rolling buffer of
+the last states; at a switch its last frame is the interrupt and the buffer is skill1's end
+window, the same shape training used.
 """
 
 from __future__ import annotations
 
+from collections import deque
 from typing import cast
 
 import numpy as np
@@ -28,7 +29,7 @@ import torch
 from mjlab.tasks.skills.experiments.diffdrive.bridge import features
 from mjlab.tasks.skills.experiments.diffdrive.bridge.rollouts import (
   representative,
-  window_family,
+  start_window_family,
 )
 from mjlab.tasks.skills.experiments.diffdrive.experiment import CONFIG, build_model
 from mjlab.tasks.skills.experiments.diffdrive.gridworld import GridWorld
@@ -65,16 +66,19 @@ class LearnedBridge(Bridge):
     self._tube: dict[int, torch.Tensor] = {}
     self._scale: dict[int, torch.Tensor] = {}
     for cid, skill in skills.items():
-      family = window_family(
-        model, robot, skill, CONFIG.window_steps, CONFIG.couples_per_junction, rng
+      family = start_window_family(
+        model, robot, skill, CONFIG.couples_per_junction, CONFIG.window_steps, rng
       )
       self._tube[cid] = torch.as_tensor(
-        representative(family, CONFIG.representative), dtype=torch.float32
+        representative(list(family), CONFIG.representative), dtype=torch.float32
       )
       self._scale[cid] = features.tube_scale(
-        torch.as_tensor(np.stack(family), dtype=torch.float32)
+        torch.as_tensor(np.asarray(family), dtype=torch.float32)
       )
 
+    # The last states before a switch, fed every tick by the controller via observe. Its
+    # last frame is the interrupt, so it stands in for skill1's end window for the selector.
+    self._buffer: deque = deque(maxlen=CONFIG.window_steps + 1)
     self._target: int | None = None
     self._merge: int | None = (
       None  # merge frame, picked by the selector on the first step
@@ -84,7 +88,12 @@ class LearnedBridge(Bridge):
       None  # the two windows encoded, fixed per switch
     )
 
+  def observe(self, state: State) -> None:
+    """Record the latest state each tick (called even while idle) for skill1's window."""
+    self._buffer.append(np.asarray(state, float))
+
   def reset(self, from_skill: Skill, to_skill: Skill) -> None:
+    # The buffer is not cleared: it carries skill1's approach into the switch.
     self._target = cast("CorridorSkill", to_skill).cid
     self._merge = None  # selected on the first step, from the interrupt state
     self._history = None
@@ -100,8 +109,7 @@ class LearnedBridge(Bridge):
       self._merge is None
     ):  # first tick: seed history, encode the windows, pick the frame
       self._history = s[[V, OMEGA]].unsqueeze(0).repeat(CONFIG.history_len, 1)
-      end_window = s.unsqueeze(0).repeat(len(tube), 1)  # skill1 window approximated
-      self._window = features.window_features(end_window, tube)
+      self._window = features.window_features(self._end_window(len(tube)), tube)
       scores = self._infer(self._selector, self._window)
       self._merge = int(np.argmax(scores))
 
@@ -114,6 +122,22 @@ class LearnedBridge(Bridge):
     assert self._history is not None
     self._history = torch.cat([self._history[1:], s[[V, OMEGA]].unsqueeze(0)], dim=0)
     return np.array([float(v), float(omega)]), reached
+
+  def _end_window(self, length: int) -> torch.Tensor:
+    """Skill1's approach window from the recent-state buffer, padded to length.
+
+    The buffer holds the last states before the switch, so its last frame is the interrupt.
+    If fewer than length states have been seen, the earliest is repeated at the front, the
+    same way training pads a short end window.
+    """
+    buf = [torch.as_tensor(x, dtype=torch.float32) for x in self._buffer]
+    if not buf:
+      buf = [torch.zeros(5)]
+    if len(buf) < length:
+      buf = [buf[0]] * (length - len(buf)) + buf
+    else:
+      buf = buf[-length:]
+    return torch.stack(buf)
 
   def _obs(self, state: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
     assert self._history is not None and self._window is not None

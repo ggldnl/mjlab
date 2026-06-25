@@ -75,6 +75,9 @@ class CorridorController(Controller):
     return nxt if (int(r), int(c)) == cell else None
 
   def step(self, state: State) -> Command:
+    self.bridge.observe(
+      state
+    )  # feed the bridge every tick, so it can buffer the approach
     if not self.switching:
       nxt = self._decide(state)
       if nxt is not None:  # reached a junction -> start bridging to the next skill
