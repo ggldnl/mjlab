@@ -88,6 +88,11 @@ class LearnedBridge(Bridge):
       None  # the two windows encoded, fixed per switch
     )
     self._reached = False  # latched once the robot is on the tube, hands over to skill2
+    # TEMP(diffdrive): the on-tube reach test never fires, so the bridge never reports
+    # done and skill2 never resumes. Until the tube formalization is reworked, force the
+    # handover after a fixed budget of ticks so the current approach can still be tested
+    # end to end. Remove this (and the _steps bookkeeping below) once reach works.
+    self._steps = 0
 
   def observe(self, state: State) -> None:
     """Record the latest state each tick (called even while idle) for skill1's window."""
@@ -100,6 +105,7 @@ class LearnedBridge(Bridge):
     self._history = None
     self._window = None
     self._reached = False
+    self._steps = 0  # TEMP(diffdrive): ticks since this switch began
 
   def step(self, state: State) -> tuple[Command, bool]:
     assert self._target is not None
@@ -125,7 +131,12 @@ class LearnedBridge(Bridge):
     self._reached = self._reached or bool(on_tube.min() < CONFIG.merge_tol)
     assert self._history is not None
     self._history = torch.cat([self._history[1:], s[[V, OMEGA]].unsqueeze(0)], dim=0)
-    return np.array([float(v), float(omega)]), self._reached
+    # TEMP(diffdrive): force the handover once the bridge has run for the length of
+    # skill2's window. This lets the controller resume skill2 forcibly.
+    self._steps += 1
+    forced = self._steps >= len(tube)
+    done = self._reached or forced
+    return np.array([float(v), float(omega)]), done
 
   def _end_window(self, length: int) -> torch.Tensor:
     """Skill1's approach window from the recent-state buffer, padded to length.
