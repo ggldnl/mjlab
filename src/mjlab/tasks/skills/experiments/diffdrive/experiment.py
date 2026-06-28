@@ -24,6 +24,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
+from pathlib import Path
 
 import mujoco
 import numpy as np
@@ -40,6 +41,7 @@ from mjlab.tasks.skills.experiments.diffdrive.gridworld import (
 from mjlab.tasks.skills.experiments.diffdrive.robot import STATE, DiffDrive
 from mjlab.tasks.skills.experiments.diffdrive.skills import corridor_skills
 from mjlab.tasks.skills.interfaces import Bridge
+from mjlab.utils.os import get_checkpoint_path
 
 X, Y, THETA, V, OMEGA = STATE
 
@@ -143,7 +145,16 @@ def make_bridge(
   """
   if name == "learned":
     if checkpoint is None:
-      raise ValueError("--checkpoint is required for the learned bridge.")
+      # raise ValueError("--checkpoint is required for the learned bridge.")
+
+      # if a specific checkpoint is NOT given, the last train is automatically used
+      checkpoint = str(
+        get_checkpoint_path(
+          Path("logs") / "rsl_rl" / "bridge_diffdrive",
+          checkpoint=r".*(?<!_selector)\.onnx$",
+        )
+      )
+
     from mjlab.tasks.skills.experiments.diffdrive.bridge.policy import LearnedBridge
 
     return LearnedBridge(checkpoint, world, speeds)
