@@ -1,0 +1,57 @@
+<mujoco model="diffdrive">
+  <option timestep="0.005" integrator="implicitfast"/>
+
+  <default>
+    <default class="wheel">
+      <joint type="hinge" axis="0 1 0" damping="0.0001"/>
+      <geom type="cylinder" size="0.06 0.02" material="wheel"
+            friction="1.5 0.02 0.001" mass="0.2"/>
+    </default>
+  </default>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="300" height="300"/>
+    <material name="grid" texture="grid" texrepeat="12 12" reflectance=".2"/>
+    <material name="chassis" rgba=".7 .2 .1 1"/>
+    <material name="wheel" rgba=".15 .15 .15 1"/>
+    <material name="caster" rgba=".4 .4 .4 1"/>
+    <material name="heading" rgba=".1 .6 .8 1"/>
+  </asset>
+
+  <worldbody>
+    <light name="light" pos="0 0 4" dir="0 0 -1"/>
+    <geom name="floor" pos="0 0 0" size="0 0 .05" type="plane" material="grid"
+          friction="1.0 0.005 0.0001"/>
+
+    <body name="base" pos="0 0 0.06">
+      <freejoint name="root"/>
+      <geom name="chassis" type="box" size="0.12 0.10 0.04" material="chassis" mass="2.0"/>
+      <!-- Heading marker so forward (+x) is visible. -->
+      <geom name="nose" type="box" pos="0.13 0 0" size="0.02 0.02 0.02"
+            material="heading" mass="0.001"/>
+      <!-- Rear caster: a frictionless support point (non-driven), so the only traction
+           is at the wheels and there is no stiction threshold to overcome. priority="1"
+           is essential: without it MuJoCo mixes the caster's condim=1 with the floor's
+           condim=3, so the contact silently gains the floor's friction. A barely-touching
+           high-friction rear point then stick-slips, which bounces the robot and makes it
+           yaw off its heading. The higher priority makes the caster's own frictionless
+           condim=1 win, which is what keeps the robot driving straight. -->
+      <geom name="caster" type="sphere" pos="-0.10 0 -0.04" size="0.02" priority="1"
+            material="caster" friction="0.0001 0.0001 0.0001" condim="1" mass="0.05"/>
+
+      <body name="left_wheel" pos="0.06 0.11 0">
+        <joint name="left_wheel" class="wheel"/>
+        <geom name="left_wheel" class="wheel" euler="90 0 0"/>
+      </body>
+      <body name="right_wheel" pos="0.06 -0.11 0">
+        <joint name="right_wheel" class="wheel"/>
+        <geom name="right_wheel" class="wheel" euler="90 0 0"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="left_wheel" joint="left_wheel" gear="1" ctrllimited="true" ctrlrange="-0.6 0.6"/>
+    <motor name="right_wheel" joint="right_wheel" gear="1" ctrllimited="true" ctrlrange="-0.6 0.6"/>
+  </actuator>
+</mujoco>
