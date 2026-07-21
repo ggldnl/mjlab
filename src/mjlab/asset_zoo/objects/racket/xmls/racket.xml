@@ -1,0 +1,78 @@
+<mujoco model="Racket">
+    <compiler angle="radian" />
+
+    <asset>
+        <mesh name="top" file="meshes/top.stl" scale="0.001 0.001 0.001" />
+        <mesh name="middle" file="meshes/middle.stl" scale="0.001 0.001 0.001" />
+        <mesh name="bottom" file="meshes/bottom.stl" scale="0.001 0.001 0.001" />
+
+        <material name="top_mat" rgba="0.8 0.137 0.165 1" />
+        <material name="middle_mat" rgba="0.922 0.835 0.702 1" />
+        <material name="bottom_mat" rgba="0.078 0.294 0.588 1" />
+    </asset>
+
+    <worldbody>
+        <light directional="true" pos="-0.5 0.5 3" dir="0 0 -1" />
+
+        <geom pos="0 0 0"
+              size="1 1 1"
+              type="plane"
+              rgba="1 0.83 0.61 0.5" />
+
+        <body name="middle"
+              pos="-0.1630733413002845 0.3258592928275778 -0.05050159310968819"
+              euler="1.5707963267948966 0.0 -0.0">
+
+            <site name="com"
+                  pos="0.16307331235065192 0.05 0.3258592928275779"
+                  size="0.01"
+                  type="sphere"
+                  rgba="0 1 0 1"/>
+
+
+            <geom name="middle_geom"
+                  type="mesh"
+                  mesh="middle"
+                  material="middle_mat"
+                  pos="0 0 0"
+                  euler="0 0 0" />
+
+            <inertial mass="0.14816677044860987"
+                      pos="0.16307331235065192 0.2003367851938263 0.3258592928275779"
+                      fullinertia="0.001004180925363665 0.00021069684849095812 0.0012095263144916426 -1.0723555120158289e-10 -1.4210857762985234e-18 1.5774472580186126e-18" />
+
+            <body name="top"
+                  pos="0.0 0.0 0.0"
+                  euler="-0.0 0.0 -0.0">
+
+                <geom name="top_geom"
+                      type="mesh"
+                      mesh="top"
+                      material="top_mat"
+                      pos="0 0 0"
+                      euler="0 0 0" />
+
+                <inertial mass="0.05096753924327075"
+                          pos="0.16307326299448238 0.25380692762763546 0.3298592928275778"
+                          fullinertia="0.00011430819974343753 0.00010950794209709063 0.00022378216348103303 2.6362840856352125e-10 8.851498822451413e-20 1.1519648082658485e-19" />
+            </body>
+
+            <body name="bottom"
+                  pos="0.0 0.0 0.0"
+                  euler="-0.0 0.0 -0.0">
+
+                <geom name="bottom_geom"
+                      type="mesh"
+                      mesh="bottom"
+                      material="bottom_mat"
+                      pos="0 0 0"
+                      euler="0 0 0" />
+
+                <inertial mass="0.05096753924327077"
+                          pos="0.16307326235065192 0.25380692762763546 0.32185929282757786"
+                          fullinertia="0.0001143081997434384 0.00010950794209709205 0.00022378216348103172 2.636284089316521e-10 -8.063006448811514e-19 5.624298769768554e-19" />
+            </body>
+
+        </body>
+    </worldbody>
+</mujoco>
