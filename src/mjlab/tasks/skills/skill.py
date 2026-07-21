@@ -21,7 +21,7 @@ from tensordict import TensorDict
 
 from mjlab.envs import ManagerBasedRlEnv, VecEnvObs
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
-from mjlab.tasks.registry import load_rl_cfg, load_runner_cls
+from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
 # Skill id standing for no skill, used wherever an id may be absent.
 NO_SKILL = -1
@@ -121,3 +121,71 @@ class SkillPool:
     """Reset every skill's internal state where mask is set."""
     for skill in self.skills:
       skill.reset(mask)
+
+
+if __name__ == "__main__":
+  """
+  Visualize a skill (checkpoint or an analytical function) in Viser.
+
+  The env is built straight from a registered task id and left running the same
+  skill forever (there is no controller here to switch away from it).
+  """
+
+  from dataclasses import dataclass
+  import tyro
+
+  @dataclass(frozen=True)
+  class ViewSkillConfig:
+    task_id: str
+    """Registered mjlab task id; its (play-mode) env cfg is what the skill acts in."""
+    checkpoint: str | None = None
+    """Path to a trained checkpoint, loaded as a `PolicySkill`."""
+    factory: str | None = None
+    """'module:attribute' resolving to a zero-arg callable returning a `Skill`,
+    for visualizing a hand-written analytical skill instead of a checkpoint."""
+    name: str = "skill"
+    num_envs: int = 1
+    device: str | None = None
+
+  def view_skill(cfg: ViewSkillConfig) -> None:
+    if (cfg.checkpoint is None) == (cfg.factory is None):
+      raise ValueError("Pass exactly one of --checkpoint or --factory.")
+
+    import mjlab.tasks  # noqa: F401  (populates the task registry)
+    from mjlab.utils.lab_api.string import string_to_callable
+    from mjlab.viewer import ViserPlayViewer
+
+    device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+    env_cfg = load_env_cfg(cfg.task_id, play=True)
+    env_cfg.scene.num_envs = cfg.num_envs
+    env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
+
+    skill: Skill
+    if cfg.checkpoint is not None:
+      skill = PolicySkill(cfg.name, cfg.task_id, cfg.checkpoint, env, device)
+    else:
+      assert cfg.factory is not None
+      built = string_to_callable(cfg.factory)()
+      # Duck-typed, not isinstance: running this file as __main__ makes this a
+      # second, distinct execution of the `mjlab.tasks.skills.skill` module, so a
+      # factory that imports `Skill` normally gets a different class object than
+      # the one defined here -- isinstance would reject a perfectly good Skill.
+      if not (hasattr(built, "act") and callable(built.act)):
+        raise TypeError(
+          f"'{cfg.factory}' must return a Skill (an object with `.act`), got "
+          f"{type(built).__name__}"
+        )
+      skill = built
+
+    viewer_env = RslRlVecEnvWrapper(
+      env, clip_actions=load_rl_cfg(cfg.task_id).clip_actions
+    )
+    active = torch.ones(cfg.num_envs, dtype=torch.bool, device=device)
+
+    def policy(obs) -> torch.Tensor:
+      return skill.act(obs, active)
+
+    ViserPlayViewer(viewer_env, policy).run()
+    viewer_env.close()
+
+  view_skill(tyro.cli(ViewSkillConfig))
