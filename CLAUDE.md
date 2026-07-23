@@ -40,21 +40,68 @@ under the "Upcoming version (not yet released)" section using
 Added/Changed/Fixed categories. Reference issues with `:issue:\`123\``
 (renders as a link to the GitHub issue).
 
-# Commits and PRs
+# comments style guide
+Use plain comments, for example (python):
 
-- Put `Fixes #<number>` at the end of the commit message body, not in
-  the title.
-- PR body should be plain, concise prose. No section headers, checklists,
+```
+# This is a comment
+
+def func(*args, **kwargs):  # this is an inline comment
+    do_something()  # this is another inline comment
+
+```
+
+Comments do not have a dot at the end. Normal comments start with capital letter, 
+inline they start with lowercase letter. Avoid at all costs to pad comments to fill
+the line with whatever character. Avoid at all costs to box comments.
+
+Examples of this to avoid (python):
+
+```
+
+# +---------------------------------------------------------------------+
+# |                                                                     |
+# |                 Absolutely avoid box comments                       |
+# |               (except if the user asks for them)                    |
+# |                                                                     |
+# +---------------------------------------------------------------------+
+
+# --- Avoid this type of padding ---
+# %%% Avoid this type of padding, whatever is the character you use %%%
+### Avoid this type of padding ###
+
+# --- Avoid using a character to fill the line --------------------------
+
+```
+
+Apply the same concepts to any other programming language other than python. 
+If the user edits some comment or decides to apply any other styling guide,
+let it do so, do not change the comments it produces. What I specified only
+applies to you.
+
+# commits
+
+For any big change you produce on a repo, at the end of your message
+suggest a commit message that describes the change.
+You might need to work on more than one repo at a time: you'll have to do
+this for all of them producing a dict {repo: commit message}
+Commit messages should be just small sentences, not explain thoroughly
+the change.
+
+Example:
+
+```
+repo x: "Fixed this problem"
+repo y: "Fixed this other problem"
+```
+
+Remember: 
+- not all the changes you do to a repo are worth having a dedicated commit. 
+  Some changes might be extended with the conversation going furhter;
+  in that case, omit the commit message suggestion.
+- commit message should be plain, concise prose. No section headers, checklists,
   or structured templates. Describe the problem, what the change does, and
-  any non-obvious tradeoffs. A good PR description reads like a short
+  any non-obvious tradeoffs. A good description reads like a short
   paragraph to a colleague, not a form.
-- PR and commit messages are rendered on GitHub, so don't hard-wrap them
+- commit messages are rendered on GitHub, so don't hard-wrap them
   at 88 columns. Let each sentence flow on one line.
-
-Some style guidelines to follow:
-- Line length limit is 88 columns. This applies to code, comments, and docstrings.
-- Avoid local imports unless they are strictly necessary (e.g. circular imports).
-- Tests should follow these principles:
-  - Use functions and fixtures; do not use test classes.
-  - Favor targeted, efficient tests over exhaustive edge-case coverage.
-  - Prefer running individual tests rather than the full test suite to improve iteration speed.
