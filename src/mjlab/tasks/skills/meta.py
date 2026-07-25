@@ -128,6 +128,22 @@ class MetaPolicy(ABC):
 
     return actions
 
+  def active_label(self, env_idx: int = 0) -> str:
+    """What env env_idx is doing right now, as a short human-readable string.
+
+    The running skill's name in normal operation, or "bridge: A -> B" while this
+    architecture is driving a transition. Used by the viewer's info box; harmless to
+    call at any time.
+    """
+    if bool(self._bridging[env_idx]):
+      source = int(self._source[env_idx])
+      target = int(self._target[env_idx])
+      source_name = self.pool[source].name if source >= 0 else "?"
+      target_name = self.pool[target].name if target >= 0 else "?"
+      return f"bridge: {source_name} -> {target_name}"
+    target = int(self._target[env_idx])
+    return "-" if target < 0 else self.pool[target].name
+
   def begin_switch(  # noqa: B027
     self, switching: torch.Tensor, source: torch.Tensor, target: torch.Tensor
   ) -> None:
@@ -205,6 +221,10 @@ class ComposedPolicy:
         self.meta.notify_reset(done)
     command = self.controller.decide(self.env, self.meta.target)
     return self.meta.act(obs, command)
+
+  def active_label(self, env_idx: int = 0) -> str:
+    """What env `env_idx` is doing right now (delegates to the meta policy)."""
+    return self.meta.active_label(env_idx)
 
 
 def run_episode(
