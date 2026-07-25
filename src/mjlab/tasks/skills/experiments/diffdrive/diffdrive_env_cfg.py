@@ -11,25 +11,24 @@ where heading_error is the live, wrapped difference to a target heading fixed
 at reset. drive keeps that error near zero (hold heading); turn drives a large
 initial error down to zero (realize the angle). This mirrors the analytical
 experts in dynamics.py exactly: same behavior, so a trained checkpoint and a
-hand-written controller are interchangeable in the composition.
+handwritten controller are interchangeable in the composition.
 
 The failure this experiment is built around is a tip-over. The turn is a
 fixed-radius arc, so its lateral (centripetal) acceleration is v**2 / R: gentle at
 the low speed turn was trained at, but violent if turn is handed the robot while it
 still carries drive's cruise speed. Above a threshold that lateral force rolls the
 chassis over its inner wheels and it falls. A naive hand-off tips; the bridge has to
-brake the robot down into turn's speed regime *before* handing over.
+brake the robot down into turn's speed regime before handing over.
 
 For that tip to be the failure that actually happens (rather than the wheels simply
-skidding), the robot needs a high, narrow centre of mass. The stock diffdrive is
+skidding), the robot needs a high, narrow center of mass. The stock diffdrive is
 low and wide and skids first, so this experiment builds a taller, narrower variant
 with a heavy mass hidden high in the chassis (see `_tall_diffdrive_robot_cfg`). That
-change is kept local here so the shared asset -- and the carlike experiment that
-also uses it -- are left untouched.
+change is kept local here so the shared asset are left untouched.
 
 RL skills are discouraged for this experiment. The analytical experts in dynamics.py
 are trivial, reliable, and interchangeable with a checkpoint; prefer them. The task
-registrations below exist only so an RL skill *can* be trained if really wanted.
+registrations below exist only so an RL skill can be trained if really wanted.
 """
 
 from __future__ import annotations
@@ -86,6 +85,12 @@ from mjlab.utils.lab_api.math import wrap_to_pi
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
+from mjlab.tasks.skills.experiments.diffdrive import (
+  DRIVE_SPEED,
+  TURN_ANGLE,
+  TURN_SPEED,
+)
+
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
   # from mjlab.viewer.debug_visualizer import DebugVisualizer
@@ -93,7 +98,7 @@ if TYPE_CHECKING:
 ##
 # Chassis geometry. The wheel radius and axle height come from the shared asset
 # XML; the track and the chassis box are overridden locally (see
-# `_tall_diffdrive_robot_cfg`) to raise and narrow the centre of mass so the robot
+# `_tall_diffdrive_robot_cfg`) to raise and narrow the center of mass so the robot
 # tips rather than skids. Keep these constants in step with that override -- the
 # analytical experts in dynamics.py read HALF_TRACK for their wheel kinematics.
 ##
@@ -142,7 +147,7 @@ _BALLAST_RADIUS = 0.03  # [m]
 def _tall_diffdrive_spec() -> mujoco.MjSpec:
   """The shared diffdrive spec, edited into the tall/narrow tipping variant.
 
-  Raises and narrows the chassis box, pulls the wheels in to `HALF_TRACK`, and
+  Raises and narrows the chassis box, pulls the wheels in to HALF_TRACK, and
   buries a heavy invisible ball high in the chassis. Everything else (wheels,
   caster, actuators) is left as the asset defines it.
   """
@@ -156,7 +161,7 @@ def _tall_diffdrive_spec() -> mujoco.MjSpec:
   spec.body("left_wheel").pos = np.array([0.06, HALF_TRACK, 0.0])
   spec.body("right_wheel").pos = np.array([0.06, -HALF_TRACK, 0.0])
 
-  # The hidden ballast that raises the centre of mass. contype/conaffinity 0 so it
+  # The hidden ballast that raises the center of mass. contype/conaffinity 0 so it
   # never collides; fully transparent (and inside the box) so it never shows.
   base = spec.body("base")
   ballast = base.add_geom()
@@ -198,13 +203,13 @@ COMMAND_NAME = "goal"
 class RateLimitedJointVelocityAction(JointVelocityAction):
   """A wheel velocity action whose target is acceleration-limited.
 
-  The commanded wheel velocity cannot change by more than ``max_accel`` per
+  The commanded wheel velocity cannot change by more than max_accel per
   second, so the robot ramps to a target speed rather than demanding it at once.
   This is what gives the diff drive a bounded acceleration: the drive skill eases
   up to cruise (keeping the velocity servo out of saturation, so it always keeps
   the authority to hold heading and does not spin out), and a skill handed a
   fast-moving robot can only spin the wheels down gradually, so forward momentum
-  rides through a hand-off as an arc -- the failure the bridge must remove.
+  rides through a hand-off as an arc.
   """
 
   cfg: RateLimitedJointVelocityActionCfg
@@ -251,11 +256,11 @@ class RateLimitedJointVelocityActionCfg(JointVelocityActionCfg):
 
 
 class HeadingSpeedCommand(CommandTerm):
-  """A ``[forward_speed, heading_error]`` command.
+  """A [forward_speed, heading_error] command.
 
   The forward speed is drawn once per episode. The heading target is fixed at
   reset (the heading the robot spawns with, plus a sampled offset), and the
-  command exposes the *live* wrapped error to that target every step. A skill
+  command exposes the live wrapped error to that target every step. A skill
   that drives the error to zero realizes the sampled turn; with a zero offset it
   simply holds its starting heading.
   """
@@ -360,7 +365,7 @@ def track_heading(
 ) -> torch.Tensor:
   """Reward driving the heading error to zero.
 
-  ``command[:, 1]`` already is the live, wrapped error to the target heading, so
+  command[:, 1] already is the live, wrapped error to the target heading, so
   holding it near zero is both "hold a straight line" (drive) and "reach and keep
   the target angle" (turn). The kernel is deliberately wide: a turn starts a full
   target angle away, and a sharp kernel would be flat there and leave nothing to
@@ -635,7 +640,7 @@ def drive_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   so it builds the momentum that tips the robot if a turn is taken before it is
   shed. The top of the range is enough to roll the tall chassis in a turn.
   """
-  cfg = _make_env_cfg(lin_vel_x=(0.2, 4.0), heading=(0.0, 0.0))
+  cfg = _make_env_cfg(lin_vel_x=(0.1, DRIVE_SPEED), heading=(0.0, 0.0))
   return _apply_play_overrides(cfg) if play else cfg
 
 
@@ -644,13 +649,13 @@ def turn_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   The forward speed target is low but nonzero, so the skill turns while moving
   and the robot describes an arc rather than pivoting in place. It stays well
-  below what drive cruises at -- low enough that the arc's lateral acceleration
-  stays well under the tip-over threshold -- and every episode starts from rest,
+  below what drive cruises at, low enough that the arc's lateral acceleration
+  stays well under the tip-over threshold, and every episode starts from rest
   so the skill never has to turn while carrying drive's momentum. The heading
   offset spans both directions up to ~150 deg, which covers the 90 deg turns the
   demo commands.
   """
-  cfg = _make_env_cfg(lin_vel_x=(0.2, 0.4), heading=(-2.6, 2.6))
+  cfg = _make_env_cfg(lin_vel_x=(0.1, TURN_SPEED), heading=(-TURN_ANGLE, TURN_ANGLE))
   return _apply_play_overrides(cfg) if play else cfg
 
 

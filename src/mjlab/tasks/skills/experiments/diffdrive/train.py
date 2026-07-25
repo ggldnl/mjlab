@@ -1,7 +1,7 @@
 """Train a bridging architecture on the diffdrive experiment.
 
 Builds the skill pool (analytical experts by default), builds the chosen
-architecture by id, runs *that architecture's own* training, and saves the result
+architecture by id, runs that architecture's own training, and saves the result
 so the demo can load it back. Training is common to every architecture: this script
 only supplies the experiment-specific pieces (the pool, the entity to harvest states
 from, and a per-target success oracle) and lets the architecture do the rest.
@@ -31,9 +31,7 @@ import tyro
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.tasks.registry import load_env_cfg
 from mjlab.tasks.skills.architectures import ARCHITECTURES
-from mjlab.tasks.skills.architectures.arch_0.train import train as train_arch_0
-from mjlab.tasks.skills.architectures.arch_1.train import train as train_arch_1
-from mjlab.tasks.skills.architectures.arch_2.train import train as train_arch_2
+from mjlab.tasks.skills.architectures import TRAINERS
 from mjlab.tasks.skills.experiments.diffdrive import (
   DRIVE_TASK_ID,
   ENTITY_NAME,
@@ -42,15 +40,7 @@ from mjlab.tasks.skills.experiments.diffdrive import (
   build_pool,
 )
 from mjlab.tasks.skills.experiments.diffdrive.controller import DRIVE_STRAIGHT, TURN
-from mjlab.tasks.skills.meta import MetaPolicy
 from mjlab.tasks.skills.utils import new_architecture_run_dir
-
-# Every architecture exposes the same train(env, pool, entity_name, meta,
-# success_fns) entry point; this maps an architecture id to it. arch_0's is a no-op
-# stub, arch_2's raises until it is implemented. Typed loosely (each trainer takes
-# its own concrete MetaPolicy subclass) so the id-keyed dispatch below type-checks.
-Trainer = Callable[..., MetaPolicy]
-TRAINERS: dict[int, Trainer] = {0: train_arch_0, 1: train_arch_1, 2: train_arch_2}
 
 # A success oracle: given the env after a bridging window, returns a bool per env
 # saying whether the target skill actually took over safely. Privileged and external,
@@ -73,7 +63,7 @@ def _make_turn_success(
 ) -> SuccessFn:
   """Hand-off into turn succeeds when the robot ends up upright and slow.
 
-  Upright (tilt below `max_tilt` [rad]) and slow (forward speed below `max_speed`
+  Upright (tilt below max_tilt [rad]) and slow (forward speed below max_speed
   [m/s]) is exactly turn's safe regime: the arc's lateral acceleration only stays
   under the tip-over threshold at low speed. This rewards the switch-decider for
   handing over only once the robot has been braked down, not while it is still fast
@@ -108,7 +98,7 @@ class TrainConfig:
   turn_checkpoint: str | None = None
 
   # Bridge training runs many parallel envs; more is faster and steadier
-  num_envs: int = 64
+  num_envs: int = 1024
   device: str | None = None
 
 

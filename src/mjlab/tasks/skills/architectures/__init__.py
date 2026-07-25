@@ -14,16 +14,32 @@ for each skill.
 from collections.abc import Callable
 
 from mjlab.envs import ManagerBasedRlEnv
+
 from mjlab.tasks.skills.architectures.arch_0 import Arch0
 from mjlab.tasks.skills.architectures.arch_1 import Arch1
 from mjlab.tasks.skills.architectures.arch_2 import Arch2
+
+from mjlab.tasks.skills.architectures.arch_0.train import train as train_arch_0
+from mjlab.tasks.skills.architectures.arch_1.train import train as train_arch_1
+from mjlab.tasks.skills.architectures.arch_2.train import train as train_arch_2
+
 from mjlab.tasks.skills.meta import MetaPolicy
 from mjlab.tasks.skills.skill import SkillPool
 
 MetaPolicyFactory = Callable[[ManagerBasedRlEnv, SkillPool], MetaPolicy]
-
 ARCHITECTURES: dict[int, MetaPolicyFactory] = {
   0: Arch0,
   1: Arch1,
   2: Arch2,
+}
+
+# Every architecture exposes the same train(env, pool, entity_name, meta,
+# success_fns) entry point; this maps an architecture id to it. arch_0's is a no-op
+# stub, arch_2's raises until it is implemented. Typed loosely (each trainer takes
+# its own concrete MetaPolicy subclass) so the id-keyed dispatch below type-checks.
+Trainer = Callable[..., MetaPolicy]
+TRAINERS: dict[int, Trainer] = {
+  0: train_arch_0,
+  1: train_arch_1,
+  2: train_arch_2
 }

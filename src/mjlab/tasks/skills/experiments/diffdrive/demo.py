@@ -1,4 +1,5 @@
-"""Run the diffdrive demonstration: drive and turn, alternated by a scripted
+"""
+Run the diffdrive demonstration: drive and turn, alternated by a scripted
 controller, composed through one bridging architecture.
 
 A fixed-step controller runs drive for a while, switches to turn, holds turn for a
@@ -6,9 +7,7 @@ while, switches back, and repeats (see controller.py). Under architecture 0 (the
 no-bridge baseline, a direct hand-off), turn takes over while the robot still carries
 drive's cruise speed, so its tight arc's lateral acceleration rolls the tall chassis
 onto its side: it tips. That tip is the failure a real bridge has to remove, by
-braking the robot into turn's low-speed regime before handing over. This demo is the
-harness to watch it, measure it, and drop a trained architecture in place of the
-naive one.
+braking the robot into turn's low-speed regime before handing over.
 
 Analytical experts are recommended over RL.
 
@@ -54,7 +53,9 @@ from mjlab.tasks.skills.architectures import ARCHITECTURES
 from mjlab.tasks.skills.experiments.diffdrive import (
   DRIVE_TASK_ID,
   EXPERIMENT_NAME,
+  DRIVE_SPEED,
   TURN_ANGLE,
+  TURN_SPEED,
   TURN_TASK_ID,
   build_pool,
 )
@@ -97,14 +98,14 @@ class DemoConfig:
 
   # Analytical drive cruise speed [m/s]: high enough that a naive hand-off to turn
   # tips the tall chassis
-  drive_speed: float = 3.5
+  drive_speed: float = DRIVE_SPEED
 
   # Analytical turn target angle [rad]. The demo commands 90 deg turns
   turn_angle: float = TURN_ANGLE
 
   # Analytical turn arc speed [m/s]: the low speed the arc is safe at. Kept below
   # drive_speed so the momentum gap (and the tip) survives
-  turn_speed: float = 0.3
+  turn_speed: float = TURN_SPEED
 
   # Controller parameters: after how many steps we transition from one skill
   # to the other
@@ -227,7 +228,12 @@ def _run_debug(cfg: DemoConfig, env: ManagerBasedRlEnv, pool: SkillPool) -> None
     def _(event) -> None:
       selector.select(names.index(event.target.value))
 
-    ViserPlayViewer(viewer_env, debug_policy, viser_server=server).run()
+    ViserPlayViewer(
+      viewer_env,
+      debug_policy,
+      viser_server=server,
+      info_provider=lambda _idx: selector.name,
+    ).run()
 
   viewer_env.close()
 
@@ -286,7 +292,8 @@ def run_demo(cfg: DemoConfig) -> None:
   if cfg.viewer == "viser":
     from mjlab.viewer import ViserPlayViewer
 
-    ViserPlayViewer(viewer_env, viewer_policy).run()
+    # Show the running skill (or bridge) for the displayed env in the info box.
+    ViserPlayViewer(viewer_env, viewer_policy, info_provider=policy.active_label).run()
   else:
     from mjlab.viewer import NativeMujocoViewer
 

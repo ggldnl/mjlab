@@ -12,7 +12,7 @@ fixed-radius arc, whose lateral (centripetal) acceleration is v**2 / R: harmless
 the low speed turn was trained at, but violent if turn is handed the robot while it
 still carries drive's cruise speed, enough to roll the (deliberately tall, narrow)
 chassis onto its side. A naive hand-off from drive to turn tips; the bridge's job is
-to brake the robot into turn's speed regime *before* handing over.
+to brake the robot into turn's speed regime before handing over.
 
 A simple, scripted controller drives the demonstration: run drive for a fixed
 number of steps, signal a switch to turn, hold turn for a fixed number of steps,
@@ -38,30 +38,10 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
-from mjlab.tasks.registry import register_mjlab_task
-from mjlab.tasks.skills.experiments.diffdrive.diffdrive_env_cfg import (
-  diffdrive_ppo_runner_cfg,
-  drive_env_cfg,
-  turn_env_cfg,
-)
-
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
   from mjlab.tasks.skills.skill import SkillPool
 
-register_mjlab_task(
-  task_id="Mjlab-Diffdrive-Drive",
-  env_cfg=drive_env_cfg(),
-  play_env_cfg=drive_env_cfg(play=True),
-  rl_cfg=diffdrive_ppo_runner_cfg("diffdrive_drive"),
-)
-
-register_mjlab_task(
-  task_id="Mjlab-Diffdrive-Turn",
-  env_cfg=turn_env_cfg(),
-  play_env_cfg=turn_env_cfg(play=True),
-  rl_cfg=diffdrive_ppo_runner_cfg("diffdrive_turn"),
-)
 
 # Names shared by this experiment's train and demo entry points. `EXPERIMENT_NAME`
 # is the folder architecture checkpoints are saved under; `ENTITY_NAME` is the scene
@@ -80,6 +60,27 @@ TURN_ANGLE = math.pi / 2  # [rad], the 90 deg arc turn
 TURN_SPEED = 0.3  # [m/s], the arc's low creep speed
 
 
+from mjlab.tasks.registry import register_mjlab_task
+from mjlab.tasks.skills.experiments.diffdrive.diffdrive_env_cfg import (
+  diffdrive_ppo_runner_cfg,
+  drive_env_cfg,
+  turn_env_cfg,
+)
+
+register_mjlab_task(
+  task_id="Mjlab-Diffdrive-Drive",
+  env_cfg=drive_env_cfg(),
+  play_env_cfg=drive_env_cfg(play=True),
+  rl_cfg=diffdrive_ppo_runner_cfg("diffdrive_drive"),
+)
+
+register_mjlab_task(
+  task_id="Mjlab-Diffdrive-Turn",
+  env_cfg=turn_env_cfg(),
+  play_env_cfg=turn_env_cfg(play=True),
+  rl_cfg=diffdrive_ppo_runner_cfg("diffdrive_turn"),
+)
+
 def build_pool(
   env: ManagerBasedRlEnv,
   device: str,
@@ -95,10 +96,11 @@ def build_pool(
 ) -> SkillPool:
   """The two-skill pool for this experiment: drive (id 0), then turn (id 1).
 
-  Analytical experts by default (recommended). With `analytical=False`, the frozen
-  RL policies are loaded instead; a `None` checkpoint falls back to the latest
+  Analytical experts by default (recommended). With analytical=False, the frozen
+  RL policies are loaded instead; a None checkpoint falls back to the latest
   trained one for that task.
   """
+
   # Imported lazily so merely importing this package stays cheap (the demo imports
   # it just for the constants above).
   from mjlab.tasks.skills.experiments.diffdrive.dynamics import (

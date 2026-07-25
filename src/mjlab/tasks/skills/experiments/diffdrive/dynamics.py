@@ -1,34 +1,34 @@
-"""Analytical diffdrive experts: `drive` and `turn`.
+"""Analytical diffdrive experts: drive and turn.
 
-These are the hand-written counterparts of the two RL skills trained from
-`diffdrive_env_cfg.py`. They implement the *same* two behaviors as closed-form
+These are the handwritten counterparts of the two RL skills trained from
+diffdrive_env_cfg.py. They implement the same two behaviors as closed-form
 feedback controllers so the bridging experiments can be run with experts whose
 design is trivial and whose competence is not in question, leaving the bridge as
-the only thing under test. Prefer these analytical experts: RL skills are
-discouraged for this experiment, they buy nothing here and only add a checkpoint to
-manage.
+the only thing under test.
 
-Design, following the problem statement:
+Prefer these analytical experts: RL skills are discouraged for this experiment,
+they buy nothing here and only add a checkpoint to manage.
 
-- ``drive`` tracks a commanded forward speed with zero yaw rate. It is a plain
+Skills:
+- drive: tracks a commanded forward speed with zero yaw rate. It is a plain
   wheel-velocity servo and holds no state.
-- ``turn`` arcs to a given angle: it drives a tight, fixed-radius arc, rotating
+- turn: arcs to a given angle: it drives a tight, fixed-radius arc, rotating
   toward a target heading and easing off as it arrives. It is stateful, because the
   observation carries no absolute orientation, only a yaw rate; the skill integrates
   that yaw rate from the moment it takes over to know how far it has turned. The
   target is therefore relative to the heading the robot had when the turn began.
 
 Why an arc (and why it fails at speed). The arc's lateral acceleration is
-``v**2 / R``: at the low speed turn was trained at it is negligible, but handed the
+v**2 / R: at the low speed turn was trained at it is negligible, but handed the
 robot at drive's cruise it is large enough to roll the tall, narrow chassis over its
-inner wheels -- a tip-over. turn does *not* brake the speed it inherits; it asks for
-its low arc speed and lets the acceleration-limited wheels get there in their own
-time, so a robot handed at cruise keeps barreling forward as it starts to rotate and
+inner wheels. turn does not brake the speed it inherits; it asks for its low arc
+speed and lets the acceleration-limited wheels get there in their own time, so
+a robot handed at cruise keeps barreling forward as it starts to rotate and
 goes over. Slowing down first is the bridge's job, not the skill's.
 
-Both experts command wheel *velocities* (the action space is joint velocity,
+Both experts command wheel velocities (the action space is joint velocity,
 realized by torque-limited velocity servos driven by an acceleration-limited
-command; see `diffdrive_env_cfg.py`). The acceleration limit is deliberate and
+command; see diffdrive_env_cfg.py). The acceleration limit is deliberate and
 load-bearing: the wheels cannot change speed instantly, so a controller cannot
 reject momentum it did not build up, which is exactly why a naive hand-off tips and
 a bridge is worth having. The failure is emergent from the physics, not hand-coded
@@ -36,7 +36,7 @@ into the controller.
 
 The controllers read the robot state straight out of the flattened observation
 vector, so this file is coupled to the observation layout declared in
-`diffdrive_env_cfg.py`. That layout is mirrored in the index constants below; if
+diffdrive_env_cfg.py. That layout is mirrored in the index constants below; if
 the observation terms there change, these must change with them.
 """
 
@@ -48,6 +48,12 @@ import torch
 
 from mjlab.envs import VecEnvObs
 from mjlab.tasks.skills.skill import Skill
+
+from mjlab.tasks.skills.experiments.diffdrive import (
+  DRIVE_SPEED,
+  TURN_ANGLE,
+  TURN_SPEED
+)
 
 ##
 # Chassis geometry. Mirrors `diffdrive_env_cfg.py` / the diffdrive asset XML.
@@ -89,7 +95,7 @@ def _state(obs: VecEnvObs) -> torch.Tensor:
   """The flattened robot state to control on.
 
   Prefer the uncorrupted critic group when present (cleaner for the turn skill's
-  yaw integrator), falling back to the actor group a deployed policy would see.
+  yaw integrator).
   """
   group = obs["actor"]
   assert isinstance(group, torch.Tensor)
@@ -102,7 +108,7 @@ def _twist_to_wheel_speeds(
   """Chassis (forward speed, yaw rate) -> (left, right) wheel angular speeds.
 
   Inverse of the differential-drive kinematics the env's slip reward assumes:
-  ``v = r/2 (w_l + w_r)`` and ``yaw = r/(2b) (w_r - w_l)``, so a positive yaw
+  v = r/2 (w_l + w_r) and yaw = r/(2b) (w_r - w_l), so a positive yaw
   rate turns the robot left (right wheel faster than left).
   """
   wheel_l = (lin_vel_x - yaw_rate * HALF_TRACK) / WHEEL_RADIUS
@@ -114,7 +120,7 @@ class DriveSkill(Skill):
   """Drive straight at a fixed forward speed, zero yaw rate. Stateless.
 
   Emits a constant pair of wheel velocity targets. The robot's actuation ramps to
-  them under its acceleration limit, so nothing here has to shape the approach --
+  them under its acceleration limit, so nothing here has to shape the approach,
   the skill just names the cruise it wants.
   """
 
@@ -141,9 +147,9 @@ class TurnSkill(Skill):
   of `active`) to know how far it has turned, and a saturating law aims for a
   target yaw rate that eases off as the heading is reached.
 
-  Crucially it does *not* actively brake away the speed it inherits. It asks for a
+  Crucially it does not actively brake away the speed it inherits. It asks for a
   low arc speed and a yaw rate and lets the acceleration-limited wheels get there in
-  their own time -- from rest that is a gentle, tight arc, but handed drive's cruise
+  their own time; from rest that is a gentle, tight arc, but handed drive's cruise
   the wheels can only spin down gradually, so the robot keeps barreling forward while
   it starts to rotate. The arc's lateral acceleration then scales with the inherited
   speed, and past a threshold it rolls the tall, narrow chassis over its inner wheels
@@ -166,7 +172,7 @@ class TurnSkill(Skill):
     self.turn_rate = turn_rate
     self.creep_speed = creep_speed
     self.heading_gain = heading_gain
-    # How fast the forward-speed target drifts toward `creep_speed` [m/s^2]. Kept
+    # How fast the forward-speed target drifts toward creep_speed [m/s^2]. Kept
     # gentle on purpose: handed a fast robot, turn arcs around the speed it is
     # actually carrying for many steps before it has shed much, so the arc is
     # violent from the first step and the robot tips. This is what makes the naive
@@ -174,7 +180,7 @@ class TurnSkill(Skill):
     self.ease_step = ease_accel * dt
     self.dt = dt
     # Accumulated heading and previous active mask, per env. Allocated lazily on
-    # the first act/reset, once the batch size and device are known.
+    # the first act/reset, once the batch size and device are known
     self._heading: torch.Tensor | None = None
     self._active_prev: torch.Tensor | None = None
 
@@ -190,25 +196,25 @@ class TurnSkill(Skill):
     assert self._heading is not None and self._active_prev is not None
 
     # Restart the heading count for envs that just took control this step, so the
-    # target is measured relative to where the turn began.
+    # target is measured relative to where the turn began
     newly_active = active & ~self._active_prev
     self._heading = torch.where(
       newly_active, torch.zeros_like(self._heading), self._heading
     )
 
-    # Integrate the measured yaw rate only where this skill is driving.
+    # Integrate the measured yaw rate only where this skill is driving
     yaw_rate = state[:, _ANG_VEL_Z]
     self._heading = torch.where(
       active, self._heading + yaw_rate * self.dt, self._heading
     )
 
-    # Saturating proportional heading law -> desired yaw rate.
+    # Saturating proportional heading law -> desired yaw rate
     remaining = self.target_angle - self._heading
     yaw_cmd = torch.clamp(
       self.heading_gain * remaining, -self.turn_rate, self.turn_rate
     )
 
-    # Build the arc around the forward speed the robot is *actually* carrying,
+    # Build the arc around the forward speed the robot is actually carrying,
     # nudged only gently toward the low creep speed. Centering the wheel targets on
     # the current speed (rather than commanding the low creep speed outright) is what
     # lets the yaw differential take effect immediately: the downstream rate limiter
@@ -233,7 +239,7 @@ class TurnSkill(Skill):
     self._active_prev = self._active_prev & ~mask
 
 
-def analytical_drive(speed: float = 3.5) -> DriveSkill:
+def analytical_drive(speed: float = DRIVE_SPEED) -> DriveSkill:
   """The drive expert, cruising at a given speed [m/s].
 
   The default is high enough that handing over to turn at this speed tips the tall
@@ -243,7 +249,7 @@ def analytical_drive(speed: float = 3.5) -> DriveSkill:
 
 
 def analytical_turn(
-  target_angle: float = math.pi / 2, forward_speed: float = 0.3
+  target_angle: float = TURN_ANGLE, forward_speed: float = TURN_SPEED
 ) -> TurnSkill:
   """The turn expert, arcing to a target_angle [rad] turn (default 90 deg).
 
