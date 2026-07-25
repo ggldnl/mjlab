@@ -80,16 +80,15 @@ from mjlab.rl import (
 )
 from mjlab.scene import SceneCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
-from mjlab.terrains import TerrainEntityCfg
-from mjlab.utils.lab_api.math import wrap_to_pi
-from mjlab.utils.noise import UniformNoiseCfg as Unoise
-from mjlab.viewer import ViewerConfig
-
 from mjlab.tasks.skills.experiments.diffdrive import (
   DRIVE_SPEED,
   TURN_ANGLE,
   TURN_SPEED,
 )
+from mjlab.terrains import TerrainEntityCfg
+from mjlab.utils.lab_api.math import wrap_to_pi
+from mjlab.utils.noise import UniformNoiseCfg as Unoise
+from mjlab.viewer import ViewerConfig
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv

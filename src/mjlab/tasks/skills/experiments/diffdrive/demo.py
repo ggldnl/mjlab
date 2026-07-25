@@ -51,9 +51,9 @@ from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 from mjlab.tasks.skills.architectures import ARCHITECTURES
 from mjlab.tasks.skills.experiments.diffdrive import (
+  DRIVE_SPEED,
   DRIVE_TASK_ID,
   EXPERIMENT_NAME,
-  DRIVE_SPEED,
   TURN_ANGLE,
   TURN_SPEED,
   TURN_TASK_ID,

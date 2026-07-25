@@ -30,8 +30,7 @@ import tyro
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.tasks.registry import load_env_cfg
-from mjlab.tasks.skills.architectures import ARCHITECTURES
-from mjlab.tasks.skills.architectures import TRAINERS
+from mjlab.tasks.skills.architectures import ARCHITECTURES, TRAINERS
 from mjlab.tasks.skills.experiments.diffdrive import (
   DRIVE_TASK_ID,
   ENTITY_NAME,
