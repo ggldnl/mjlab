@@ -6,6 +6,11 @@ from mjlab.asset_zoo.robots.booster_t1.t1_constants import (
   get_t1_robot_cfg as get_t1_robot_cfg,
 )
 
+# Carlike
+from mjlab.asset_zoo.robots.carlike.carlike_constants import (
+  get_carlike_robot_cfg as get_carlike_robot_cfg,
+)
+
 # Cartpole
 from mjlab.asset_zoo.robots.cartpole.cartpole_constants import (
   get_cartpole_robot_cfg as get_cartpole_robot_cfg,
