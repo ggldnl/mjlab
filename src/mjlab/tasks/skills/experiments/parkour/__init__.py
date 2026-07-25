@@ -1,18 +1,20 @@
 """
-Humanoid robot running through a corridor with small obstacles.
+Humanoid robot running through a corridor with small obstacles. Goal-conditioned
+locomotion skills (walking, sprinting, jumping) are extracted from the LAFAN1
+dataset.
 
-Two skills implemented on a Booster T1 (`mjlab.asset_zoo.robots.booster_t1`):
-- running: running at a given speed;
-- jumping: performing a small jump (this is tricky).
+Once we have the dataset, we train the individual skills with:
+
+    TODO
 
 The controller is based purely on the position of the robot along the corridor:
-- the robot is within a given distance from an obstacle -> controller starts the
-    jump skill;
-- the robot surpasses the obstacle -> controller starts the running skill again.
+- the robot is within a given distance from an obstacle
+    -> controller starts the jump skill;
+- the robot surpasses the obstacle
+    -> controller starts the walking skill again;
+- the robot has nothing in front of it for a while
+    -> controller starts sprinting.
 
-To train the skills:
-
-    uv run train Mjlab-Tracking-Booster-T1
-    uv run train Mjlab-Jumping-Booster-T1
+TODO
 
 """
