@@ -21,9 +21,8 @@ Two skills, each competent only inside its own regime:
 That gap is the whole point: a naive hand-off from spin_up to balance at the
 wrong instant (pole not yet up, or up but carrying too much angular velocity)
 fails, and the bridge's job is to hand over exactly when the pole is up and
-slow enough for the balancer's basin of attraction. Unlike the diff-drive, here
-the failure is unavoidable and graded: too much residual energy and the balancer
-loses the pole.
+slow enough for the balancer's basin of attraction. The failure is unavoidable
+and graded: too much residual energy and the balancer loses the pole.
 
 The analytical experts live in dynamics.py; they are the hand-written
 counterparts of RL skills trained from the existing Mjlab-Cartpole-Swingup
@@ -73,7 +72,7 @@ def build_pool(
   """The two-skill pool for this experiment: spin_up (id 0), then balance (id 1).
 
   Analytical experts by default (recommended: their competence is not in question).
-  With `analytical=False`, the frozen RL policies are loaded instead; a `None`
+  With analytical=False, the frozen RL policies are loaded instead; a None
   checkpoint falls back to the latest trained one for that task.
   """
   # Imported lazily so merely importing this package stays cheap (the demo imports
