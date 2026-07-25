@@ -72,9 +72,14 @@ class ViserPlayViewer(BaseViewer):
     verbosity: VerbosityLevel = VerbosityLevel.SILENT,
     viser_server: viser.ViserServer | None = None,
     checkpoint_manager: CheckpointManager | None = None,
+    info_provider: Callable[[int], str] | None = None,
   ) -> None:
     super().__init__(env, policy, frame_rate, verbosity)
     self._ckpt_mgr = checkpoint_manager
+    # Optional: given the displayed env index, returns a short line to show in the
+    # info box (e.g. the currently active skill or bridge). Kept generic so the core
+    # viewer stays agnostic to whatever the caller's policy is doing.
+    self._info_provider = info_provider
     self._term_overlays: ViserTermOverlays | None = None
     self._camera_overlays: ViserCameraOverlays | None = None
     self._debug_overlays: ViserDebugOverlays | None = None
@@ -557,10 +562,17 @@ class ViserPlayViewer(BaseViewer):
       error_line = (
         f'<br/><span style="color:#e74c3c;"><strong>Error:</strong> {first_line}</span>'
       )
+    active_line = ""
+    if self._info_provider is not None:
+      try:
+        label = self._info_provider(self._scene.env_idx)
+      except Exception:
+        label = "—"
+      active_line = f"<strong>Active:</strong> {label}<br/>"
     self._status_html.content = f"""
       <div style="font-size: 0.85em; line-height: 1.25; padding: 0 1em 0.5em 1em;">
         <strong>Status:</strong> {"Paused" if status.paused else "Running"}{capped}<br/>
-        <strong>Steps:</strong> {status.step_count}<br/>
+        {active_line}<strong>Steps:</strong> {status.step_count}<br/>
         <strong>Speed:</strong> {status.speed_label}<br/>
         <strong>Target RT:</strong> {status.target_realtime:.2f}x<br/>
         <strong>Actual RT:</strong> {rt_display} ({status.smoothed_fps:.0f} FPS){error_line}
