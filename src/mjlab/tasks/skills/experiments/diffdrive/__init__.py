@@ -43,8 +43,8 @@ if TYPE_CHECKING:
   from mjlab.tasks.skills.skill import SkillPool
 
 
-# Names shared by this experiment's train and demo entry points. `EXPERIMENT_NAME`
-# is the folder architecture checkpoints are saved under; `ENTITY_NAME` is the scene
+# Names shared by this experiment's train and demo entry points. EXPERIMENT_NAME
+# is the folder architecture checkpoints are saved under; ENTITY_NAME is the scene
 # entity the bridges harvest interrupt states from and read state off.
 EXPERIMENT_NAME = "diffdrive"
 ENTITY_NAME = "robot"
