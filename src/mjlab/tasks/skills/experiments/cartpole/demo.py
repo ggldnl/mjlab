@@ -215,7 +215,12 @@ def _run_debug(cfg: DemoConfig, env: ManagerBasedRlEnv, pool: SkillPool) -> None
     def _(event) -> None:
       selector.select(names.index(event.target.value))
 
-    ViserPlayViewer(viewer_env, debug_policy, viser_server=server).run()
+    ViserPlayViewer(
+      viewer_env,
+      debug_policy,
+      viser_server=server,
+      info_provider=lambda _idx: selector.name,
+    ).run()
 
   viewer_env.close()
 
@@ -271,7 +276,8 @@ def run_demo(cfg: DemoConfig) -> None:
   if cfg.viewer == "viser":
     from mjlab.viewer import ViserPlayViewer
 
-    ViserPlayViewer(viewer_env, viewer_policy).run()
+    # Show the running skill (or bridge) for the displayed env in the info box.
+    ViserPlayViewer(viewer_env, viewer_policy, info_provider=policy.active_label).run()
   else:
     from mjlab.viewer import NativeMujocoViewer
 
