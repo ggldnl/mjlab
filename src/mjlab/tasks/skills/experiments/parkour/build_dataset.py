@@ -31,7 +31,7 @@ Run:
   # accept the dataset terms once at
   #   https://huggingface.co/datasets/unitreerobotics/LAFAN1_Retargeting_Dataset
   # then export your token (the repo is gated, so this is required):
-  export HF_TOKEN=hf_...
+  export HF_TOKEN=hf_...  # $env:HF_TOKEN=... if on Windows Powershell
   uv run python src/mjlab/tasks/skills/experiments/lafan/build_dataset.py
 
 """
@@ -50,7 +50,7 @@ import tyro
 FPS = 30.0
 
 # Gated HuggingFace repo; the G1 CSVs live under the ``g1/`` subfolder.
-HF_REPO = "unitreerobotics/LAFAN1_Retargeting_Dataset"
+HF_REPO = "lvhaidong/LAFAN1_Retargeting_Dataset"  # I had to take this dude's dataset
 HF_BASE = f"https://huggingface.co/datasets/{HF_REPO}/resolve/main/g1"
 
 # Clips to use. Locomotion only, on purpose: some LAFAN1 clips are dancing or
@@ -58,7 +58,7 @@ HF_BASE = f"https://huggingface.co/datasets/{HF_REPO}/resolve/main/g1"
 SELECTED: tuple[str, ...] = (
   "walk1_subject1",
   "run1_subject2",
-  "sprint1_subject1",
+  "sprint1_subject2",
   "jumps1_subject1",
 )
 
