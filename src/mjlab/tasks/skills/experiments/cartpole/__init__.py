@@ -24,7 +24,7 @@ fails, and the bridge's job is to hand over exactly when the pole is up and
 slow enough for the balancer's basin of attraction. The failure is unavoidable
 and graded: too much residual energy and the balancer loses the pole.
 
-The analytical experts live in dynamics.py; they are the hand-written
+The analytical experts live in dynamics.py; they are the handwritten
 counterparts of RL skills trained from the existing Mjlab-Cartpole-Swingup
 (pole starts hanging) and Mjlab-Cartpole-Balance (pole starts upright) tasks,
 which share the observation and action spaces the analytical experts read.
@@ -47,8 +47,8 @@ if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
   from mjlab.tasks.skills.skill import SkillPool
 
-# Names shared by this experiment's train and demo entry points. `EXPERIMENT_NAME`
-# is the folder architecture checkpoints are saved under; `ENTITY_NAME` is the
+# Names shared by this experiment's train and demo entry points. EXPERIMENT_NAME
+# is the folder architecture checkpoints are saved under; ENTITY_NAME is the
 # scene entity the bridges harvest interrupt states from and read state off.
 EXPERIMENT_NAME = "cartpole"
 ENTITY_NAME = "cartpole"
