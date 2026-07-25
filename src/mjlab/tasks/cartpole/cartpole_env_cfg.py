@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-import mujoco
 import torch
 
-from mjlab.actuator.xml_actuator import XmlActuatorCfg
-from mjlab.entity import Entity, EntityArticulationInfoCfg, EntityCfg
+from mjlab.asset_zoo.robots.cartpole.cartpole_constants import get_cartpole_robot_cfg
+from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import (
   joint_pos_rel,
@@ -41,41 +39,8 @@ from mjlab.viewer import ViewerConfig
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
 
-_CARTPOLE_XML: Path = Path(__file__).parent / "cartpole.xml"
 _CART_CFG = SceneEntityCfg("cartpole", joint_names=("slider",))
 _HINGE_CFG = SceneEntityCfg("cartpole", joint_names=("hinge_1",))
-
-# Entity.
-
-
-def _get_spec() -> mujoco.MjSpec:
-  return mujoco.MjSpec.from_file(str(_CARTPOLE_XML))
-
-
-_CARTPOLE_ARTICULATION = EntityArticulationInfoCfg(
-  actuators=(XmlActuatorCfg(target_names_expr=("slider",)),),
-)
-
-_BALANCE_INIT = EntityCfg.InitialStateCfg(
-  pos=(0.0, 0.0, 0.0),
-  joint_pos={"slider": 0.0, "hinge_1": 0.0},
-  joint_vel={".*": 0.0},
-)
-
-_SWINGUP_INIT = EntityCfg.InitialStateCfg(
-  pos=(0.0, 0.0, 0.0),
-  joint_pos={"slider": 0.0, "hinge_1": math.pi},
-  joint_vel={".*": 0.0},
-)
-
-
-def _get_cartpole_cfg(swing_up: bool = False) -> EntityCfg:
-  return EntityCfg(
-    spec_fn=_get_spec,
-    articulation=_CARTPOLE_ARTICULATION,
-    init_state=_SWINGUP_INIT if swing_up else _BALANCE_INIT,
-  )
-
 
 # Observations.
 
@@ -223,7 +188,7 @@ def _make_env_cfg(swing_up: bool = False) -> ManagerBasedRlEnvCfg:
   return ManagerBasedRlEnvCfg(
     scene=SceneCfg(
       terrain=TerrainEntityCfg(terrain_type="plane"),
-      entities={"cartpole": _get_cartpole_cfg(swing_up=swing_up)},
+      entities={"cartpole": get_cartpole_robot_cfg(swing_up=swing_up)},
       num_envs=1,
       env_spacing=4.0,
     ),

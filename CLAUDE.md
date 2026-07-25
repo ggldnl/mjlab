@@ -40,7 +40,7 @@ under the "Upcoming version (not yet released)" section using
 Added/Changed/Fixed categories. Reference issues with `:issue:\`123\``
 (renders as a link to the GitHub issue).
 
-# comments style guide
+# Comments style guide
 Use plain comments, for example (python):
 
 ```
@@ -79,7 +79,7 @@ If the user edits some comment or decides to apply any other styling guide,
 let it do so, do not change the comments it produces. What I specified only
 applies to you.
 
-# commits
+# Commits
 
 For any big change you produce on a repo, at the end of your message
 suggest a commit message that describes the change.

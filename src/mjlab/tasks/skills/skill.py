@@ -12,7 +12,6 @@ what it can observe of the world, not from a self-report.
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-
 from dataclasses import asdict
 from pathlib import Path
 
@@ -77,6 +76,7 @@ class PolicySkill(Skill):
     )
     self._policy = runner.get_inference_policy(device=device)
 
+  @torch.no_grad()
   def act(self, obs: VecEnvObs, active: torch.Tensor) -> torch.Tensor:
     del active
     state = obs["actor"]
@@ -132,6 +132,7 @@ if __name__ == "__main__":
   """
 
   from dataclasses import dataclass
+
   import tyro
 
   @dataclass(frozen=True)

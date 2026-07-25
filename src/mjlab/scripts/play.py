@@ -135,22 +135,31 @@ def run_play(task_id: str, cfg: PlayConfig):
       resume_path = Path(cfg.checkpoint_file)
       if not resume_path.exists():
         raise FileNotFoundError(f"Checkpoint file not found: {resume_path}")
-      print(f"[INFO]: Loading checkpoint: {resume_path.name}")
+      print(f"[INFO]: Loading checkpoint: {resume_path}")
     else:
       if cfg.wandb_run_path is None:
-        raise ValueError(
-          "`wandb_run_path` is required when `checkpoint_file` is not provided."
+        # raise ValueError("`wandb_run_path` is required when `checkpoint_file` is not provided.")
+        checkpoints = sorted(
+          log_root_path.glob("*/*.pt"), key=lambda p: p.stat().st_mtime
         )
-      resume_path, was_cached = get_wandb_checkpoint_path(
-        log_root_path, Path(cfg.wandb_run_path), cfg.wandb_checkpoint_name
-      )
-      # Extract run_id and checkpoint name from path for display.
-      run_id = resume_path.parent.name
-      checkpoint_name = resume_path.name
-      cached_str = "cached" if was_cached else "downloaded"
-      print(
-        f"[INFO]: Loading checkpoint: {checkpoint_name} (run: {run_id}, {cached_str})"
-      )
+        if not checkpoints:
+          raise FileNotFoundError(
+            f"No checkpoint found for task '{task_id}' under {log_root_path.parent}. "
+            f"Train it first with `uv run train {task_id}`."
+          )
+        resume_path = checkpoints[-1]
+        print(f"[INFO]: Loading checkpoint: {resume_path} (auto)")
+      else:  # checkpoint_file is None, wandb_run_path is not None
+        resume_path, was_cached = get_wandb_checkpoint_path(
+          log_root_path, Path(cfg.wandb_run_path), cfg.wandb_checkpoint_name
+        )
+        # Extract run_id and checkpoint name from path for display.
+        run_id = resume_path.parent.name
+        checkpoint_name = resume_path.name
+        cached_str = "cached" if was_cached else "downloaded"
+        print(
+          f"[INFO]: Loading checkpoint: {checkpoint_name} (run: {run_id}, {cached_str})"
+        )
     log_dir = resume_path.parent
 
   if cfg.num_envs is not None:

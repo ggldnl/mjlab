@@ -5,7 +5,7 @@ from pathlib import Path
 import mujoco
 
 from mjlab import MJLAB_SRC_PATH
-from mjlab.actuator.xml_actuator import XmlActuatorCfg
+from mjlab.actuator import IdealPdActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
 ##
@@ -22,6 +22,11 @@ def get_spec() -> mujoco.MjSpec:
   robot = mujoco.MjSpec.from_file(str(DIFFDRIVE_XML))
   robot.delete(robot.geom("floor"))
   robot.delete(robot.light("light"))
+  # The env drives the wheels as velocity servos (see DIFFDRIVE_ARTICULATION),
+  # which add their own <motor> transmissions. Drop the XML's torque motors so
+  # they are not duplicated; the standalone .xml keeps them for direct use.
+  robot.delete(robot.actuator("left_wheel"))
+  robot.delete(robot.actuator("right_wheel"))
   return robot
 
 
@@ -29,13 +34,24 @@ def get_spec() -> mujoco.MjSpec:
 # Actuator config.
 ##
 
+# Velocity-servo gains for the wheels. The action commands a target wheel angular
+# velocity [rad/s]; the actuator realizes it as torque = damping * (vel_target -
+# vel), clamped to +-effort_limit. Stiffness is zero because a spinning wheel has
+# no position target. The effort limit is the torque ceiling: it keeps the wheels
+# from slipping and bounds how hard the servo can brake. The command itself is
+# acceleration-limited in the env's action term, which is what ramps the drive up
+# smoothly and makes forward momentum persist through a skill hand-off.
+WHEEL_STIFFNESS = 0.0
+WHEEL_DAMPING = 0.5
+WHEEL_EFFORT_LIMIT = 0.6
+
 DIFFDRIVE_ARTICULATION = EntityArticulationInfoCfg(
   actuators=(
-    XmlActuatorCfg(
-      target_names_expr=(
-        "left_wheel",
-        "right_wheel",
-      )
+    IdealPdActuatorCfg(
+      target_names_expr=("left_wheel", "right_wheel"),
+      stiffness=WHEEL_STIFFNESS,
+      damping=WHEEL_DAMPING,
+      effort_limit=WHEEL_EFFORT_LIMIT,
     ),
   ),
 )
