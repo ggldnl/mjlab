@@ -38,8 +38,4 @@ ARCHITECTURES: dict[int, MetaPolicyFactory] = {
 # stub, arch_2's raises until it is implemented. Typed loosely (each trainer takes
 # its own concrete MetaPolicy subclass) so the id-keyed dispatch below type-checks.
 Trainer = Callable[..., MetaPolicy]
-TRAINERS: dict[int, Trainer] = {
-  0: train_arch_0,
-  1: train_arch_1,
-  2: train_arch_2
-}
+TRAINERS: dict[int, Trainer] = {0: train_arch_0, 1: train_arch_1, 2: train_arch_2}

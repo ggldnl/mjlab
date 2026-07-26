@@ -207,12 +207,12 @@ def _run_debug(cfg: DemoConfig, env: ManagerBasedRlEnv, pool: SkillPool) -> None
   if cfg.viewer == "native":
     from mjlab.viewer import NativeMujocoViewer
 
-    print("[debug] press N in the viewer to cycle the active skill.")
+    print("[DEBUG] press N in the viewer to cycle the active skill.")
 
     def on_key(keycode: int) -> None:
       if keycode == ord("N"):
         selector.cycle()
-        print(f"[debug] active skill -> {selector.name}")
+        print(f"[DEBUG] active skill -> {selector.name}")
 
     NativeMujocoViewer(viewer_env, debug_policy, key_callback=on_key).run()
   else:
@@ -271,6 +271,7 @@ def run_demo(cfg: DemoConfig) -> None:
     run_dir = cfg.checkpoint or retrieve_latest_architecture_checkpoint(
       EXPERIMENT_NAME, cfg.architecture
     )
+    print("[INFO] selected checkpoint: ", run_dir)
     meta.load(Path(run_dir))
 
   policy = ComposedPolicy(env, controller, meta)

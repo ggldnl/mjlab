@@ -25,9 +25,12 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.tasks.skills.controller import Controller
 from mjlab.tasks.skills.skill import SkillPool
 
+# Skill ids: the pool order build_pool() registers (see __init__.py). Sprint exists
+# in the pool but this controller does not emit it yet -- a clear corridor gets RUN.
 WALK = 0
 RUN = 1
 JUMP = 2
+SPRINT = 3
 
 # Scene entity whose position along the corridor drives the decision.
 ENTITY_NAME = "robot"

@@ -67,6 +67,12 @@ def _make_turn_success(
   under the tip-over threshold at low speed. This rewards the switch-decider for
   handing over only once the robot has been braked down, not while it is still fast
   (which would tip). Reads orientation and forward speed off the entity directly.
+
+  This only means anything because the caller pairs it with the termination flags. On
+  its own it is blind to the very failure the experiment is built around: the env
+  auto-resets a tipped robot, and a freshly spawned robot is upright and stationary,
+  so an oracle reading live state after a tip reports a success. `train_switch`
+  latches terminations across the window and ANDs them in.
   """
   entity = env.scene[ENTITY_NAME]
 
@@ -99,6 +105,13 @@ class TrainConfig:
   # Bridge training runs many parallel envs; more is faster and steadier
   num_envs: int = 1024
   device: str | None = None
+
+  # Data collection. The window is the target skill's *initiation*, so it should be
+  # about as long as the hand-over window the bridge gets, not as long as the whole
+  # maneuver: at 50 Hz a 90 deg arc is over in ~40 steps, and a 200-step window would
+  # hand the discriminator mostly post-turn cruising to call "real".
+  window_steps: int = 64
+  window_episodes: int = 512
 
 
 def run_train(cfg: TrainConfig) -> None:
@@ -134,7 +147,15 @@ def run_train(cfg: TrainConfig) -> None:
   }
 
   meta = ARCHITECTURES[cfg.architecture](env, pool)
-  TRAINERS[cfg.architecture](env, pool, ENTITY_NAME, meta, success_fns)
+  TRAINERS[cfg.architecture](
+    env,
+    pool,
+    ENTITY_NAME,
+    meta,
+    success_fns,
+    window_steps=cfg.window_steps,
+    window_episodes=cfg.window_episodes,
+  )
 
   # Saving is common to all architectures: a fresh run directory, then let the
   # architecture write whatever it needs into it (arch_0 writes nothing).

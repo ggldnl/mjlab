@@ -19,7 +19,7 @@ arch_1 carries out the experiment since it has bridges to merge the individual s
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 import tyro
@@ -30,12 +30,9 @@ from mjlab.tasks.skills.architectures import ARCHITECTURES, TRAINERS
 from mjlab.tasks.skills.experiments.parkour import (
   ENTITY_NAME,
   EXPERIMENT_NAME,
-  JUMP_TASK_ID,
-  RUN_TASK_ID,
   WALK_TASK_ID,
   build_pool,
 )
-from mjlab.tasks.skills.experiments.parkour.controller import JUMP, RUN, WALK
 from mjlab.tasks.skills.utils import new_architecture_run_dir
 
 # A success oracle: given the env after a bridging window, returns a bool per env
@@ -73,14 +70,9 @@ class TrainConfig:
   # the per-target distribution-matching bridge
   architecture: int = 1
 
-  walk_task_id: str = WALK_TASK_ID
-  run_task_id: str = RUN_TASK_ID
-  jump_task_id: str = JUMP_TASK_ID
-
-  # Checkpoints for the skills. None picks the latest trained one
-  walk_checkpoint: str | None = None
-  run_checkpoint: str | None = None
-  jump_checkpoint: str | None = None
+  # Checkpoints for the skills, keyed by skill name (walk, run, jump, sprint). A
+  # skill left out falls back to its latest trained checkpoint
+  checkpoints: dict[str, str] = field(default_factory=dict)
 
   # Bridge training runs many parallel envs; more is faster and steadier
   num_envs: int = 1024
@@ -97,26 +89,19 @@ def run_train(cfg: TrainConfig) -> None:
 
   device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
 
-  # Built from the walk task; all three skills share one arena.
-  env_cfg = load_env_cfg(cfg.walk_task_id, play=True)
+  # Built from the walk task; every skill shares one arena, which is sound because
+  # they share an observation and action space (see parkour_env_cfg).
+  env_cfg = load_env_cfg(WALK_TASK_ID, play=True)
   env_cfg.scene.num_envs = cfg.num_envs
   env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
 
-  pool = build_pool(
-    env,
-    device,
-    walk_task_id=cfg.walk_task_id,
-    run_task_id=cfg.run_task_id,
-    jump_task_id=cfg.jump_task_id,
-    walk_checkpoint=cfg.walk_checkpoint,
-    run_checkpoint=cfg.run_checkpoint,
-    jump_checkpoint=cfg.jump_checkpoint,
-  )
+  pool = build_pool(env, device, checkpoints=cfg.checkpoints)
 
-  # One success oracle per target skill. Every skill needs the robot on its feet to
-  # take over, so they share the same "did not fall" test.
+  # One success oracle per target skill. Every skill here is a locomotion skill that
+  # needs the robot on its feet to take over, so they all share the same "did not
+  # fall" test.
   standing = _make_standing_success(env)
-  success_fns: dict[int, SuccessFn] = {WALK: standing, RUN: standing, JUMP: standing}
+  success_fns: dict[int, SuccessFn] = {i: standing for i in range(len(pool))}
 
   meta = ARCHITECTURES[cfg.architecture](env, pool)
   TRAINERS[cfg.architecture](env, pool, ENTITY_NAME, meta, success_fns)

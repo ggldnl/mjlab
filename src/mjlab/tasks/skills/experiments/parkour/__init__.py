@@ -1,25 +1,43 @@
-"""Humanoid running a corridor of obstacles, composed from LAFAN1 locomotion skills.
+"""Humanoid running a corridor of obstacles, composed of LAFAN1 locomotion skills.
 
-Goal-conditioned locomotion skills -- walk, run (sprint) and jump -- are extracted
-from the LAFAN1 dataset and trained as motion-tracking policies, reusing mjlab's
-tracking task as-is: each skill is the G1 flat tracking env pointed at its own clip.
-The three frozen checkpoints are the skills the bridge composes.
+Four goal-conditioned skills (walk, run, jump, sprint) are trained from LAFAN1
+and then frozen. Those four checkpoints are what the bridge composes; the corridor
+demo is what they are composed for.
 
-Building the skill clips (once):
+Each skill is trained with a goal reward plus a style reward, decoupled as in "AMP:
+Adversarial Motion Priors for Stylized Physics-Based Character Control":
 
-    # 1. segment LAFAN1 into command plateaus (needs HF_TOKEN; see build_dataset.py)
-    uv run python -m mjlab.tasks.skills.experiments.parkour.build_dataset
-    # 2. convert the chosen walk / run / jump segments to motion npz with
-    #    mjlab.scripts.csv_to_npz, saving them where the tasks below expect them
-    #    (data/lafan1_g1/skills/{walk,run,jump}.npz). You may instead point the
-    #    tracking training at any clip with --env.commands.motion.motion-file or a
-    #    WandB --registry-name, exactly as any mjlab tracking task.
+- the goal is a velocity the policy observes and is paid for realizing, so a trained
+  skill can be *driven* (the controller and the bridge steer it by writing that
+  command);
+- the style is a discriminator trained against that skill's own reference clips, so
+  "run" means the motion is indistinguishable from the LAFAN1 run cuts rather than
+  matching one clip frame by frame.
 
-Training the individual skills (standard mjlab tracking training):
+The pieces:
+
+    dataset.py           cuts LAFAN1 into per-skill reference clips with velocity labels
+    style.py             the AMP features and the discriminator
+    mdp.py               the command term and the goal/style reward terms
+    parkour_env_cfg.py   the four skill envs (one factory, four command boxes)
+    controller.py        which skill should run, from where the robot is in the corridor
+    train.py / demo.py   the bridging architecture on top of the frozen skills
+
+Build the reference clips once (needs HF_TOKEN, see dataset.py):
+
+    uv run python -m mjlab.tasks.skills.experiments.parkour.dataset
+
+Train the skills:
 
     uv run train Mjlab-Parkour-Walk
     uv run train Mjlab-Parkour-Run
     uv run train Mjlab-Parkour-Jump
+    uv run train Mjlab-Parkour-Sprint
+
+Drive a trained skill by hand. The Twist folder in the viewer has a slider per
+command channel; tick Enable and move v_fwd, or v_up for jump:
+
+    uv run play Mjlab-Parkour-Jump
 
 The controller decides the skill purely from where the robot is along the corridor,
 whose obstacle positions and shapes are known (see controller.py):
@@ -28,26 +46,28 @@ whose obstacle positions and shapes are known (see controller.py):
 - the robot has surpassed the obstacle
     -> start the walk skill again;
 - the robot has nothing in front of it for a while
-    -> start sprinting (run).
+    -> start running.
 
 The corridor-with-obstacles environment itself is not built yet; the controller is
 written against that described interface (a known obstacle layout plus the robot's
-position along the corridor).
+position along the corridor), and it does not yet emit the sprint skill.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
+from mjlab.rl import RslRlOnPolicyRunnerCfg
 from mjlab.tasks.registry import register_mjlab_task
-from mjlab.tasks.tracking.config.g1.env_cfgs import unitree_g1_flat_tracking_env_cfg
-from mjlab.tasks.tracking.config.g1.rl_cfg import unitree_g1_tracking_ppo_runner_cfg
-from mjlab.tasks.tracking.mdp import MotionCommandCfg
-from mjlab.tasks.tracking.rl import MotionTrackingOnPolicyRunner
+from mjlab.tasks.skills.experiments.parkour.parkour_env_cfg import (
+  SKILL_NAMES,
+  parkour_skill_env_cfg,
+)
+from mjlab.tasks.velocity.config.g1.rl_cfg import unitree_g1_ppo_runner_cfg
+from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 
 if TYPE_CHECKING:
-  from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
+  from mjlab.envs import ManagerBasedRlEnv
   from mjlab.tasks.skills.skill import SkillPool
 
 # Names shared by this experiment's train and demo entry points. `EXPERIMENT_NAME` is
@@ -59,45 +79,37 @@ ENTITY_NAME = "robot"
 WALK_TASK_ID = "Mjlab-Parkour-Walk"
 RUN_TASK_ID = "Mjlab-Parkour-Run"
 JUMP_TASK_ID = "Mjlab-Parkour-Jump"
+SPRINT_TASK_ID = "Mjlab-Parkour-Sprint"
 
-# Per-skill motion clips (npz). Built from LAFAN1 as described above; point these at
-# your generated files (or override the motion_file at train time). The clips only
-# need to exist to *build the env* (train the skill or load it into the pool) -- the
-# registrations below are cheap and do not read them.
-_MOTION_ROOT = Path("data/lafan1_g1/skills")
-WALK_MOTION = str(_MOTION_ROOT / "walk.npz")
-RUN_MOTION = str(_MOTION_ROOT / "run.npz")
-JUMP_MOTION = str(_MOTION_ROOT / "jump.npz")
+# Skill name -> its task id. The order is the pool order, so it is also the skill ids
+# the controller emits and the bridges are conditioned on (see `build_pool`).
+SKILL_TASK_IDS: dict[str, str] = {
+  "walk": WALK_TASK_ID,
+  "run": RUN_TASK_ID,
+  "jump": JUMP_TASK_ID,
+  "sprint": SPRINT_TASK_ID,
+}
 
-
-def _skill_env_cfg(motion_file: str, play: bool = False) -> ManagerBasedRlEnvCfg:
-  """The G1 flat tracking env, pointed at one skill's clip."""
-  cfg = unitree_g1_flat_tracking_env_cfg(play=play)
-  motion_cmd = cfg.commands["motion"]
-  assert isinstance(motion_cmd, MotionCommandCfg)
-  motion_cmd.motion_file = motion_file
-  return cfg
+assert set(SKILL_TASK_IDS) == set(SKILL_NAMES), (
+  f"Every skill in parkour_env_cfg needs a task id: {sorted(SKILL_NAMES)}."
+)
 
 
-def _skill_rl_cfg(experiment_name: str):
-  """The G1 tracking PPO config, under this skill's own experiment name so its
+def _skill_rl_cfg(skill: str) -> RslRlOnPolicyRunnerCfg:
+  """The G1 velocity PPO config, under this skill's own experiment name so its
   checkpoints land in their own `logs/rsl_rl/<experiment_name>/` directory."""
-  cfg = unitree_g1_tracking_ppo_runner_cfg()
-  cfg.experiment_name = experiment_name
+  cfg = unitree_g1_ppo_runner_cfg()
+  cfg.experiment_name = f"parkour_{skill}"
   return cfg
 
 
-for _task_id, _motion, _experiment in (
-  (WALK_TASK_ID, WALK_MOTION, "parkour_walk"),
-  (RUN_TASK_ID, RUN_MOTION, "parkour_run"),
-  (JUMP_TASK_ID, JUMP_MOTION, "parkour_jump"),
-):
+for _skill, _task_id in SKILL_TASK_IDS.items():
   register_mjlab_task(
     task_id=_task_id,
-    env_cfg=_skill_env_cfg(_motion),
-    play_env_cfg=_skill_env_cfg(_motion, play=True),
-    rl_cfg=_skill_rl_cfg(_experiment),
-    runner_cls=MotionTrackingOnPolicyRunner,
+    env_cfg=parkour_skill_env_cfg(_skill),
+    play_env_cfg=parkour_skill_env_cfg(_skill, play=True),
+    rl_cfg=_skill_rl_cfg(_skill),
+    runner_cls=VelocityOnPolicyRunner,
   )
 
 
@@ -105,29 +117,25 @@ def build_pool(
   env: ManagerBasedRlEnv,
   device: str,
   *,
-  walk_task_id: str = WALK_TASK_ID,
-  run_task_id: str = RUN_TASK_ID,
-  jump_task_id: str = JUMP_TASK_ID,
-  walk_checkpoint: str | None = None,
-  run_checkpoint: str | None = None,
-  jump_checkpoint: str | None = None,
+  checkpoints: dict[str, str] | None = None,
 ) -> SkillPool:
-  """The three-skill pool for this experiment: walk (id 0), run (id 1), jump (id 2).
+  """The four-skill pool: walk (0), run (1), jump (2), sprint (3).
 
-  Each skill is a frozen motion-tracking checkpoint; a `None` checkpoint falls back to
-  the latest trained one for that task. (There is no analytical variant here -- these
-  skills are learned.)
+  Each skill is a frozen checkpoint of the matching task. `checkpoints` overrides
+  where one is loaded from, keyed by skill name; any skill left out falls back to the
+  latest trained checkpoint for its task. (There is no analytical variant here --
+  these skills are learned.)
+
+  Every skill is evaluated against the one `env` the caller built, which is sound
+  because all four tasks share an observation and action space by construction (see
+  parkour_env_cfg).
   """
   from mjlab.tasks.skills.skill import PolicySkill, SkillPool
   from mjlab.tasks.skills.utils import retrieve_latest_checkpoint
 
-  walk_ckpt = walk_checkpoint or retrieve_latest_checkpoint(walk_task_id)
-  run_ckpt = run_checkpoint or retrieve_latest_checkpoint(run_task_id)
-  jump_ckpt = jump_checkpoint or retrieve_latest_checkpoint(jump_task_id)
-  return SkillPool(
-    [
-      PolicySkill("walk", walk_task_id, walk_ckpt, env, device),
-      PolicySkill("run", run_task_id, run_ckpt, env, device),
-      PolicySkill("jump", jump_task_id, jump_ckpt, env, device),
-    ]
-  )
+  checkpoints = checkpoints or {}
+  skills = []
+  for skill, task_id in SKILL_TASK_IDS.items():
+    checkpoint = checkpoints.get(skill) or retrieve_latest_checkpoint(task_id)
+    skills.append(PolicySkill(skill, task_id, checkpoint, env, device))
+  return SkillPool(skills)

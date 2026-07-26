@@ -84,7 +84,20 @@ class AIRLDiscriminator(nn.Module):
   Splitting into g and h keeps two questions apart: `h` asks "is this the kind of state
   the target skill would be in?", `g` asks "given the state, is this the move it would
   make?". A single discriminator would blend them into one, less informative, number.
+
+  Inputs are standardized before either net sees them. Observations and actions come
+  in whatever units the experiment uses (the diffdrive commands wheel velocities in
+  the tens of rad/s), and feeding those raw into a freshly initialized MLP saturates
+  it on the first batch. `fit_normalization` sets the statistics from the expert data
+  once, and they are buffers so they travel with a checkpoint.
   """
+
+  # Declared so the registered buffers below have a type; `register_buffer` alone
+  # leaves them looking like `Tensor | Module` to a checker.
+  obs_mean: torch.Tensor
+  obs_std: torch.Tensor
+  action_mean: torch.Tensor
+  action_std: torch.Tensor
 
   def __init__(
     self, obs_dim: int, action_dim: int, hidden_dims: tuple[int, ...], gamma: float
@@ -93,6 +106,18 @@ class AIRLDiscriminator(nn.Module):
     self.gamma = gamma
     self.g = _mlp(obs_dim + action_dim, hidden_dims, 1)  # obs+action look right?
     self.h = _mlp(obs_dim, hidden_dims, 1)  # how good is this obs?
+    self.register_buffer("obs_mean", torch.zeros(obs_dim))
+    self.register_buffer("obs_std", torch.ones(obs_dim))
+    self.register_buffer("action_mean", torch.zeros(action_dim))
+    self.register_buffer("action_std", torch.ones(action_dim))
+
+  @torch.no_grad()
+  def fit_normalization(self, obs: torch.Tensor, actions: torch.Tensor) -> None:
+    """Set the input statistics from a batch of expert transitions."""
+    self.obs_mean.copy_(obs.mean(dim=0))
+    self.obs_std.copy_(obs.std(dim=0).clamp_min(1e-3))
+    self.action_mean.copy_(actions.mean(dim=0))
+    self.action_std.copy_(actions.std(dim=0).clamp_min(1e-3))
 
   def f(
     self,
@@ -101,9 +126,12 @@ class AIRLDiscriminator(nn.Module):
     done: torch.Tensor,
     next_obs: torch.Tensor,
   ) -> torch.Tensor:
-    g = self.g(torch.cat([obs, actions], dim=-1)).squeeze(-1)
-    h = self.h(obs).squeeze(-1)
-    h_next = self.h(next_obs).squeeze(-1)
+    obs_n = (obs - self.obs_mean) / self.obs_std
+    next_obs_n = (next_obs - self.obs_mean) / self.obs_std
+    actions_n = (actions - self.action_mean) / self.action_std
+    g = self.g(torch.cat([obs_n, actions_n], dim=-1)).squeeze(-1)
+    h = self.h(obs_n).squeeze(-1)
+    h_next = self.h(next_obs_n).squeeze(-1)
     return g + self.gamma * (1.0 - done.float()) * h_next - h
 
   def logits(self, batch: DiscBatch) -> torch.Tensor:

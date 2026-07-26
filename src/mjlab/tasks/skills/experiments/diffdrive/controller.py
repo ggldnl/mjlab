@@ -19,7 +19,7 @@ class DiffdriveController(Controller):
   """Alternates drive <-> turn on fixed timers, per env."""
 
   def __init__(
-    self, pool: SkillPool, straight_steps: int = 1000, turn_steps: int = 1000
+    self, pool: SkillPool, straight_steps: int = 1000, turn_steps: int = 200
   ) -> None:
     super().__init__(pool)
     self.straight_steps = straight_steps
