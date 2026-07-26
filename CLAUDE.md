@@ -79,6 +79,9 @@ If the user edits some comment or decides to apply any other styling guide,
 let it do so, do not change the comments it produces. What I specified only
 applies to you.
 
+Avoid hyphen, en dashes and em dashes in comments as punctuation marks
+(you might still use them in formulas).
+
 # Commits
 
 For any big change you produce on a repo, at the end of your message
