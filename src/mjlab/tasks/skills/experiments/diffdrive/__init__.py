@@ -38,6 +38,13 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
+from mjlab.tasks.skills.architectures.arch_1.config import (
+  BridgePhase,
+  BridgeTraining,
+  SwitchPhase,
+)
+from mjlab.tasks.skills.windows import SkillWindowSpec, WindowPlan
+
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
   from mjlab.tasks.skills.skill import SkillPool
@@ -58,6 +65,69 @@ TURN_TASK_ID = "Mjlab-Diffdrive-Turn"
 DRIVE_SPEED = 2.5  # [m/s], high enough that a naive hand-off to turn tips
 TURN_ANGLE = math.pi / 2  # [rad], the 90 deg arc turn
 TURN_SPEED = 0.3  # [m/s], the arc's low creep speed
+
+
+# How much of each skill is recorded around a hand-over. Shared by every architecture's
+# training and by inspect.py.
+#
+# Control is 50 Hz, so 32 steps is 0.64 s: long enough to see the robot doing something
+# rather than sitting in one pose. The two skills get different cut ranges because they
+# reach their interesting behavior at different times.
+#
+# drive ramps at 2.5 m/s^2, so it passes 1.6 m/s at step 32 and saturates at its 2.5 m/s
+# cruise around step 50. Cutting between 32 and 96 hands the bridge a robot carrying
+# between two thirds and all of drive's momentum, which is the whole range it has to
+# cope with. Cutting later would only repeat the cruise, and cutting earlier would hand
+# it a robot barely moving, which turn can already take on its own.
+#
+# turn finishes its 90 degree arc in about 40 steps and then just creeps, so its range
+# stops there: past that, every cut is the same slow forward crawl. Its closing window
+# is shorter so the range can start early enough to catch the arc while it is still
+# happening.
+#
+# Neither range matches when the demo controller actually switches (300 steps of drive,
+# 150 of turn). It does not have to, because both skills reach a steady state well
+# before then and every later cut is a repeat of one already covered: drive is at cruise
+# by step 50, turn is creeping by step 45. A skill that never settles would need a range
+# that reaches as far as the controller really goes.
+#
+# `overrun` is zero for both: no architecture here asks to see what a skill would have
+# gone on to do had control not been taken away. Raise it for one that does.
+WINDOWS = WindowPlan(
+  {
+    "drive": SkillWindowSpec(
+      opening=32, closing=32, overrun=0, interrupt_range=(32, 96)
+    ),
+    "turn": SkillWindowSpec(
+      opening=32, closing=20, overrun=0, interrupt_range=(20, 45)
+    ),
+  }
+)
+
+# How long to train. Small, because this experiment is small: both skills are analytical
+# and the bridge has one thing to learn. A humanoid would want an order of magnitude
+# more of everything here.
+#
+# eval_steps is set by the slower of the two hand-off directions. Handing into turn at
+# speed tips within 24 to 32 steps. Handing into drive is slower to go wrong and less
+# obvious: the wheel command is acceleration-limited per wheel, so drive ramping both
+# wheels up from turn's asymmetric speeds preserves the difference between them for the
+# ~47 steps it takes to reach cruise, and the robot arcs harder and harder until it
+# rolls.
+TRAINING = BridgeTraining(
+  bridge=BridgePhase(
+    num_iterations=300,
+    num_windows=512,
+    num_interrupts=4096
+  ),
+  switch=SwitchPhase(
+    num_iterations=600,
+    num_interrupts=4096,
+    max_transition_steps=64,
+    eval_steps=96,
+    epsilon_decay_iterations=150,
+  ),
+)
 
 
 from mjlab.tasks.registry import register_mjlab_task

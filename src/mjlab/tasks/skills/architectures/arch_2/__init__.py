@@ -1,51 +1,29 @@
-"""Architecture 2: just one bridge.
+"""Architecture 2: arch_1's bridge, with nothing hand-written telling it when to let go.
 
-One bridge to rule them all. Different skills might require different observations;
-to accomodate this, the universal bridge will ...
+Same machinery as arch_1 (one bridge actor and one switch-decider per target skill,
+same networks, same checkpoint layout) and the same phase 1: the bridge learns to move
+like the target skill by playing a copying game against a discriminator, which needs no
+notion of success at all.
 
-Training is:
-- Step 1:
-- Step 2:
-- ...
+The difference is phase 2. arch_1 judges a hand-over with a test the experiment author
+wrote by hand, one per skill, which is both the most controllable and the most fragile
+part of it: the test has to know what "safe to take over from" means, and if it is
+wrong the decider optimizes the wrong thing without any sign that it has. arch_2 throws
+that away and keeps only what the environment already reports: a hand-over was good if
+the episode did not end. Nothing to write, nothing to tune.
 
+That works exactly when the failure being bridged around is a termination, which is the
+case the experiments are built on (the diffdrive tips, a robot falls). It says nothing
+on a task that never terminates, and there the decider will learn no more than "commit
+before the window runs out". arch_3 is the answer for those.
 """
 
 from __future__ import annotations
 
-import torch
-
-from mjlab.envs import ManagerBasedRlEnv, VecEnvObs
-from mjlab.tasks.skills.meta import MetaPolicy
-from mjlab.tasks.skills.skill import SkillPool
+from mjlab.tasks.skills.architectures.arch_1 import Arch1
 
 
-class Arch2(MetaPolicy):
-  """Meta policy holding the one and only bridge."""
+class Arch2(Arch1):
+  """arch_1's meta policy. Only how its switch-decider was trained differs."""
 
-  def __init__(
-    self,
-    env: ManagerBasedRlEnv,
-    pool: SkillPool,
-  ) -> None:
-
-    self.bridge = None
-
-    super().__init__(env, pool)
-
-  @torch.no_grad()
-  def bridge_step(
-    self,
-    obs: VecEnvObs,
-    source: torch.Tensor,
-    target: torch.Tensor,
-    active: torch.Tensor,
-  ) -> tuple[torch.Tensor, torch.Tensor]:
-
-    del source  # Source-agnostic: one bridge per target, whatever it came from
-
-    # Homogeneous-batch assumption: the mid-bridge envs all head to the same target
-    # (the composition switches every env on the same schedule), so one target's
-    # actor/switch serves the batch.
-    # TODO Revisit if envs can bridge to different targets at once
-
-    raise ValueError("Not implemented")
+  _CHECKPOINT = "arch_2.pt"

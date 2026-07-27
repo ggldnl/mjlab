@@ -43,6 +43,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from mjlab.tasks.skills.architectures.arch_1.config import (
+  BridgePhase,
+  BridgeTraining,
+  SwitchPhase,
+)
+from mjlab.tasks.skills.windows import SkillWindowSpec, WindowPlan
+
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
   from mjlab.tasks.skills.skill import SkillPool
@@ -57,6 +64,52 @@ ENTITY_NAME = "cartpole"
 # from the swingup task so the pole starts hanging and spin_up has a job.
 SPINUP_TASK_ID = "Mjlab-Cartpole-Swingup"
 BALANCE_TASK_ID = "Mjlab-Cartpole-Balance"
+
+
+# How much of each skill is recorded around a hand-over. Shared by every architecture's
+# training and by inspect.py, so what you watch is what is trained on.
+#
+# Control runs at 20 Hz, so 20 steps is a second: enough to see a whole up-and-over
+# rather than a snapshot. spin_up gets the wide cut range, from one second to six
+# seconds in, which covers the pole hanging and being pumped, swinging wide, and
+# arriving near the top. That spread is the point of this experiment: the balancer can
+# catch the pole from some of those moments and not others, and it is the same pole
+# angle at very different speeds.
+#
+# balance is almost never the skill handed away from here, and when it is there is
+# nothing to wait for: it holds the pole still, so every moment looks the same. Its
+# range is short and its closing window shorter, since there is no build-up to record.
+#
+# `overrun` is zero for both: no architecture here asks to see what a skill would have
+# gone on to do had control not been taken away. Raise it for one that does.
+WINDOWS = WindowPlan(
+  {
+    "spin_up": SkillWindowSpec(
+      opening=20, closing=20, overrun=0, interrupt_range=(20, 120)
+    ),
+    "balance": SkillWindowSpec(
+      opening=20, closing=10, overrun=0, interrupt_range=(10, 40)
+    ),
+  }
+)
+
+# How long to train. Small, because this experiment is small. eval_steps is two seconds
+# of control, long enough for a pole the balancer did not really catch to be visibly
+# falling by the time the hand-over is judged.
+#
+# Note this task never terminates, so architecture 2 (which judges a hand-over purely by
+# survival) has nothing to learn from here. Architecture 3 is the one to compare against
+# architecture 1 on the cart-pole.
+TRAINING = BridgeTraining(
+  bridge=BridgePhase(num_iterations=300, num_windows=512, num_interrupts=4096),
+  switch=SwitchPhase(
+    num_iterations=600,
+    num_interrupts=4096,
+    max_transition_steps=40,
+    eval_steps=40,
+    epsilon_decay_iterations=150,
+  ),
+)
 
 
 def build_pool(

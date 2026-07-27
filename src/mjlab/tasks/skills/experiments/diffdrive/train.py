@@ -31,11 +31,14 @@ import tyro
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.tasks.registry import load_env_cfg
 from mjlab.tasks.skills.architectures import ARCHITECTURES, TRAINERS
+from mjlab.tasks.skills.architectures.arch_1.config import BridgeTraining
 from mjlab.tasks.skills.experiments.diffdrive import (
   DRIVE_TASK_ID,
   ENTITY_NAME,
   EXPERIMENT_NAME,
+  TRAINING,
   TURN_TASK_ID,
+  WINDOWS,
   build_pool,
 )
 from mjlab.tasks.skills.experiments.diffdrive.controller import DRIVE_STRAIGHT, TURN
@@ -58,7 +61,10 @@ def _always_success(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def _make_drive_success(
-  env: ManagerBasedRlEnv, max_tilt: float = 0.4, max_speed: float = 0.15, max_yaw_rate: float = 0.2,
+  env: ManagerBasedRlEnv,
+  max_tilt: float = 0.4,
+  max_speed: float = 0.15,
+  max_yaw_rate: float = 0.2,
 ) -> SuccessFn:
   """Hand-off into drive succeeds when the robot has returned to drive's
   training distribution: upright, nearly stopped, and no longer turning.
@@ -66,18 +72,12 @@ def _make_drive_success(
   entity = env.scene[ENTITY_NAME]
 
   def success(env: ManagerBasedRlEnv) -> torch.Tensor:
-    tilt = torch.acos(
-      (-entity.data.projected_gravity_b[:, 2]).clamp(-1.0, 1.0)
-    )
+    tilt = torch.acos((-entity.data.projected_gravity_b[:, 2]).clamp(-1.0, 1.0))
 
     forward_speed = entity.data.root_link_lin_vel_b[:, 0].abs()
     yaw_rate = entity.data.root_link_ang_vel_b[:, 2].abs()
 
-    return (
-            (tilt < max_tilt)
-            & (forward_speed < max_speed)
-            & (yaw_rate < max_yaw_rate)
-    )
+    return (tilt < max_tilt) & (forward_speed < max_speed) & (yaw_rate < max_yaw_rate)
 
   return success
 
@@ -131,12 +131,11 @@ class TrainConfig:
   num_envs: int = 4096
   device: str | None = None
 
-  # Most important parameters follow
-
-  # Data collection. The window is the target skill's initiation, so it should be
-  # about as long as the hand-over window the bridge gets
-  window_steps: int = 64
-  window_episodes: int = 512
+  # How long to train, defaulting to what this experiment declares in __init__.py.
+  # Every field is reachable from the command line, e.g.
+  # --training.bridge.num-iterations 1000. The window plan lives beside it there; it is
+  # keyed by skill name, so it is edited in __init__.py rather than overridden here
+  training: BridgeTraining = TRAINING
 
 
 def run_train(cfg: TrainConfig) -> None:
@@ -173,13 +172,7 @@ def run_train(cfg: TrainConfig) -> None:
 
   meta = ARCHITECTURES[cfg.architecture](env, pool)
   TRAINERS[cfg.architecture](
-    env,
-    pool,
-    ENTITY_NAME,
-    meta,
-    success_fns,
-    window_steps=cfg.window_steps,
-    window_episodes=cfg.window_episodes,
+    env, pool, ENTITY_NAME, meta, success_fns, WINDOWS, cfg.training
   )
 
   # Saving is common to all architectures: a fresh run directory, then let the

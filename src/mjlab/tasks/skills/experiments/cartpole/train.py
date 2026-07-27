@@ -29,25 +29,19 @@ import tyro
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.tasks.registry import load_env_cfg
-from mjlab.tasks.skills.architectures import ARCHITECTURES
-from mjlab.tasks.skills.architectures.arch_0.train import train as train_arch_0
-from mjlab.tasks.skills.architectures.arch_1.train import train as train_arch_1
-from mjlab.tasks.skills.architectures.arch_2.train import train as train_arch_2
+from mjlab.tasks.skills.architectures import ARCHITECTURES, TRAINERS
+from mjlab.tasks.skills.architectures.arch_1.config import BridgeTraining
 from mjlab.tasks.skills.experiments.cartpole import (
   BALANCE_TASK_ID,
   ENTITY_NAME,
   EXPERIMENT_NAME,
   SPINUP_TASK_ID,
+  TRAINING,
+  WINDOWS,
   build_pool,
 )
 from mjlab.tasks.skills.experiments.cartpole.controller import BALANCE, SPIN_UP
-from mjlab.tasks.skills.meta import MetaPolicy
 from mjlab.tasks.skills.utils import new_architecture_run_dir
-
-# Every architecture exposes the same train(env, pool, entity_name, meta,
-# success_fns) entry point; this maps an architecture id to it
-Trainer = Callable[..., MetaPolicy]
-TRAINERS: dict[int, Trainer] = {0: train_arch_0, 1: train_arch_1, 2: train_arch_2}
 
 # A success oracle: given the env after a bridging window, returns a bool per env
 # saying whether the target skill actually took over safely. Privileged and external,
@@ -107,6 +101,12 @@ class TrainConfig:
   num_envs: int = 1024
   device: str | None = None
 
+  # How long to train, defaulting to what this experiment declares in __init__.py.
+  # Every field is reachable from the command line, e.g.
+  # --training.bridge.num-iterations 1000. The window plan lives beside it there; it is
+  # keyed by skill name, so it is edited in __init__.py rather than overridden here
+  training: BridgeTraining = TRAINING
+
 
 def run_train(cfg: TrainConfig) -> None:
   import mjlab.tasks  # noqa: F401  (populates the task registry)
@@ -142,7 +142,9 @@ def run_train(cfg: TrainConfig) -> None:
   }
 
   meta = ARCHITECTURES[cfg.architecture](env, pool)
-  TRAINERS[cfg.architecture](env, pool, ENTITY_NAME, meta, success_fns)
+  TRAINERS[cfg.architecture](
+    env, pool, ENTITY_NAME, meta, success_fns, WINDOWS, cfg.training
+  )
 
   # Saving is common to all architectures: a fresh run directory, then let the
   # architecture write whatever it needs into it (arch_0 writes nothing)
