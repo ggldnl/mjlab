@@ -55,7 +55,7 @@ DRIVE_TASK_ID = "Mjlab-Diffdrive-Drive"
 TURN_TASK_ID = "Mjlab-Diffdrive-Turn"
 
 # Analytical skill defaults, shared by train and demo.
-DRIVE_SPEED = 3.5  # [m/s], high enough that a naive hand-off to turn tips
+DRIVE_SPEED = 2.5  # [m/s], high enough that a naive hand-off to turn tips
 TURN_ANGLE = math.pi / 2  # [rad], the 90 deg arc turn
 TURN_SPEED = 0.3  # [m/s], the arc's low creep speed
 

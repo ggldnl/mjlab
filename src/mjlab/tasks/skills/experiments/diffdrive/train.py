@@ -57,6 +57,31 @@ def _always_success(env: ManagerBasedRlEnv) -> torch.Tensor:
   return torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
 
 
+def _make_drive_success(
+  env: ManagerBasedRlEnv, max_tilt: float = 0.4, max_speed: float = 0.15, max_yaw_rate: float = 0.2,
+) -> SuccessFn:
+  """Hand-off into drive succeeds when the robot has returned to drive's
+  training distribution: upright, nearly stopped, and no longer turning.
+  """
+  entity = env.scene[ENTITY_NAME]
+
+  def success(env: ManagerBasedRlEnv) -> torch.Tensor:
+    tilt = torch.acos(
+      (-entity.data.projected_gravity_b[:, 2]).clamp(-1.0, 1.0)
+    )
+
+    forward_speed = entity.data.root_link_lin_vel_b[:, 0].abs()
+    yaw_rate = entity.data.root_link_ang_vel_b[:, 2].abs()
+
+    return (
+            (tilt < max_tilt)
+            & (forward_speed < max_speed)
+            & (yaw_rate < max_yaw_rate)
+    )
+
+  return success
+
+
 def _make_turn_success(
   env: ManagerBasedRlEnv, max_tilt: float = 0.4, max_speed: float = 0.6
 ) -> SuccessFn:
@@ -103,13 +128,13 @@ class TrainConfig:
   turn_checkpoint: str | None = None
 
   # Bridge training runs many parallel envs; more is faster and steadier
-  num_envs: int = 1024
+  num_envs: int = 4096
   device: str | None = None
 
-  # Data collection. The window is the target skill's *initiation*, so it should be
-  # about as long as the hand-over window the bridge gets, not as long as the whole
-  # maneuver: at 50 Hz a 90 deg arc is over in ~40 steps, and a 200-step window would
-  # hand the discriminator mostly post-turn cruising to call "real".
+  # Most important parameters follow
+
+  # Data collection. The window is the target skill's initiation, so it should be
+  # about as long as the hand-over window the bridge gets
   window_steps: int = 64
   window_episodes: int = 512
 
@@ -142,7 +167,7 @@ def run_train(cfg: TrainConfig) -> None:
   # so it gets the real "is the robot upright and slow?" test; drive gets the trivial
   # one.
   success_fns: dict[int, SuccessFn] = {
-    DRIVE_STRAIGHT: _always_success,
+    DRIVE_STRAIGHT: _make_drive_success(env),
     TURN: _make_turn_success(env),
   }
 
