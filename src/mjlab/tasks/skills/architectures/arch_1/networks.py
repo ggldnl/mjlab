@@ -32,6 +32,19 @@ GAUSSIAN_DISTRIBUTION_CFG = {
 }
 
 
+def bridge_obs_td(state: torch.Tensor) -> TensorDict:
+  """Pack an already-projected state into the TensorDict a bridge's nets read.
+
+  The actor and the throwaway critic PPO needs are built against the groups in
+  `OBS_GROUPS`, so both entries hold the same vector: the experiment's state view of
+  the observation (see view.py). There is no privileged critic input here on purpose --
+  the bridge is being taught to match a distribution the discriminator judges on this
+  exact vector, and a critic seeing more than the discriminator does would be valuing
+  something the reward cannot express.
+  """
+  return TensorDict({"actor": state, "critic": state}, batch_size=[int(state.shape[0])])
+
+
 def _mlp(
   input_dim: int, hidden_dims: tuple[int, ...], output_dim: int
 ) -> nn.Sequential:
@@ -90,6 +103,17 @@ class AIRLDiscriminator(nn.Module):
   the tens of rad/s), and feeding those raw into a freshly initialized MLP saturates
   it on the first batch. `fit_normalization` sets the statistics from the expert data
   once, and they are buffers so they travel with a checkpoint.
+
+  The standardized values are then clipped, which matters more than it looks. A skill's
+  own behavior is nearly constant along some channels -- the diffdrive's `drive` holds
+  lateral velocity and roll rate at zero to within a thousandth -- so dividing by that
+  channel's expert standard deviation does the opposite of what normalizing is for: it
+  multiplies the bridge's (perfectly ordinary) deviation by a thousand. The states a
+  bridge is dropped into then arrive twenty-odd standard deviations out, the
+  discriminator separates the two halves on the first batch without training, and the
+  reward `softplus(logit)` is flat zero from iteration one. Clipping bounds every
+  channel's contribution, so a degenerate one can still say "the bridge is off here"
+  without drowning out the channels that carry the actual motion.
   """
 
   # Declared so the registered buffers below have a type; `register_buffer` alone
@@ -100,10 +124,16 @@ class AIRLDiscriminator(nn.Module):
   action_std: torch.Tensor
 
   def __init__(
-    self, obs_dim: int, action_dim: int, hidden_dims: tuple[int, ...], gamma: float
+    self,
+    obs_dim: int,
+    action_dim: int,
+    hidden_dims: tuple[int, ...],
+    gamma: float,
+    input_clip: float = 10.0,
   ) -> None:
     super().__init__()
     self.gamma = gamma
+    self.input_clip = input_clip
     self.g = _mlp(obs_dim + action_dim, hidden_dims, 1)  # obs+action look right?
     self.h = _mlp(obs_dim, hidden_dims, 1)  # how good is this obs?
     self.register_buffer("obs_mean", torch.zeros(obs_dim))
@@ -119,6 +149,11 @@ class AIRLDiscriminator(nn.Module):
     self.action_mean.copy_(actions.mean(dim=0))
     self.action_std.copy_(actions.std(dim=0).clamp_min(1e-3))
 
+  def normalize_obs(self, obs: torch.Tensor) -> torch.Tensor:
+    """Standardize and clip an observation the way both nets read it."""
+    z = (obs - self.obs_mean) / self.obs_std
+    return z.clamp(-self.input_clip, self.input_clip)
+
   def f(
     self,
     obs: torch.Tensor,
@@ -126,9 +161,11 @@ class AIRLDiscriminator(nn.Module):
     done: torch.Tensor,
     next_obs: torch.Tensor,
   ) -> torch.Tensor:
-    obs_n = (obs - self.obs_mean) / self.obs_std
-    next_obs_n = (next_obs - self.obs_mean) / self.obs_std
-    actions_n = (actions - self.action_mean) / self.action_std
+    obs_n = self.normalize_obs(obs)
+    next_obs_n = self.normalize_obs(next_obs)
+    actions_n = ((actions - self.action_mean) / self.action_std).clamp(
+      -self.input_clip, self.input_clip
+    )
     g = self.g(torch.cat([obs_n, actions_n], dim=-1)).squeeze(-1)
     h = self.h(obs_n).squeeze(-1)
     h_next = self.h(next_obs_n).squeeze(-1)

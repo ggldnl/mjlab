@@ -51,6 +51,7 @@ from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 from mjlab.tasks.skills.architectures import ARCHITECTURES
 from mjlab.tasks.skills.experiments.diffdrive import (
+  BRIDGE_VIEW,
   DRIVE_SPEED,
   DRIVE_TASK_ID,
   EXPERIMENT_NAME,
@@ -263,7 +264,8 @@ def run_demo(cfg: DemoConfig) -> None:
   controller = DiffdriveController(
     pool, straight_steps=cfg.straight_steps, turn_steps=cfg.turn_steps
   )
-  meta = ARCHITECTURES[cfg.architecture](env, pool)
+  # The same view training used: the networks in the checkpoint are sized by it.
+  meta = ARCHITECTURES[cfg.architecture](env, pool, BRIDGE_VIEW.resolve(env))
 
   # Every architecture but the baseline carries trained state that must be restored.
   # The checkpoint is a run directory from train.py; default to the latest one.
@@ -285,20 +287,18 @@ def run_demo(cfg: DemoConfig) -> None:
     env, clip_actions=load_rl_cfg(cfg.drive_task_id).clip_actions
   )
 
-  # The viewer's PolicyProtocol types its obs loosely; wrap the composition in a
-  # plain callable, as skill.py's viewer does, so the dict-typed __call__ fits.
-  def viewer_policy(obs) -> torch.Tensor:
-    return policy(obs)
-
+  # Handed over as-is rather than wrapped in a lambda: the viewer's reset button calls
+  # `policy.reset`, and a wrapper hides it, leaving the composition committed to
+  # whatever skill it was running before the reset.
   if cfg.viewer == "viser":
     from mjlab.viewer import ViserPlayViewer
 
     # Show the running skill (or bridge) for the displayed env in the info box.
-    ViserPlayViewer(viewer_env, viewer_policy, info_provider=policy.active_label).run()
+    ViserPlayViewer(viewer_env, policy, info_provider=policy.active_label).run()
   else:
     from mjlab.viewer import NativeMujocoViewer
 
-    NativeMujocoViewer(viewer_env, viewer_policy).run()
+    NativeMujocoViewer(viewer_env, policy).run()
 
   viewer_env.close()
 

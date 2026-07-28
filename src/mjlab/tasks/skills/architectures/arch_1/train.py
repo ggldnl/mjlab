@@ -18,6 +18,13 @@ longer look at itself gets one without the others having to change. The training
 comes from a `BridgeTraining` the experiment declares, so a cart-pole and a humanoid can
 want very different numbers without either being hard-coded here.
 
+Everything the bridge sees, is judged on and is rewarded for goes through the meta
+policy's `StateView` (see view.py): the recorded windows, the discriminator, the actor
+and the switch-decider all read the same projection of the observation. That has to be
+one projection rather than four, because AIRL rewards the actor for producing what the
+discriminator cannot separate, and a channel one of them sees and the other does not is
+either an unreachable target or a free giveaway.
+
 A note on judging a hand-over, because it is easy to get silently wrong. The env
 auto-resets an environment the moment it terminates, so by the end of a hand-over window
 a robot that fell over is already upright again, and anything read from live state then
@@ -34,7 +41,6 @@ import torch
 from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
-from tensordict import TensorDict
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.tasks.skills.architectures.arch_1 import Arch1
@@ -49,6 +55,7 @@ from mjlab.tasks.skills.architectures.arch_1.networks import (
   DiscBatch,
   DoubleDQN,
   SwitchQNetwork,
+  bridge_obs_td,
 )
 from mjlab.tasks.skills.architectures.arch_1.outcomes import (
   OracleOutcome,
@@ -57,6 +64,7 @@ from mjlab.tasks.skills.architectures.arch_1.outcomes import (
 )
 from mjlab.tasks.skills.buffers import RingBuffer
 from mjlab.tasks.skills.skill import Skill, SkillPool
+from mjlab.tasks.skills.view import StateView
 from mjlab.tasks.skills.windows import (
   ManagerState,
   WindowPlan,
@@ -73,12 +81,14 @@ def _log_prob(
 ) -> torch.Tensor:
   """Log-probability of `actions` under the actor's current distribution at `obs`.
 
-  Detached: AIRL treats log pi as a known constant inside the discriminator logit, so
-  the discriminator's loss must not push gradients back into the policy.
+  `obs` is already the state view the actor was built on. Detached: AIRL treats log pi
+  as a known constant inside the discriminator logit, so the discriminator's loss must
+  not push gradients back into the policy.
   """
   with torch.no_grad():
-    obs_td = TensorDict({"actor": obs}, batch_size=[obs.shape[0]])
-    actor(obs_td, stochastic_output=True)  # Updates the distribution's params
+    actor(
+      bridge_obs_td(obs), stochastic_output=True
+    )  # Updates the distribution's params
     return actor.get_output_log_prob(actions).squeeze(-1)
 
 
@@ -100,6 +110,7 @@ def train_bridge(
   target_skill_id: int,
   pool: SkillPool,
   entity_name: str,
+  view: StateView,
   plan: WindowPlan,
   cfg: BridgePhase,
 ) -> None:
@@ -109,6 +120,10 @@ def train_bridge(
   skill's own opening-window rollouts; the actor is trained (PPO) to fool it, using the
   referee's confidence as reward. A throwaway critic is built here for PPO and discarded
   (only the actor is kept, in the meta policy).
+
+  Both halves of that comparison are recorded through `view`, so what the referee is
+  asked to separate is the behavior and not the task context each half happened to be
+  in. See view.py for why that distinction decides whether phase 1 learns anything.
   """
 
   device = env.device
@@ -117,10 +132,10 @@ def train_bridge(
   entity = env.scene[entity_name]
   manager_state = ManagerState(env)
   spec = plan[target_skill]
+  obs_dim = view.dim
 
   obs, _ = env.reset()
-  obs_td = TensorDict(obs, batch_size=[num_envs])
-  obs_dim = as_tensor(obs_td["actor"]).shape[-1]
+  obs_td = bridge_obs_td(view(as_tensor(obs["actor"])))
 
   critic = MLPModel(
     obs_td,
@@ -153,8 +168,11 @@ def train_bridge(
     f"\n=== bridge -> '{target_skill.name}': AIRL + PPO, "
     f"{cfg.num_iterations} iterations over {num_envs} envs ==="
   )
+  print(f"[view] matching on {view.label}")
   print(f"[collect] rolling '{target_skill.name}' for its opening window...")
-  opening = collect_opening(env, target_skill, target_skill_id, spec, cfg.num_windows)
+  opening = collect_opening(
+    env, target_skill, target_skill_id, spec, cfg.num_windows, view=view
+  )
   expert = opening.transitions()
   expert_buffer = RingBuffer(
     int(expert["obs"].shape[0]),
@@ -190,22 +208,16 @@ def train_bridge(
   # rad/s). Standardizing against the expert data keeps its first layer in a sane range
   # instead of saturating on the first batch.
   discriminator = AIRLDiscriminator(
-    obs_dim, action_dim, cfg.disc_hidden_dims, cfg.disc_gamma
+    obs_dim, action_dim, cfg.disc_hidden_dims, cfg.disc_gamma, cfg.disc_input_clip
   ).to(device)
   discriminator.fit_normalization(expert["obs"], expert["action"])
   disc_optimizer = torch.optim.Adam(
     discriminator.parameters(), lr=cfg.disc_learning_rate
   )
 
-  # How far outside the target skill's own states the bridge ends up, in expert standard
-  # deviations. This is the one phase-1 number that is not part of the adversarial game,
-  # so it is the one neither side can game.
-  expert_mean = expert["obs"].mean(dim=0)
-  expert_std = expert["obs"].std(dim=0).clamp_min(1e-3)
-
   for iteration in range(cfg.num_iterations):
     obs = restore_interrupts(env, entity, interrupts, manager_state)
-    obs_td = TensorDict(obs, batch_size=[num_envs])
+    obs_td = bridge_obs_td(view(as_tensor(obs["actor"])))
     ppo.train_mode()
     reward_sum = 0.0
     terminations = 0.0
@@ -216,7 +228,7 @@ def train_bridge(
       next_obs, _, terminated, time_out, extras = env.step(actions)
       done = terminated | time_out
       terminations += float(terminated.float().mean())
-      next_obs_td = TensorDict(next_obs, batch_size=[num_envs])
+      next_obs_td = bridge_obs_td(view(as_tensor(next_obs["actor"])))
 
       log_prob = ppo.transition.actions_log_prob
       assert log_prob is not None
@@ -291,10 +303,13 @@ def train_bridge(
       # climbs; fooled near 0 with caught near 1 means the referee has won outright and
       # the bridge has no gradient left to climb, and both near 0.5 means it has stopped
       # telling them apart at all. `drift` is the only number here outside the game:
-      # mean distance from the target skill's own states, in expert sigmas, and it is
-      # what should actually fall if the bridge is learning.
+      # mean distance from the target skill's own states, measured through the same
+      # standardize-and-clip the referee reads its inputs through, so the two agree on
+      # what "far" means. It is what should actually fall if the bridge is learning. It
+      # is bounded by clip * sqrt(obs_dim); pinned at that ceiling means the bridge is
+      # nowhere near the target skill's own states, whatever the game is reporting.
       with torch.no_grad():
-        drift = ((fake_obs_t - expert_mean) / expert_std).norm(dim=-1).mean()
+        drift = discriminator.normalize_obs(fake_obs_t).norm(dim=-1).mean()
       denom = max(cfg.disc_epochs, 1)
       print(
         f"[bridge {iteration + 1:4d}/{cfg.num_iterations}] "
@@ -322,6 +337,7 @@ def train_switch(
   target_skill_id: int,
   pool: SkillPool,
   entity_name: str,
+  view: StateView,
   outcome: OutcomeSource,
   plan: WindowPlan,
   cfg: SwitchPhase,
@@ -332,15 +348,19 @@ def train_switch(
   to hand over. Each env is judged `cfg.eval_steps` after *its own* hand-over: +1 if
   `outcome` approves and the env never terminated, -1 otherwise, and -1 for never
   committing within `cfg.max_transition_steps`.
+
+  The decider reads the same `view` the actor does, so the two agree on what a state is;
+  the outcome it learns from does not, and must not, since judging a hand-over is
+  privileged and reads the env directly.
   """
 
   device = env.device
   num_envs = env.num_envs
   entity = env.scene[entity_name]
   manager_state = ManagerState(env)
+  obs_dim = view.dim
 
-  obs, _ = env.reset()
-  obs_dim = as_tensor(obs["actor"]).shape[-1]
+  env.reset()
   dqn = DoubleDQN(switch, cfg.gamma, cfg.learning_rate, device)
   replay = RingBuffer(
     cfg.replay_capacity,
@@ -398,11 +418,11 @@ def train_switch(
     stay_obs, stay_reward, stay_next_obs, stay_done = [], [], [], []
 
     for t in range(total_steps):
-      state = as_tensor(obs["actor"])
+      state = view(as_tensor(obs["actor"]))
       driving = switched.clone()  # The target skill is at the controls in these envs
 
       with torch.no_grad():
-        bridge_actions = actor(TensorDict({"actor": state}, batch_size=[num_envs]))
+        bridge_actions = actor(bridge_obs_td(state))
       target_actions = target_skill.act(obs, driving)
       actions = torch.where(driving.unsqueeze(-1), target_actions, bridge_actions)
 
@@ -414,7 +434,7 @@ def train_switch(
         new_switch = torch.zeros(num_envs, dtype=torch.bool, device=device)
 
       next_obs, reward, terminated, _, _ = env.step(actions)
-      next_state = as_tensor(next_obs["actor"])
+      next_state = view(as_tensor(next_obs["actor"]))
       failed = failed | terminated
       # Only what the target skill earned counts, so this accrues from the step after
       # the hand-over onwards.
@@ -538,7 +558,15 @@ def train_bridging(
     target_skill = pool[target_id]
     actor = meta.actors[target_id]
     train_bridge(
-      env, actor, target_skill, target_id, pool, entity_name, plan, cfg.bridge
+      env,
+      actor,
+      target_skill,
+      target_id,
+      pool,
+      entity_name,
+      meta.view,
+      plan,
+      cfg.bridge,
     )
 
     # Freeze the actor before training the switch-decider on top of it.
@@ -554,6 +582,7 @@ def train_bridging(
       target_id,
       pool,
       entity_name,
+      meta.view,
       outcomes[target_id],
       plan,
       cfg.switch,

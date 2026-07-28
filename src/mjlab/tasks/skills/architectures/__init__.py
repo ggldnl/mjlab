@@ -16,6 +16,7 @@ machinery it needs to switch between skills.
 """
 
 from collections.abc import Callable
+from typing import Protocol
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.tasks.skills.architectures.arch_0 import Arch0
@@ -30,8 +31,26 @@ from mjlab.tasks.skills.architectures.arch_4 import Arch4
 from mjlab.tasks.skills.architectures.arch_4.train import train as train_arch_4
 from mjlab.tasks.skills.meta import MetaPolicy
 from mjlab.tasks.skills.skill import SkillPool
+from mjlab.tasks.skills.view import StateView
 
-MetaPolicyFactory = Callable[[ManagerBasedRlEnv, SkillPool], MetaPolicy]
+
+class MetaPolicyFactory(Protocol):
+  """How every architecture is built: the env, the skill pool, and the state view.
+
+  The view (see view.py) is the slice of the observation the bridging machinery works
+  on. It belongs to the experiment rather than to the architecture, so all of them take
+  it and the ones with no machinery to point it at ignore it. Omitting it means the whole
+  observation, which is the right default only for an experiment that has checked.
+  """
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    pool: SkillPool,
+    view: StateView | None = None,
+  ) -> MetaPolicy: ...
+
+
 ARCHITECTURES: dict[int, MetaPolicyFactory] = {
   0: Arch0,
   1: Arch1,

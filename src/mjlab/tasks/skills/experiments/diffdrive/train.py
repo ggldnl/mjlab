@@ -33,6 +33,7 @@ from mjlab.tasks.registry import load_env_cfg
 from mjlab.tasks.skills.architectures import ARCHITECTURES, TRAINERS
 from mjlab.tasks.skills.architectures.arch_1.config import BridgeTraining
 from mjlab.tasks.skills.experiments.diffdrive import (
+  BRIDGE_VIEW,
   DRIVE_TASK_ID,
   ENTITY_NAME,
   EXPERIMENT_NAME,
@@ -170,7 +171,7 @@ def run_train(cfg: TrainConfig) -> None:
     TURN: _make_turn_success(env),
   }
 
-  meta = ARCHITECTURES[cfg.architecture](env, pool)
+  meta = ARCHITECTURES[cfg.architecture](env, pool, BRIDGE_VIEW.resolve(env))
   TRAINERS[cfg.architecture](
     env, pool, ENTITY_NAME, meta, success_fns, WINDOWS, cfg.training
   )

@@ -28,6 +28,13 @@ is a property of the behavior. A skill that settles in ten steps does not need t
 window as one that takes a second to get going, and how far into a skill a hand-over
 can reasonably fall is likewise its own business.
 
+What a window records is not the whole observation but whatever the experiment's
+`StateView` keeps of it (see view.py), because a window is what a bridge is compared
+against and the comparison is only meaningful on channels the bridge can actually do
+something about. Absolute position, world-frame heading and per-episode goals are the
+ones to leave out; an experiment that declares no view records everything, which is the
+right default only until it turns out not to be.
+
 Alongside the recordings, `collect_interrupts` harvests the simulator state at each cut
 so training episodes can start there. An interrupt state is more than qpos/qvel: action
 and command terms carry per-env state the simulator does not hold and the observation
@@ -50,6 +57,7 @@ from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv, VecEnvObs
 from mjlab.tasks.skills.buffers import RingBuffer
 from mjlab.tasks.skills.skill import Skill, SkillPool
+from mjlab.tasks.skills.view import FullState, StateView
 
 # The roles a window can play around a hand-over. Strings rather than an enum so an
 # architecture can add one of its own without editing this module.
@@ -62,6 +70,13 @@ def as_tensor(value: object) -> torch.Tensor:
   """Narrow a `VecEnvObs`/`TensorDict` lookup result to a plain `torch.Tensor`."""
   assert isinstance(value, torch.Tensor)
   return value
+
+
+def _view_of(env: ManagerBasedRlEnv, view: StateView | None, group: str) -> StateView:
+  """The view to record through, defaulting to the whole observation."""
+  if view is not None:
+    return view
+  return FullState(as_tensor(env.observation_manager.compute()[group]).shape[-1])
 
 
 ##
@@ -326,6 +341,7 @@ def collect_opening(
   spec: SkillWindowSpec,
   num_windows: int,
   obs_group: str = "actor",
+  view: StateView | None = None,
 ) -> Window:
   """Roll `skill` from its own reset and record its opening window.
 
@@ -336,6 +352,7 @@ def collect_opening(
   """
   device = env.device
   num_envs = env.num_envs
+  project = _view_of(env, view, obs_group)
   active = torch.ones(num_envs, dtype=torch.bool, device=device)
 
   obs_chunks, action_chunks, valid_chunks = [], [], []
@@ -347,7 +364,7 @@ def collect_opening(
     alive = torch.ones(num_envs, dtype=torch.bool, device=device)
     for _ in range(spec.opening):
       actions = skill.act(obs, active)
-      step_obs.append(as_tensor(obs[obs_group]))
+      step_obs.append(project(as_tensor(obs[obs_group])))
       step_action.append(actions)
       step_valid.append(alive.clone())
       obs, _, terminated, time_out, _ = env.step(actions)
@@ -378,6 +395,7 @@ def collect_handover(
   num_windows: int,
   roles: tuple[str, ...] = (CLOSING,),
   obs_group: str = "actor",
+  view: StateView | None = None,
 ) -> dict[str, Window]:
   """Roll `skill`, cut it somewhere in its range, and record the roles asked for.
 
@@ -395,8 +413,9 @@ def collect_handover(
     )
   device = env.device
   num_envs = env.num_envs
+  project = _view_of(env, view, obs_group)
   active = torch.ones(num_envs, dtype=torch.bool, device=device)
-  obs_dim = as_tensor(env.observation_manager.compute()[obs_group]).shape[-1]
+  obs_dim = project.dim
   action_dim = env.action_manager.total_action_dim
   lengths = {role: spec.length(role) for role in roles}
   last_cut = spec.interrupt_range[1]
@@ -418,7 +437,7 @@ def collect_handover(
     }
 
     for t in range(last_cut + max(lengths.get(OVERRUN, 0), 0) + 1):
-      cur_obs = as_tensor(obs[obs_group])
+      cur_obs = project(as_tensor(obs[obs_group]))
       actions = skill.act(obs, active)
 
       if CLOSING in roles:

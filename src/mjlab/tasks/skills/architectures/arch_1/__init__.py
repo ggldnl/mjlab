@@ -37,15 +37,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
-from tensordict import TensorDict
 
 from mjlab.envs import ManagerBasedRlEnv, VecEnvObs
 from mjlab.tasks.skills.architectures.arch_1.networks import (
   SwitchQNetwork,
+  bridge_obs_td,
   build_bridge_actor,
 )
 from mjlab.tasks.skills.meta import MetaPolicy
 from mjlab.tasks.skills.skill import SkillPool
+from mjlab.tasks.skills.view import StateView, resolve_view
 
 
 class Arch1(MetaPolicy):
@@ -61,6 +62,7 @@ class Arch1(MetaPolicy):
     self,
     env: ManagerBasedRlEnv,
     pool: SkillPool,
+    view: StateView | None = None,
     *,
     actor_hidden_dims: tuple[int, ...] = (64, 64),
     switch_hidden_dims: tuple[int, ...] = (128, 128),
@@ -70,14 +72,17 @@ class Arch1(MetaPolicy):
     self.obs_group = obs_group
     self.actor_hidden_dims = actor_hidden_dims
     self.switch_hidden_dims = switch_hidden_dims
-
-    # An obs template to shape the actor's input, and the dims the switch net needs
-    obs, _ = env.reset()
-    obs_td = TensorDict(obs, batch_size=[env.num_envs])
-    state = obs_td[obs_group]
-    assert isinstance(state, torch.Tensor)
-    obs_dim = state.shape[-1]
+    # Both networks live on the experiment's state view, not on the raw observation:
+    # they must see exactly what the discriminator that trained them saw (see view.py).
+    projection = resolve_view(env, None, obs_group) if view is None else view
+    obs_dim = projection.dim
     action_dim = env.action_manager.total_action_dim
+
+    # An obs template of the right width to shape the actor's input.
+    obs, _ = env.reset()
+    state = obs[obs_group]
+    assert isinstance(state, torch.Tensor)
+    obs_td = bridge_obs_td(projection(state))
 
     # One (actor, switch) per skill, keyed by skill id. Untrained until train.py runs
     self.actors = {
@@ -89,7 +94,7 @@ class Arch1(MetaPolicy):
       for skill_id in range(len(pool))
     }
 
-    super().__init__(env, pool)
+    super().__init__(env, pool, projection)
 
   @torch.no_grad()
   def bridge_step(
@@ -110,10 +115,10 @@ class Arch1(MetaPolicy):
     actor = self.actors[target_id]
     switch = self.switches[target_id]
 
-    state = obs[self.obs_group]
-    assert isinstance(state, torch.Tensor)
-    obs_td = TensorDict({self.obs_group: state}, batch_size=[state.shape[0]])
-    actions = actor(obs_td)
+    full_state = obs[self.obs_group]
+    assert isinstance(full_state, torch.Tensor)
+    state = self.view(full_state)
+    actions = actor(bridge_obs_td(state))
     handover = active & (switch(state).argmax(dim=-1) == 1)
     return actions, handover
 

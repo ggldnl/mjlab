@@ -7,7 +7,7 @@ only at where the robot is right now relative to the obstacles:
 
 - within `jump_lead` metres in front of an obstacle (or on top of one, until it has
   cleared the far edge) -> jump;
-- nothing within `run_clear` metres ahead -> sprint (run);
+- nothing within `run_clear` metres ahead -> run;
 - otherwise (approaching, or just past an obstacle) -> walk.
 
 The corridor runs along +x, so "along the corridor" is the robot's world x. Each
@@ -25,12 +25,10 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.tasks.skills.controller import Controller
 from mjlab.tasks.skills.skill import SkillPool
 
-# Skill ids: the pool order build_pool() registers (see __init__.py). Sprint exists
-# in the pool but this controller does not emit it yet -- a clear corridor gets RUN.
+# Skill ids: the pool order build_pool() registers (see __init__.py).
 WALK = 0
 RUN = 1
 JUMP = 2
-SPRINT = 3
 
 # Scene entity whose position along the corridor drives the decision.
 ENTITY_NAME = "robot"
@@ -41,7 +39,7 @@ class ParkourController(Controller):
 
   `obstacles` is the known layout: each entry is the (front, back) x of one obstacle
   span along the +x corridor. `jump_lead` is how far ahead of an obstacle the jump
-  begins; `run_clear` is how much empty corridor ahead triggers a sprint.
+  begins; `run_clear` is how much empty corridor ahead is enough to break into a run.
   """
 
   def __init__(
@@ -73,7 +71,7 @@ class ParkourController(Controller):
     spans = self._obstacle_spans(env)
 
     if spans.numel() == 0:
-      # An empty corridor: nothing to jump, just sprint.
+      # An empty corridor: nothing to jump, just run.
       return torch.full_like(robot_x, RUN, dtype=torch.long)
 
     x0 = spans[:, 0].unsqueeze(0)  # (1, K), obstacle front edges
@@ -85,7 +83,7 @@ class ParkourController(Controller):
     over_or_near = ((rx >= x0 - self.jump_lead) & (rx <= x1)).any(dim=1)  # (N,)
 
     # Distance to the next obstacle's front edge still ahead of the robot (inf if the
-    # corridor is clear ahead). A large gap means sprint.
+    # corridor is clear ahead). A large gap means run.
     ahead = x0 > rx  # (N, K)
     gap = torch.where(ahead, x0 - rx, torch.full_like(rx, float("inf")))  # (N, K)
     min_gap = gap.min(dim=1).values  # (N,)

@@ -26,12 +26,14 @@ chooses to assume it (see arch_1).
 
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Any
 
 import torch
 
 from mjlab.envs import ManagerBasedRlEnv, VecEnvObs
 from mjlab.tasks.skills.controller import Controller
 from mjlab.tasks.skills.skill import NO_SKILL, SkillPool
+from mjlab.tasks.skills.view import StateView, resolve_view
 
 
 class MetaPolicy(ABC):
@@ -42,9 +44,19 @@ class MetaPolicy(ABC):
   control is already committed to.
   """
 
-  def __init__(self, env: ManagerBasedRlEnv, pool: SkillPool) -> None:
+  def __init__(
+    self,
+    env: ManagerBasedRlEnv,
+    pool: SkillPool,
+    view: StateView | None = None,
+  ) -> None:
+    """`view` is the slice of the observation this architecture's bridging machinery
+    works on (see view.py); None means the whole observation. It belongs to the
+    experiment rather than to the architecture, so every architecture takes it here and
+    one that has no machinery to point it at (arch_0) simply ignores it."""
     self.env = env
     self.pool = pool
+    self.view = resolve_view(env, None) if view is None else view
     self.reset()
 
   @property
@@ -191,10 +203,17 @@ class ComposedPolicy:
   """Pairs a controller with a meta policy into one `policy(obs)`.
 
   Each step: ask the controller which skill should run (given what the meta policy is
-  currently committed to), then let the meta policy carry out any switch. Also
-  absorbs env auto-resets, resetting the controller and meta policy where an episode
-  just ended -- read one step late off `reset_buf`, the same signal `env.step` acted
-  on, since a caller owning `env.step` never hands the done flags back.
+  currently committed to), then let the meta policy carry out any switch. Also absorbs
+  resets, clearing the controller and the meta policy in whichever envs just started a
+  fresh episode, since a caller owning `env.step` never hands the done flags back.
+
+  A fresh episode is read off `episode_length_buf`, not off `reset_buf`. The two agree
+  on an auto-reset, but only the counter also catches a reset the caller asked for:
+  `env.reset()` (the viewer's reset button) and `env.reset(env_ids=...)` (its per-env
+  one) both rewind the counter and neither touches `reset_buf`, which still holds
+  whatever the last `step` computed. Reading `reset_buf` there leaves the composition
+  committed to the skill it was running before the reset, so a restarted episode carries
+  on mid-sequence instead of beginning at the controller's first skill.
   """
 
   def __init__(
@@ -211,14 +230,22 @@ class ComposedPolicy:
     self.meta.reset()
     self._just_reset = True
 
-  def __call__(self, obs: VecEnvObs) -> torch.Tensor:
+  def __call__(self, obs: Any) -> torch.Tensor:
+    """Actions for every env. `obs` is a `VecEnvObs`.
+
+    Typed loosely so this object satisfies the viewer's `PolicyProtocol` (which declares
+    a plain tensor) and can be handed to a viewer as-is. That matters beyond typing: a
+    viewer resets the policy through `getattr(policy, "reset")`, so wrapping this in a
+    lambda to appease the annotation would hide `reset` and leave the composition
+    running its old skill after a reset.
+    """
     if self._just_reset:
       self._just_reset = False
     else:
-      done = self.env.reset_buf.bool()
-      if done.any():
-        self.controller.reset(done)
-        self.meta.notify_reset(done)
+      fresh = self.env.episode_length_buf == 0
+      if fresh.any():
+        self.controller.reset(fresh)
+        self.meta.notify_reset(fresh)
     command = self.controller.decide(self.env, self.meta.target)
     return self.meta.act(obs, command)
 

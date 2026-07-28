@@ -268,20 +268,18 @@ def run_demo(cfg: DemoConfig) -> None:
     env, clip_actions=load_rl_cfg(cfg.spinup_task_id).clip_actions
   )
 
-  # The viewer's PolicyProtocol types its obs loosely; wrap the composition in a
-  # plain callable, as skill.py's viewer does, so the dict-typed __call__ fits.
-  def viewer_policy(obs) -> torch.Tensor:
-    return policy(obs)
-
+  # Handed over as-is rather than wrapped in a lambda: the viewer's reset button calls
+  # `policy.reset`, and a wrapper hides it, leaving the composition committed to
+  # whatever skill it was running before the reset.
   if cfg.viewer == "viser":
     from mjlab.viewer import ViserPlayViewer
 
     # Show the running skill (or bridge) for the displayed env in the info box.
-    ViserPlayViewer(viewer_env, viewer_policy, info_provider=policy.active_label).run()
+    ViserPlayViewer(viewer_env, policy, info_provider=policy.active_label).run()
   else:
     from mjlab.viewer import NativeMujocoViewer
 
-    NativeMujocoViewer(viewer_env, viewer_policy).run()
+    NativeMujocoViewer(viewer_env, policy).run()
 
   viewer_env.close()
 

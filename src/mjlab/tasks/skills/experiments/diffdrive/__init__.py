@@ -43,6 +43,7 @@ from mjlab.tasks.skills.architectures.arch_1.config import (
   BridgeTraining,
   SwitchPhase,
 )
+from mjlab.tasks.skills.view import StateViewCfg
 from mjlab.tasks.skills.windows import SkillWindowSpec, WindowPlan
 
 if TYPE_CHECKING:
@@ -66,6 +67,27 @@ DRIVE_SPEED = 2.5  # [m/s], high enough that a naive hand-off to turn tips
 TURN_ANGLE = math.pi / 2  # [rad], the 90 deg arc turn
 TURN_SPEED = 0.3  # [m/s], the arc's low creep speed
 
+
+# What the bridge is allowed to see, and therefore what it is compared against.
+#
+# The observation is `base_lin_vel`, `base_ang_vel`, `wheel_vel`, `actions`, `command`.
+# The first four describe the robot; `command` describes the task, and it is the one the
+# bridge must not be judged on. Its second channel is the live error to a heading target
+# fixed when the episode began, so it reads ~0 in every frame of drive's own recordings
+# (they all start from a reset) and ~pi/2 wherever turn hands the robot over. A
+# discriminator given that channel separates the two halves on it alone, never looks at
+# the motion, and the only way for the bridge to close the gap is to steer the robot back
+# to the heading the episode started at. That is not bridging, it is navigating, and it
+# is what a bridge trained on the full observation actually learns to do -- the hand-over
+# it produces ends up worse than the naive one it was meant to fix. Its first channel is
+# no better: a per-episode speed target the analytical experts ignore entirely, so it is
+# pure noise the bridge cannot act on.
+#
+# What is left is exactly the pair of statements the bridge needs: "the robot is moving
+# this fast, turning this hard, with the wheels here" for the state, and drive's or
+# turn's own opening as the thing to look like. Which reduces the problem to "slow down",
+# which is what it should have been all along.
+BRIDGE_VIEW = StateViewCfg(drop=("command",))
 
 # How much of each skill is recorded around a hand-over. Shared by every architecture's
 # training and by inspect.py.
@@ -96,10 +118,10 @@ TURN_SPEED = 0.3  # [m/s], the arc's low creep speed
 WINDOWS = WindowPlan(
   {
     "drive": SkillWindowSpec(
-      opening=32, closing=32, overrun=0, interrupt_range=(32, 96)
+      opening=64, closing=64, overrun=0, interrupt_range=(64, 128)
     ),
     "turn": SkillWindowSpec(
-      opening=32, closing=20, overrun=0, interrupt_range=(20, 45)
+      opening=64, closing=64, overrun=0, interrupt_range=(64, 128)
     ),
   }
 )
@@ -115,11 +137,7 @@ WINDOWS = WindowPlan(
 # ~47 steps it takes to reach cruise, and the robot arcs harder and harder until it
 # rolls.
 TRAINING = BridgeTraining(
-  bridge=BridgePhase(
-    num_iterations=300,
-    num_windows=512,
-    num_interrupts=4096
-  ),
+  bridge=BridgePhase(num_iterations=300, num_windows=512, num_interrupts=4096),
   switch=SwitchPhase(
     num_iterations=600,
     num_interrupts=4096,

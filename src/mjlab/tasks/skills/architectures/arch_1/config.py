@@ -54,6 +54,15 @@ class BridgePhase:
   disc_batch_size: int = 512
   disc_gamma: float = 0.99
 
+  disc_input_clip: float = 10.0
+  """Cap on any one standardized input channel reaching the discriminator. Not a
+  formality: a skill holds some channels near-constant (the diffdrive's drive keeps
+  lateral velocity at zero to within a thousandth), and dividing by that channel's
+  expert standard deviation blows an ordinary deviation up by a thousand, which
+  saturates the discriminator before the first update and leaves the bridge with a flat
+  zero reward. Raise it only if the reward looks healthy and the bridge is plateauing
+  because the referee cannot tell two nearby behaviors apart."""
+
 
 @dataclass(frozen=True)
 class SwitchPhase:

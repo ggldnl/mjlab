@@ -70,7 +70,7 @@ class TrainConfig:
   # the per-target distribution-matching bridge
   architecture: int = 1
 
-  # Checkpoints for the skills, keyed by skill name (walk, run, jump, sprint). A
+  # Checkpoints for the skills, keyed by skill name (walk, run, jump). A
   # skill left out falls back to its latest trained checkpoint
   checkpoints: dict[str, str] = field(default_factory=dict)
 

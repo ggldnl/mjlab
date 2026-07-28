@@ -83,6 +83,19 @@ Added
 Changed
 ^^^^^^^
 
+- Reworked the parkour skills into goal-conditioned DeepMimic trackers, replacing
+  the AMP style-reward setup. Sprint is dropped, leaving walk, run and jump. The
+  dataset builder now replays each LAFAN1 source in full and segments the replay
+  (rather than the CSV), which is what gives it foot contacts: locomotion is cut
+  where the yaw-frame velocity is steady *and* in band frame by frame, with the
+  ends eroded, and jumps are cut one per flight phase from the crouch to the
+  absorbed landing, never merged. Every cut is placed canonically -- global
+  translation and yaw removed -- and labelled with the goal it realizes (end
+  displacement and heading for walk/run, apex height and landing distance for
+  jump). The env observes proprioception, the reference pose and velocity, future
+  reference frames, the clip phase and the goal, and is rewarded on DeepMimic
+  tracking terms plus explicit goal terms, so the conditioning signal reaches the
+  reward and not just the observation.
 - Task package load failures during ``mjlab`` import now print the full
   traceback (and the entry point's module path) to ``stderr`` instead of
   just the exception message, making it easier to pinpoint the source of
@@ -98,6 +111,28 @@ Changed
 Fixed
 ^^^^^
 
+- Fixed a composed skill policy carrying its running skill across an environment
+  reset, so a restarted diffdrive demo resumed mid-sequence (on ``turn``) instead
+  of beginning at the controller's first skill. ``ComposedPolicy`` detected resets
+  from ``reset_buf``, which only a step-driven auto-reset sets; a viewer-driven
+  ``env.reset()`` leaves it holding the previous step's value. It now reads
+  ``episode_length_buf``, which every reset path rewinds. The demos also hand the
+  composition to the viewer directly rather than wrapped in a lambda, which was
+  hiding the ``reset`` method the viewer's reset button calls.
+- Fixed bridge training being compared against observation channels the bridge
+  cannot act on. An experiment now declares a ``StateViewCfg`` naming the
+  observation terms the bridging machinery works on, shared by the recorded
+  windows, the AIRL discriminator, the bridge actor and the switch-decider. The
+  diffdrive drops its command term: its heading-error channel reads ~0 in every
+  frame of ``drive``'s own recordings and ~pi/2 wherever ``turn`` hands over, so a
+  discriminator separated the two halves on that channel alone and the bridge was
+  trained to steer back to the episode's starting heading instead of to brake.
+- Fixed the AIRL discriminator saturating before its first update. Standardizing
+  by the expert standard deviation amplifies channels a skill holds near-constant
+  (``drive`` keeps lateral velocity at zero to within a thousandth), so the states
+  a bridge starts from arrived twenty-odd deviations out and the reward was flat
+  zero from iteration one. Standardized inputs are now clipped, configurable via
+  ``BridgePhase.disc_input_clip``.
 - Fixed the velocity joystick GUI crashing in the Viser viewer when a
   command axis is disabled (range upper bound ``0.0``, as in the T1 running
   play config) or configured wider than ``10.0``. The per-axis "Max" slider

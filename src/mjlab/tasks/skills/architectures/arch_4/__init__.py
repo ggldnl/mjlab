@@ -10,6 +10,7 @@ import torch
 from mjlab.envs import ManagerBasedRlEnv, VecEnvObs
 from mjlab.tasks.skills.meta import MetaPolicy
 from mjlab.tasks.skills.skill import SkillPool
+from mjlab.tasks.skills.view import StateView
 
 
 class Arch4(MetaPolicy):
@@ -19,11 +20,12 @@ class Arch4(MetaPolicy):
     self,
     env: ManagerBasedRlEnv,
     pool: SkillPool,
+    view: StateView | None = None,
   ) -> None:
 
     self.bridge = None
 
-    super().__init__(env, pool)
+    super().__init__(env, pool, view)
 
   @torch.no_grad()
   def bridge_step(
