@@ -2,14 +2,14 @@
 
 A meta policy owns the frozen skill pool and whatever an architecture needs to move
 between skills (a learned bridge, a switch-decider, or nothing at all). It does not
-own the controller. Which skill should be running is decided elsewhere (see
-controller.py) and handed in per step; the meta policy only owns *how* a commanded
-switch is executed: immediately (arch_0's direct hand-off) or through a bridge that
-first drives the robot into a state the next skill can safely start from (arch_1).
+own the controller. Which skill should be running is decided elsewhere and handed
+in per step; the meta policy only owns how a commanded switch is executed:
+immediately (arch_0's direct hand-off) or through a bridge that first drives
+the robot into a state the next skill can safely start from (arch_1).
 
 Each concrete architecture is a `MetaPolicy` subclass. The base class implements the
-one subtle, shared piece -- the per-env bookkeeping of which skill control is
-committed to, which one it came from, and which envs are mid-bridge -- and leaves the
+one shared piece: the per-env bookkeeping of which skill control is committed to,
+which one it came from, and which envs are mid-bridge. It leaves the
 architecture-specific behavior to two hooks: `begin_switch` (called once when a
 switch fires) and `bridge_step` (the actions and hand-over decision while bridging).
 
@@ -20,8 +20,7 @@ touching the switching machinery.
 
 `bridge_step` is handed the full per-env `source`/`target`/`active` tensors, so an
 architecture that keeps a different bridge per (source, target) pair or per target is
-free to route internally. The batch is assumed homogeneous only where a subclass
-chooses to assume it (see arch_1).
+free to route internally.
 """
 
 from abc import ABC, abstractmethod

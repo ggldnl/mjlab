@@ -8,8 +8,8 @@ learned policy. It is the only part of the decision that is experiment specific.
 It sees the env and the pool of skills and emits one skill id per env. A switch fires
 wherever that id differs from the one control is already committed to. The controller
 does not run the bridge and does not know a bridge exists. It also cannot lean on a
-skill self-reporting success or failure, since `Skill` makes no such promise; whatever
-signal a controller switches on has to come from observing the env itself.
+skill self-reporting success or failure; whatever signal a controller switches on
+has to come from observing the env itself.
 """
 
 from abc import ABC, abstractmethod

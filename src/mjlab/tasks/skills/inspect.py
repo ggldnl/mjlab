@@ -17,9 +17,9 @@ away.
 
 Controls:
 
-- *Show* picks which window runs. `Closing` and `Overrun` belong to the source skill,
-  `Opening` to the target. A role a skill sizes at zero steps is not offered.
-- *Couple* walks the cut point across the source skill's range, so Previous and Next
+- `Show` picks which window runs. `Closing` and `Overrun` belong to the source skill,
+  `Opening` to the target.
+- `Couple` walks the cut point across the source skill's range, so Previous and Next
   sweep from the earliest hand-over its spec allows to the latest. Each couple is
   seeded, so going back shows the same episode again.
 - Everything else (pause, single step, speed, camera) is the play viewer's, unchanged.
@@ -38,7 +38,13 @@ from typing_extensions import override
 
 from mjlab.envs import ManagerBasedRlEnv, VecEnvObs
 from mjlab.tasks.skills.skill import SkillPool
-from mjlab.tasks.skills.windows import CLOSING, OPENING, OVERRUN, WindowPlan
+from mjlab.tasks.skills.windows import (
+  CLOSING,
+  OPENING,
+  OVERRUN,
+  WindowPlan,
+  start_skill,
+)
 from mjlab.viewer.base import EnvProtocol, ViewerAction
 from mjlab.viewer.viser import ViserPlayViewer
 
@@ -208,6 +214,9 @@ class WindowViewer(ViserPlayViewer):
         torch.random.set_rng_state(self._rng[0])
         torch.cuda.set_rng_state_all(self._rng[1])
       obs, _ = env.reset()
+      # The same start state the collectors use, so what is watched here is what is
+      # trained on rather than whatever the shared arena's reset happens to produce.
+      obs = start_skill(env, self.spec, obs)
       self.pool.reset(self._active)
       skill = self.pool[self.skill_id]
       for _ in range(self._run_up()):

@@ -19,11 +19,10 @@ is worse than the naive one. The same argument applies to any absolute position,
 world-frame heading, and any per-episode goal: `x`, `y` and `theta` are the textbook
 case.
 
-Nothing about that is diffdrive-specific, and nothing about it can be decided here: only
-the experiment knows which of its observation terms describe *the robot* and which
-describe *the task*. So a view is declared next to the skill pool, as a `StateViewCfg`
+Only the experiment knows which of its observation terms describe the robot and which
+describe the task. So a view is declared next to the skill pool, as a `StateViewCfg`
 naming terms to keep or drop, and resolved against the env into a `StateView` that every
-piece of the bridging machinery then shares -- the recorded windows, the discriminator,
+piece of the bridging machinery then shares: the recorded windows, the discriminator,
 the bridge actor and the switch-decider. Sharing one projection is the point: an actor
 that saw a channel its discriminator did not would be rewarded for something it could
 not perceive, and vice versa.

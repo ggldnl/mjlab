@@ -9,19 +9,13 @@ such thing still gets its windows here.
 A window is a fixed-length stretch of one skill's behavior, anchored at a hand-over.
 Three roles are defined, and a skill's spec says how long each of them is for it:
 
-- `OPENING`: the first steps of a skill from its own reset. What starting it looks like,
-  used when it is the skill being handed *to*.
-- `CLOSING`: the last steps before the hand-over. What leaving it looks like, used when
-  it is the skill being handed *from*.
-- `OVERRUN`: the steps after the hand-over with that same skill still driving, i.e. what
+- `Opening`: the first steps of a skill from its own reset. What starting it looks like,
+  used when it is the skill being handed `to`.
+- `Closing`: the last steps before the hand-over. What leaving it looks like, used when
+  it is the skill being handed `from`.
+- `Overrun`: the steps after the hand-over with that same skill still driving, i.e. what
   would have happened if control had not been taken away. Zero-length unless an
   architecture asks for it.
-
-Those three cover the arrangement current architectures use (closing + opening) and the
-one where a bridge is also shown what it interrupted (closing + overrun + opening).
-An architecture that needs a different arrangement composes `collect_opening` and
-`collect_handover` differently, or adds a role of its own; nothing here assumes only two
-windows exist.
 
 Each skill carries its own spec, because "how much of this behavior is worth showing"
 is a property of the behavior. A skill that settles in ten steps does not need the same
@@ -29,12 +23,13 @@ window as one that takes a second to get going, and how far into a skill a hand-
 can reasonably fall is likewise its own business.
 
 What a window records is not the whole observation but whatever the experiment's
-`StateView` keeps of it (see view.py), because a window is what a bridge is compared
-against and the comparison is only meaningful on channels the bridge can actually do
+`StateView` keeps of it, because a window is what a bridge is compared against
+and the comparison is only meaningful on channels the bridge can actually do
 something about. Absolute position, world-frame heading and per-episode goals are the
 ones to leave out; an experiment that declares no view records everything, which is the
 right default only until it turns out not to be.
 
+TODO we need to make sure this is actually what we want.
 Alongside the recordings, `collect_interrupts` harvests the simulator state at each cut
 so training episodes can start there. An interrupt state is more than qpos/qvel: action
 and command terms carry per-env state the simulator does not hold and the observation
@@ -49,7 +44,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 
@@ -85,6 +80,64 @@ def _view_of(env: ManagerBasedRlEnv, view: StateView | None, group: str) -> Stat
 
 
 @dataclass(frozen=True)
+class SkillInit:
+  """The state a skill's own training started it from, applied after an env reset.
+
+  Every skill in a pool is rolled in one shared arena, and that arena is built from one
+  task's env cfg -- so `env.reset()` produces *that* task's start state for every skill,
+  not each skill's own. On the cart-pole the arena is the swing-up task, whose pole
+  hangs, so `balance`'s opening window was being recorded from a hanging pole: the one
+  state an upright-only balancer cannot work in. Everything downstream then inherits it,
+  since the opening window is exactly what a bridge is trained to reproduce.
+
+  A skill therefore declares where it starts, and it is applied on top of the reset. The
+  ranges are absolute joint targets rather than offsets from the entity default, because
+  the default belongs to whichever task built the arena and is the thing being corrected.
+
+  This is not the skill's whole start distribution, only the part that differs between
+  skills. Whatever the shared reset already randomizes correctly is left alone.
+  """
+
+  entity_name: str
+  """The scene entity these joints belong to."""
+
+  joint_pos: Mapping[str, tuple[float, float]] = field(default_factory=dict)
+  """Per joint name, the inclusive range its position is drawn from [rad or m]."""
+
+  joint_vel: Mapping[str, tuple[float, float]] = field(default_factory=dict)
+  """Per joint name, the inclusive range its velocity is drawn from."""
+
+  def apply(self, env: ManagerBasedRlEnv, obs_group: str = "actor") -> VecEnvObs:
+    """Write this start state into every env and return the refreshed observation.
+
+    Mirrors the tail of `restore_interrupts`: write, forward, re-sense, recompute, so
+    the observation handed back really describes the state that was just written.
+    """
+    entity: Entity = env.scene[self.entity_name]
+    joint_pos = entity.data.joint_pos.clone()
+    joint_vel = entity.data.joint_vel.clone()
+    for target, ranges in ((joint_pos, self.joint_pos), (joint_vel, self.joint_vel)):
+      for name, (low, high) in ranges.items():
+        index = entity.find_joints([name], preserve_order=True)[0]
+        target[:, index] = torch.empty((env.num_envs, 1), device=env.device).uniform_(
+          low, high
+        )
+    entity.write_joint_state_to_sim(joint_pos, joint_vel)
+    env.scene.write_data_to_sim()
+    env.sim.forward()
+    env.sim.sense()
+    env.abstraction_manager.compute(dt=0.0)
+    return env.observation_manager.compute(update_history=True)
+
+
+def start_skill(
+  env: ManagerBasedRlEnv, spec: SkillWindowSpec, obs: VecEnvObs
+) -> VecEnvObs:
+  """Reset-time hook: put the env in this skill's own start state, if it declares one."""
+  return obs if spec.init is None else spec.init.apply(env)
+
+
+@dataclass(frozen=True)
 class SkillWindowSpec:
   """How much of one skill to record around a hand-over it takes part in.
 
@@ -106,6 +159,10 @@ class SkillWindowSpec:
   overrun: int = 0
   """Steps past the hand-over with this skill still driving, i.e. what it would have
   gone on to do. Only collected if an architecture asks for the role."""
+
+  init: SkillInit | None = None
+  """Where this skill starts, when the shared arena's reset does not put it there.
+  None means the arena's own reset is already right for this skill."""
 
   interrupt_range: tuple[int, int] = (32, 96)
   """How long this skill has been running when a hand-over happens, sampled uniformly
@@ -359,6 +416,7 @@ def collect_opening(
   collected = 0
   while collected < num_windows:
     obs, _ = env.reset()
+    obs = start_skill(env, spec, obs)
     skill.reset(active)
     step_obs, step_action, step_valid = [], [], []
     alive = torch.ones(num_envs, dtype=torch.bool, device=device)
@@ -427,6 +485,7 @@ def collect_handover(
 
   while collected < num_windows:
     obs, _ = env.reset()
+    obs = start_skill(env, spec, obs)
     skill.reset(active)
     cut = spec.sample_cuts(num_envs, device)
     alive = torch.ones(num_envs, dtype=torch.bool, device=device)
@@ -562,6 +621,7 @@ def collect_interrupts(
       skill = pool[skill_id]
       spec = plan[skill]
       obs, _ = env.reset()
+      obs = start_skill(env, spec, obs)
       skill.reset(active)
 
       cut = spec.sample_cuts(num_envs, device)
