@@ -83,19 +83,39 @@ Added
 Changed
 ^^^^^^^
 
-- Reworked the parkour skills into goal-conditioned DeepMimic trackers, replacing
-  the AMP style-reward setup. Sprint is dropped, leaving walk, run and jump. The
-  dataset builder now replays each LAFAN1 source in full and segments the replay
-  (rather than the CSV), which is what gives it foot contacts: locomotion is cut
-  where the yaw-frame velocity is steady *and* in band frame by frame, with the
-  ends eroded, and jumps are cut one per flight phase from the crouch to the
-  absorbed landing, never merged. Every cut is placed canonically -- global
-  translation and yaw removed -- and labelled with the goal it realizes (end
-  displacement and heading for walk/run, apex height and landing distance for
-  jump). The env observes proprioception, the reference pose and velocity, future
-  reference frames, the clip phase and the goal, and is rewarded on DeepMimic
-  tracking terms plus explicit goal terms, so the conditioning signal reaches the
-  reward and not just the observation.
+- Replaced the parkour experiment with a single reference-free, goal-conditioned
+  jump task, ``Mjlab-Parkour-Jump``. The previous LAFAN1 DeepMimic trackers (walk,
+  run, jump) and their dataset builder are gone, along with the AMP discriminator
+  and the corridor controller they fed. Tracking a retargeted mocap jump frame by
+  frame never produced one: the motion is a crouch, a takeoff, a flight and a
+  landing that happen once and in order, so its later frames are only reachable by
+  a policy that has already solved its earlier ones, and the usual remedy --
+  reference state initialization -- needs a reference the robot can actually
+  realize. The new task specifies the outcome instead. A ``JumpCommand`` term runs
+  a stand/jump/land cycle and samples a goal of landing displacement, heading
+  change and peak base height; the policy observes the goal, the phase and a
+  countdown to the jump window, and is rewarded for standing still between jumps,
+  for leaving the ground, for peaking at the commanded apex and for landing on the
+  target facing the commanded heading. Everything the landing pays is gated on an
+  actual flight phase, so walking to the target scores nothing. A five-stage
+  curriculum -- stand, hop, hop higher, jump forward, further forward -- promotes
+  on a success rate recorded when a cycle ends rather than sampled from live state.
+  Jumps are sagittal for now: the lateral and turning goal channels exist and are
+  observed but are pinned to zero at every stage.
+
+  The posture half of the task is shaped rather than left to a motion prior. The
+  stance width is a band enforced at the feet and the knees in the robot's own yaw
+  frame, penalizing a splayed stance as well as a crossed one; uprightness is
+  measured separately at the pelvis and the torso, since a free waist pitch lets
+  one be level while the other folds; rotation costs more while airborne, where it
+  cannot be corrected; the landing phase pays for a level pelvis and flat feet held
+  for its whole duration; and the legs are rewarded for mirroring each other, which
+  is sound only while the goals stay sagittal. The action space is restricted to the
+  19 joints that can contribute -- the legs, waist pitch, and the shoulders, so the
+  arms can still swing -- with the remaining 10 held at their default pose by a
+  reset event. Per-cycle diagnostics for landing torso tilt, stance width and foot
+  tilt are logged, so a posture change can be judged on numbers rather than on the
+  viewer.
 - Task package load failures during ``mjlab`` import now print the full
   traceback (and the entry point's module path) to ``stderr`` instead of
   just the exception message, making it easier to pinpoint the source of
