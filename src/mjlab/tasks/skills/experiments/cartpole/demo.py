@@ -50,7 +50,11 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 from mjlab.tasks.skills.architectures import ARCHITECTURES
-from mjlab.tasks.skills.experiments.cartpole import EXPERIMENT_NAME, build_pool
+from mjlab.tasks.skills.experiments.cartpole import (
+  BRIDGE_VIEW,
+  EXPERIMENT_NAME,
+  build_pool,
+)
 from mjlab.tasks.skills.experiments.cartpole.controller import CartpoleController
 from mjlab.tasks.skills.meta import ComposedPolicy
 from mjlab.tasks.skills.skill import SkillPool
@@ -247,7 +251,7 @@ def run_demo(cfg: DemoConfig) -> None:
     )
 
   controller = CartpoleController(pool, swingup_steps=cfg.swingup_steps)
-  meta = ARCHITECTURES[cfg.architecture](env, pool)
+  meta = ARCHITECTURES[cfg.architecture](env, pool, BRIDGE_VIEW.resolve(env))
 
   # Every architecture but the baseline carries trained state that must be restored.
   # The checkpoint is a run directory from train.py; default to the latest one.

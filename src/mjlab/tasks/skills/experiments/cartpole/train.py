@@ -33,6 +33,7 @@ from mjlab.tasks.skills.architectures import ARCHITECTURES, TRAINERS
 from mjlab.tasks.skills.architectures.arch_1.config import BridgeTraining
 from mjlab.tasks.skills.experiments.cartpole import (
   BALANCE_TASK_ID,
+  BRIDGE_VIEW,
   ENTITY_NAME,
   EXPERIMENT_NAME,
   SPINUP_TASK_ID,
@@ -141,7 +142,7 @@ def run_train(cfg: TrainConfig) -> None:
     BALANCE: _make_balance_success(env),
   }
 
-  meta = ARCHITECTURES[cfg.architecture](env, pool)
+  meta = ARCHITECTURES[cfg.architecture](env, pool, BRIDGE_VIEW.resolve(env))
   TRAINERS[cfg.architecture](
     env, pool, ENTITY_NAME, meta, success_fns, WINDOWS, cfg.training
   )

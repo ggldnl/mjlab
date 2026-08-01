@@ -8,17 +8,17 @@ exactly the momentum the balancer then has to catch, there is nowhere for it to
 hide.
 
 Two skills, each competent only inside its own regime:
-- spin_up: pumps energy into the pole to bring it from hanging to upright, by
+- `spin_up`: pumps energy into the pole to bring it from hanging to upright, by
   driving the cart back and forth in phase with the swing. It only ever shapes
   the pole's energy toward the upright value; it has no notion of the unstable
   equilibrium, so left to its own devices it swings the pole up, sails through
   the top, and lets it fall again. It cannot balance.
-- balance: an LQR that holds the pole upright, valid only in the linear regime
+- `balance`: an LQR that holds the pole upright, valid only in the linear regime
   near the top. Handed a pole that is still swinging (or far from vertical) its
   linear law reads a huge angle error and slams the cart the wrong way, so it
   cannot catch a pole that has not already been brought up gently.
 
-That gap is the whole point: a naive hand-off from spin_up to balance at the
+That gap is the whole point: a naive hand-off from `spin_up` to `balance` at the
 wrong instant (pole not yet up, or up but carrying too much angular velocity)
 fails, and the bridge's job is to hand over exactly when the pole is up and
 slow enough for the balancer's basin of attraction. The failure is unavoidable
@@ -48,7 +48,8 @@ from mjlab.tasks.skills.architectures.arch_1.config import (
   BridgeTraining,
   SwitchPhase,
 )
-from mjlab.tasks.skills.windows import SkillWindowSpec, WindowPlan
+from mjlab.tasks.skills.view import StateViewCfg
+from mjlab.tasks.skills.windows import SkillInit, SkillWindowSpec, WindowPlan
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -82,13 +83,63 @@ BALANCE_TASK_ID = "Mjlab-Cartpole-Balance"
 #
 # `overrun` is zero for both: no architecture here asks to see what a skill would have
 # gone on to do had control not been taken away. Raise it for one that does.
+# Each skill also declares where it starts. The arena is one env, built from the swing-up
+# task, so `env.reset()` hangs the pole for *both* skills -- and `balance` is an LQR valid
+# only in a narrow band around upright. Recording its opening window from a hanging pole
+# recorded the one state it cannot work in, and since the opening window is exactly what a
+# bridge is trained to reproduce, the whole bridge into `balance` was aimed at the wrong
+# place. So `balance` re-states its own start (upright, near still) on top of the reset;
+# `spin_up` needs none, because the arena's own reset is already its regime.
+#
+# This is about the shared arena, not about analytical versus learned skills: the
+# `Mjlab-Cartpole-Balance` task starts upright when trained on its own, so a checkpoint
+# loaded into this pool would have been mis-recorded in exactly the same way.
+#
+# The ranges mirror what the balance task's own reset does (hinge within ~0.034 rad of
+# upright, slider within 0.1 m of center, both nearly at rest); they are absolute here
+# rather than offsets, since the entity default they would offset from is the swing-up
+# one that is being corrected.
+_BALANCE_INIT = SkillInit(
+  entity_name=ENTITY_NAME,
+  joint_pos={"hinge_1": (-0.034, 0.034), "slider": (-0.1, 0.1)},
+  joint_vel={"hinge_1": (-0.01, 0.01), "slider": (-0.01, 0.01)},
+)
+
+# What the bridge is allowed to see, and therefore what it is compared against.
+#
+# The actor observation is four terms, five channels in all:
+#   cart_pos    (1)  slider position, relative to the rail's center
+#   pole_angle  (2)  cos and sin of the hinge angle, +1 cos upright
+#   cart_vel    (1)  slider velocity
+#   pole_vel    (1)  hinge angular velocity
+#
+# Everything is kept, there is nothing here to drop: the cart-pole env has no command
+# term and no actions term, and none of the four describes a task or a world frame.
+# They are five numbers about the machine, and the state this experiment turns on
+# ("is the pole up, and how fast is it going") is spread across three of them.
+#
+# Listed by name rather than left empty so the layout is written down and a term can be
+# taken out by deleting a line.
+BRIDGE_VIEW = StateViewCfg(
+  keep=(
+    "cart_pos",
+    "pole_angle",
+    "cart_vel",
+    "pole_vel",
+  )
+)
+
 WINDOWS = WindowPlan(
   {
     "spin_up": SkillWindowSpec(
-      opening=20, closing=20, overrun=0, interrupt_range=(20, 120)
+      opening=128, closing=128, overrun=0, interrupt_range=(128, 512)
     ),
     "balance": SkillWindowSpec(
-      opening=20, closing=10, overrun=0, interrupt_range=(10, 40)
+      opening=128,
+      closing=128,
+      overrun=0,
+      interrupt_range=(128, 512),
+      init=_BALANCE_INIT,
     ),
   }
 )

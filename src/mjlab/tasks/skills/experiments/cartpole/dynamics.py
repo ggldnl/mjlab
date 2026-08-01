@@ -81,6 +81,12 @@ _POLE_VEL = 4
 # the closed loop is stable (all eigenvalues in the left-half plane).
 _BALANCE_GAIN = (0.14142, 0.30196, 3.54788, 0.90904)
 
+# Region in which the small-angle linearization is trustworthy.
+_BALANCE_THETA_MAX = 0.35  # ~20 degrees
+_BALANCE_THETA_DOT_MAX = 2.0  # rad/s
+
+# TODO each skill, even analytical ones, should have its own init state (q, qdot)
+
 
 def _state(obs: VecEnvObs) -> torch.Tensor:
   """The flattened robot state to control on (the actor observation group)."""
@@ -158,11 +164,18 @@ class BalanceSkill(Skill):
 
   name = "balance"
 
-  def __init__(self, gain: tuple[float, float, float, float] = _BALANCE_GAIN) -> None:
+  def __init__(
+    self,
+    gain: tuple[float, float, float, float] = _BALANCE_GAIN,
+    theta_max: float = _BALANCE_THETA_MAX,
+    theta_dot_max: float = _BALANCE_THETA_DOT_MAX,
+  ) -> None:
     self.gain = gain
+    self.theta_max = theta_max
+    self.theta_dot_max = theta_dot_max
 
   def act(self, obs: VecEnvObs, active: torch.Tensor) -> torch.Tensor:
-    del active  # Stateless.
+    del active
     state = _state(obs)
     cart_pos = state[:, _CART_POS]
     cart_vel = state[:, _CART_VEL]
@@ -171,7 +184,15 @@ class BalanceSkill(Skill):
 
     g_x, g_xd, g_th, g_thd = self.gain
     action = g_x * cart_pos + g_xd * cart_vel + g_th * theta + g_thd * pole_vel
-    return torch.clamp(action, -1.0, 1.0).unsqueeze(-1)
+    action = torch.clamp(action, -1.0, 1.0)
+
+    # Outside the linearization's valid region, the linear law is meaningless
+    # (and clamping would otherwise let it act as an accidental swing-up).
+    # Zero it out rather than let saturation do something it wasn't designed to do.
+    in_region = (theta.abs() < self.theta_max) & (pole_vel.abs() < self.theta_dot_max)
+    action = torch.where(in_region, action, torch.zeros_like(action))
+
+    return action.unsqueeze(-1)
 
 
 def analytical_spin_up() -> SpinUpSkill:
