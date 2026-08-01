@@ -82,6 +82,7 @@ applies to you.
 Avoid hyphen, en dashes and em dashes in comments as punctuation marks
 (you might still use them in formulas).
 Avoid bolding text in docstrings and comments when not extremely necessary.
+Avoid using "`" in docstrings and comments when not extremely necessary.
 
 # Commits
 
