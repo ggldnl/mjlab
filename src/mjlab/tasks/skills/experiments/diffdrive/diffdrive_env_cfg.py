@@ -1,24 +1,25 @@
-"""Environments for the two differential-drive expert skills: drive and turn.
-- drive: a high forward speed with the heading target pinned to the heading the
+"""Environments for the two differential-drive expert skills: `drive` and `turn`.
+
+- `drive`: a high forward speed with the heading target pinned to the heading the
   robot starts the episode with, so the skill only ever learns to hold a straight
   line at speed. It never sees a turn command.
-- turn: a genuine heading change to realize (a nonzero target angle) while creeping
+- `turn`: a genuine heading change to realize (a nonzero target angle) while creeping
   forward on a tight arc, always starting from rest. It never sees a fast approach,
   so it never has to cope with momentum it did not build up itself.
 
 Both are trained against a single command [forward_speed, heading_error],
 where heading_error is the live, wrapped difference to a target heading fixed
-at reset. drive keeps that error near zero (hold heading); turn drives a large
+at reset. `drive` keeps that error near zero (hold heading); `turn` drives a large
 initial error down to zero (realize the angle). This mirrors the analytical
 experts in dynamics.py exactly: same behavior, so a trained checkpoint and a
 handwritten controller are interchangeable in the composition.
 
 The failure this experiment is built around is a tip-over. The turn is a
 fixed-radius arc, so its lateral (centripetal) acceleration is v**2 / R: gentle at
-the low speed turn was trained at, but violent if turn is handed the robot while it
-still carries drive's cruise speed. Above a threshold that lateral force rolls the
+the low speed `turn` was trained at, but violent if `turn` is handed the robot while it
+still carries `drive`'s cruise speed. Above a threshold that lateral force rolls the
 chassis over its inner wheels and it falls. A naive hand-off tips; the bridge has to
-brake the robot down into turn's speed regime before handing over.
+brake the robot down into `turn`'s speed regime before handing over.
 
 For that tip to be the failure that actually happens (rather than the wheels simply
 skidding), the robot needs a high, narrow center of mass. The stock diffdrive is

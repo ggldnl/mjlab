@@ -1,7 +1,7 @@
 """Watch the diffdrive windows a bridge is trained on.
 
-Left half of a couple: drive, in the last steps before the bridge would take over.
-Right half: turn, opening from its own reset. Previous and Next sweep the hand-over
+Left half of a couple: `drive`, in the last steps before the bridge would take over.
+Right half: `turn`, opening from its own reset. Previous and Next sweep the hand-over
 point across the range training samples from, so you can see the robot go from
 carrying most of drive's momentum to carrying all of it.
 

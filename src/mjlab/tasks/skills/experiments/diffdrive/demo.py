@@ -1,13 +1,13 @@
 """
-Run the diffdrive demonstration: drive and turn, alternated by a scripted
+Run the diffdrive demonstration: `drive` and `turn`, alternated by a scripted
 controller, composed through one bridging architecture.
 
-A fixed-step controller runs drive for a while, switches to turn, holds turn for a
+A fixed-step controller runs `drive` for a while, switches to `turn`, holds `turn` for a
 while, switches back, and repeats (see controller.py). Under architecture 0 (the
-no-bridge baseline, a direct hand-off), turn takes over while the robot still carries
-drive's cruise speed, so its tight arc's lateral acceleration rolls the tall chassis
+no-bridge baseline, a direct hand-off), `turn` takes over while the robot still carries
+`drive`'s cruise speed, so its tight arc's lateral acceleration rolls the tall chassis
 onto its side: it tips. That tip is the failure a real bridge has to remove, by
-braking the robot into turn's low-speed regime before handing over.
+braking the robot into `turn`'s low-speed regime before handing over.
 
 Analytical experts are recommended over RL.
 

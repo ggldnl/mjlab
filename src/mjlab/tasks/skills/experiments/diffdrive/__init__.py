@@ -1,18 +1,18 @@
 """A differential drive robot with two skills whose momentum genuinely couples.
 
-- drive: commanded to go forward at a given (high) speed; it never sees a turning
+- `drive`: commanded to go forward at a given (high) speed; it never sees a turning
     command during its own training, so it only knows how to hold a straight line at
     speed. It starts from rest and ramps up toward the target speed.
-- turn: commanded to arc to a target heading at a low speed; it never sees a fast
+- `turn`: commanded to arc to a target heading at a low speed; it never sees a fast
     approach during its own training, so it never has to cope with momentum it did
     not build up itself.
 
-The failure this experiment is built around is a tip-over. turn drives a tight,
+The failure this experiment is built around is a tip-over. `turn` drives a tight,
 fixed-radius arc, whose lateral (centripetal) acceleration is v**2 / R: harmless at
-the low speed turn was trained at, but violent if turn is handed the robot while it
-still carries drive's cruise speed, enough to roll the (deliberately tall, narrow)
-chassis onto its side. A naive hand-off from drive to turn tips; the bridge's job is
-to brake the robot into turn's speed regime before handing over.
+the low speed `turn` was trained at, but violent if `turn` is handed the robot while it
+still carries `drive`'s cruise speed, enough to roll the (deliberately tall, narrow)
+chassis onto its side. A naive hand-off from `drive` to `turn` tips; the bridge's job
+is to brake the robot into `turn`'s speed regime before handing over.
 
 A simple, scripted controller drives the demonstration: run drive for a fixed
 number of steps, signal a switch to turn, hold turn for a fixed number of steps,
@@ -78,7 +78,7 @@ TURN_SPEED = 0.3  # [m/s], the arc's low creep speed
 # discriminator given that channel separates the two halves on it alone, never looks at
 # the motion, and the only way for the bridge to close the gap is to steer the robot back
 # to the heading the episode started at. That is not bridging, it is navigating, and it
-# is what a bridge trained on the full observation actually learns to do -- the hand-over
+# is what a bridge trained on the full observation actually learns to do: the hand-over
 # it produces ends up worse than the naive one it was meant to fix. Its first channel is
 # no better: a per-episode speed target the analytical experts ignore entirely, so it is
 # pure noise the bridge cannot act on.
@@ -87,7 +87,12 @@ TURN_SPEED = 0.3  # [m/s], the arc's low creep speed
 # this fast, turning this hard, with the wheels here" for the state, and drive's or
 # turn's own opening as the thing to look like. Which reduces the problem to "slow down",
 # which is what it should have been all along.
-BRIDGE_VIEW = StateViewCfg(drop=("command",))
+BRIDGE_VIEW = StateViewCfg(
+  drop=(
+    "command",
+    "actions",
+  )
+)
 
 # How much of each skill is recorded around a hand-over. Shared by every architecture's
 # training and by inspect.py.

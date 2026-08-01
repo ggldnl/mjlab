@@ -1,4 +1,4 @@
-"""Analytical diffdrive experts: drive and turn.
+"""Analytical diffdrive experts: `drive` and `turn`.
 
 These are the handwritten counterparts of the two RL skills trained from
 diffdrive_env_cfg.py. They implement the same two behaviors as closed-form
@@ -10,18 +10,17 @@ Prefer these analytical experts: RL skills are discouraged for this experiment,
 they buy nothing here and only add a checkpoint to manage.
 
 Skills:
-- drive: tracks a commanded forward speed with zero yaw rate. It is a plain
-  wheel-velocity servo and holds no state.
-- turn: arcs to a given angle: it drives a tight, fixed-radius arc, rotating
+- `drive`: tracks a commanded forward speed with zero yaw rate.
+- `turn`: arcs to a given angle: it drives a tight, fixed-radius arc, rotating
   toward a target heading and easing off as it arrives. It is stateful, because the
   observation carries no absolute orientation, only a yaw rate; the skill integrates
   that yaw rate from the moment it takes over to know how far it has turned. The
   target is therefore relative to the heading the robot had when the turn began.
 
 Why an arc (and why it fails at speed). The arc's lateral acceleration is
-v**2 / R: at the low speed turn was trained at it is negligible, but handed the
-robot at drive's cruise it is large enough to roll the tall, narrow chassis over its
-inner wheels. turn does not brake the speed it inherits; it asks for its low arc
+v**2 / R: at the low speed `turn` was trained at it is negligible, but handed the
+robot at `drive`'s cruise it is large enough to roll the tall, narrow chassis over its
+inner wheels. `turn` does not brake the speed it inherits; it asks for its low arc
 speed and lets the acceleration-limited wheels get there in their own time, so
 a robot handed at cruise keeps barreling forward as it starts to rotate and
 goes over. Slowing down first is the bridge's job, not the skill's.
