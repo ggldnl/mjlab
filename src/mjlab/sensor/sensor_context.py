@@ -324,9 +324,7 @@ class SensorContext:
         enabled_geom_groups=enabled_geom_groups,
         cam_active=cam_active,
         use_precomputed_rays=not self._disable_precomputed_rays,
-        render_seg=render_seg,
-        render_skybox=True,
-        background_color=(0.0, 0.0, 0.0, 1.0),
+        render_seg=render_seg
       )
 
     # Cache address arrays from the render context. An adr value of -1 means that data

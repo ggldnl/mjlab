@@ -52,6 +52,8 @@ FULL_COLLISION_WITHOUT_SELF = CollisionCfg(
 # - Most realistic but can be unstable for training
 FULL_COLLISION = CollisionCfg(
   geom_names_expr=(".*_collision",),
+  contype=0,
+  conaffinity=1,
   condim={r"^(left|right)_foot.*": 3, ".*_collision": 1},
   priority={r"^(left|right)_foot.*": 1},
   friction={r"^(left|right)_foot.*": (0.6,)},
