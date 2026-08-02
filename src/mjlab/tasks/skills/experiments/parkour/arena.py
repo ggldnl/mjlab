@@ -198,10 +198,10 @@ def _add_corridor(obstacles: tuple[Obstacle, ...]):
       pos=(centre, 0.0),
       color=PATH_COLOR,
     )
-    # The edges, drawn just inside the lane so the bright line reads as its border.
-    for side, offset in (("left", 1.0), ("right", -1.0)):
 
-      """
+    """
+    # The edges, drawn just inside the lane so the bright line reads as its border.
+    for side, offset in (("left", 1.0), ("right", -1.0))
       _add_paint(
         spec,
         f"corridor_edge_{side}",
@@ -210,7 +210,7 @@ def _add_corridor(obstacles: tuple[Obstacle, ...]):
         color=EDGE_COLOR,
         layer=1,
       )
-      """
+    """
 
     for i, obstacle in enumerate(obstacles):
       spec.worldbody.add_geom(
