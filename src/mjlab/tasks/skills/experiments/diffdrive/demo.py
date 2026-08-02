@@ -41,7 +41,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import torch
 import tyro
@@ -119,6 +119,71 @@ class DemoConfig:
   # If headless, run for this many steps
   steps: int = 1500
 
+  # How long a terminated episode is left running in the viewer before the next
+  # one starts [s], so the tip-over is visible instead of being reset away at the
+  # instant it is detected. 0 restores the immediate reset. Viewers only:
+  # headless counts terminations and has nothing to watch
+  linger_seconds: float = 2.0
+
+
+class _LingerEnv:
+  """Keeps a finished episode on screen for a while before the next one starts.
+
+  Nothing about when an episode ends changes: the env's terminations are untouched and
+  the step they fire on still reports them. What changes is when the reset happens.
+  Auto-reset is switched off so the terminal state survives the step that detected it,
+  physics keeps running while the composition keeps acting, and the robot is left to
+  finish rolling onto its side in view. The reset is issued `linger_steps` later.
+
+  While an env lingers its terminations keep firing (a robot lying on its side is
+  still tipped over), so they are reported only on the step the episode actually ended
+  and suppressed afterwards: a caller counting dones sees exactly what it saw before.
+
+  Only the attributes the RL wrapper and the viewers touch are overridden; everything
+  else forwards to the wrapped env.
+  """
+
+  def __init__(self, env: ManagerBasedRlEnv, linger_steps: int) -> None:
+    self.env = env
+    self.linger_steps = linger_steps
+    env.cfg.auto_reset = False
+    self._countdown = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+
+  def __getattr__(self, name: str):
+    return getattr(self.env, name)
+
+  @property
+  def unwrapped(self) -> ManagerBasedRlEnv:
+    return self.env.unwrapped
+
+  def reset(self, **kwargs):
+    self._countdown.zero_()
+    return self.env.reset(**kwargs)
+
+  def step(self, action: torch.Tensor):
+    obs, reward, terminated, time_out, extras = self.env.step(action)
+
+    # With auto-reset off the env demands a reset before the next step; we own that
+    # decision now, so the request is cleared and answered when the countdown expires.
+    self.env._manual_reset_pending.zero_()  # noqa: SLF001
+
+    done = terminated | time_out
+    lingering = self._countdown > 0
+    starting = done & ~lingering
+    self._countdown = torch.where(
+      starting, torch.full_like(self._countdown, self.linger_steps), self._countdown
+    )
+    self._countdown = torch.where(
+      lingering, self._countdown - 1, self._countdown
+    ).clamp(min=0)
+
+    expired = lingering & (self._countdown == 0)
+    if expired.any():
+      obs, _ = self.env.reset(env_ids=expired.nonzero(as_tuple=False).squeeze(-1))
+
+    # Report the end of the episode once, on the step it happened.
+    return obs, reward, terminated & starting, time_out & starting, extras
+
 
 def _build_pool(cfg: DemoConfig, env: ManagerBasedRlEnv, device: str) -> SkillPool:
   return build_pool(
@@ -133,6 +198,14 @@ def _build_pool(cfg: DemoConfig, env: ManagerBasedRlEnv, device: str) -> SkillPo
     turn_angle=cfg.turn_angle,
     turn_speed=cfg.turn_speed,
   )
+
+
+def _viewer_env(cfg: DemoConfig, env: ManagerBasedRlEnv) -> ManagerBasedRlEnv:
+  """The env the viewer steps: the real one, wrapped to linger on failures."""
+  if cfg.linger_seconds <= 0.0:
+    return env
+  steps = max(1, round(cfg.linger_seconds / env.step_dt))
+  return cast(ManagerBasedRlEnv, _LingerEnv(env, steps))
 
 
 def _run_headless(env: ManagerBasedRlEnv, policy: ComposedPolicy, steps: int) -> None:
@@ -199,7 +272,7 @@ def _run_debug(cfg: DemoConfig, env: ManagerBasedRlEnv, pool: SkillPool) -> None
   selector = _SkillSelector(pool, env.num_envs, env.device)
   names = [skill.name for skill in pool.skills]
   viewer_env = RslRlVecEnvWrapper(
-    env, clip_actions=load_rl_cfg(cfg.drive_task_id).clip_actions
+    _viewer_env(cfg, env), clip_actions=load_rl_cfg(cfg.drive_task_id).clip_actions
   )
 
   def debug_policy(obs) -> torch.Tensor:
@@ -284,7 +357,7 @@ def run_demo(cfg: DemoConfig) -> None:
     return
 
   viewer_env = RslRlVecEnvWrapper(
-    env, clip_actions=load_rl_cfg(cfg.drive_task_id).clip_actions
+    _viewer_env(cfg, env), clip_actions=load_rl_cfg(cfg.drive_task_id).clip_actions
   )
 
   # Handed over as-is rather than wrapped in a lambda: the viewer's reset button calls
