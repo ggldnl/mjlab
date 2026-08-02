@@ -30,7 +30,7 @@ class TrainConfig:
   video: bool = False
   video_length: int = 200
   video_interval: int = 2000
-  enable_nan_guard: bool = True
+  enable_nan_guard: bool = False
   log_root: str = "logs/rsl_rl"
   """Root directory under which experiment logs are written."""
   torchrunx_log_dir: str | None = None
