@@ -3,7 +3,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import TYPE_CHECKING, Callable, Sequence
 
 import mujoco
 import mujoco_warp as mjwarp
@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from mjlab import actuator
-from mjlab.actuator import BuiltinActuatorGroup
+from mjlab.actuator import BuiltinActuatorGroup, FusedActuatorGroup
 from mjlab.actuator.actuator import TransmissionType
 from mjlab.actuator.xml_actuator import XmlActuator
 from mjlab.entity.data import EntityData
@@ -21,6 +21,9 @@ from mjlab.utils.mujoco import dof_width, qpos_width
 from mjlab.utils.spec import auto_wrap_fixed_base_mocap
 from mjlab.utils.string import resolve_expr
 from mjlab.utils.xml import fix_spec_xml, strip_buffer_textures
+
+if TYPE_CHECKING:
+  from mjlab.entity.variants import VariantMetadata
 
 
 @dataclass(frozen=False)
@@ -94,6 +97,8 @@ class EntityCfg:
   cameras: tuple[spec_cfg.CameraCfg, ...] = field(default_factory=tuple)
   textures: tuple[spec_cfg.TextureCfg, ...] = field(default_factory=tuple)
   materials: tuple[spec_cfg.MaterialCfg, ...] = field(default_factory=tuple)
+  meshes: tuple[spec_cfg.MeshCfg, ...] = field(default_factory=tuple)
+  geoms: tuple[spec_cfg.GeomCfg, ...] = field(default_factory=tuple)
   collisions: tuple[spec_cfg.CollisionCfg, ...] = field(default_factory=tuple)
 
   def build(self) -> Entity:
@@ -143,6 +148,7 @@ class Entity:
   def __init__(self, cfg: EntityCfg) -> None:
     self.cfg = cfg
     self._actuators: list[actuator.Actuator] = []
+    self._variant_metadata: VariantMetadata | None = None
     self._build_spec()
     self._identify_joints()
     self._apply_spec_editors()
@@ -150,12 +156,31 @@ class Entity:
     self._add_initial_state_keyframe()
 
   def _build_spec(self) -> None:
-    self._spec = auto_wrap_fixed_base_mocap(self.cfg.spec_fn)()
+    from mjlab.entity.variants import VariantEntityCfg, build_merged_variant_spec
+
+    if isinstance(self.cfg, VariantEntityCfg):
+      self._spec, self._variant_metadata = build_merged_variant_spec(self.cfg)
+    else:
+      self._spec = auto_wrap_fixed_base_mocap(self.cfg.spec_fn)()
+
+  @property
+  def variant_metadata(self) -> VariantMetadata | None:
+    return self._variant_metadata
 
   def _identify_joints(self) -> None:
     self._all_joints = self._spec.joints
     self._free_joint = None
     self._non_free_joints = tuple(self._all_joints)
+
+    free_joints = [j for j in self._all_joints if j.type == mujoco.mjtJoint.mjJNT_FREE]
+    if len(free_joints) > 1:
+      raise ValueError(
+        f"Entity spec has {len(free_joints)} freejoints. An Entity models a "
+        "single rigid- or articulated-body system with at most one freejoint, "
+        "which serves as its root. Model each detached floating body as its own "
+        "entry in SceneCfg.entities instead."
+      )
+
     if self._all_joints and self._all_joints[0].type == mujoco.mjtJoint.mjJNT_FREE:
       self._free_joint = self._all_joints[0]
       if not self._free_joint.name:
@@ -163,11 +188,16 @@ class Entity:
       self._non_free_joints = tuple(self._all_joints[1:])
 
   def _apply_spec_editors(self) -> None:
+    spec_cfg.warn_overlapping_geom_edits(
+      self.cfg.geoms, self.cfg.collisions, self._spec
+    )
     for cfg_list in [
       self.cfg.lights,
       self.cfg.cameras,
       self.cfg.textures,
       self.cfg.materials,
+      self.cfg.meshes,
+      self.cfg.geoms,
       self.cfg.collisions,
     ]:
       for cfg in cfg_list:
@@ -641,23 +671,20 @@ class Entity:
     for act in self._actuators:
       act.initialize(mj_model, model, data, device)
 
-    # Vectorize built-in actuators; we'll loop through custom ones.
+    # Vectorize built-in actuators, then fuse ideal PD actuators; we'll loop
+    # through whatever custom actuators remain.
     builtin_group, custom_actuators = BuiltinActuatorGroup.process(self._actuators)
     builtin_group.initialize(nworld, device)
     self._builtin_group = builtin_group
+    fused_actuator_group, custom_actuators = FusedActuatorGroup.process(
+      custom_actuators
+    )
+    fused_actuator_group.initialize(nworld, device)
+    self._fused_actuator_group = fused_actuator_group
     self._custom_actuators = custom_actuators
 
     # Root state.
-    root_state_components = [self.cfg.init_state.pos, self.cfg.init_state.rot]
-    if not self.is_fixed_base:
-      root_state_components.extend(
-        [self.cfg.init_state.lin_vel, self.cfg.init_state.ang_vel]
-      )
-    default_root_state = torch.tensor(
-      sum((tuple(c) for c in root_state_components), ()),
-      dtype=torch.float,
-      device=device,
-    ).repeat(nworld, 1)
+    default_root_state = self._build_default_root_state(nworld, device)
 
     # Joint state.
     if self.is_articulated:
@@ -1150,6 +1177,18 @@ class Entity:
   # Private methods.
   ##
 
+  def _build_default_root_state(self, nworld: int, device: str) -> torch.Tensor:
+    """Build default root state tensor, uniform across all worlds."""
+    base = self.cfg.init_state
+    components: list[tuple[float, ...]] = [base.pos, base.rot]
+    if not self.is_fixed_base:
+      components.extend([base.lin_vel, base.ang_vel])
+    return torch.tensor(
+      sum((tuple(c) for c in components), ()),
+      dtype=torch.float,
+      device=device,
+    ).repeat(nworld, 1)
+
   def _compute_indexing(self, model: mujoco.MjModel, device: str) -> EntityIndexing:
     bodies = tuple([b for b in self.spec.bodies[1:]])
     joints = self._non_free_joints
@@ -1233,6 +1272,7 @@ class Entity:
 
   def _apply_actuator_controls(self) -> None:
     self._builtin_group.apply_controls(self._data)
+    self._fused_actuator_group.apply_controls(self._data)
     for act in self._custom_actuators:
       command = act.get_command(self._data)
       command = act.apply_delay(command)

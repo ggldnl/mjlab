@@ -42,8 +42,8 @@ class RecomputeLevel(enum.IntEnum):
 
   set_const_0 = 2
   """Recompute ``dof_invweight0``, ``body_invweight0``, ``tendon_length0``,
-  ``tendon_invweight0``. Use after modifying ``dof_armature``, ``body_inertia``,
-  ``body_pos``, ``body_quat``, or ``qpos0``."""
+  ``tendon_invweight0``, and ``actuator_acc0``. Use after modifying
+  ``dof_armature``, ``body_inertia``, ``body_pos``, ``body_quat``, or ``qpos0``."""
 
   set_const = 3
   """Full recomputation (superset of all lower levels). Use after modifying
@@ -58,6 +58,7 @@ _DERIVED_FIELDS: dict[RecomputeLevel, tuple[str, ...]] = {
     "body_invweight0",
     "tendon_length0",
     "tendon_invweight0",
+    "actuator_acc0",
   ),
 }
 _DERIVED_FIELDS[RecomputeLevel.set_const] = (
@@ -290,9 +291,12 @@ class EventManager(ManagerBase):
         fired = True
       elif mode == "reset":
         assert global_env_step_count is not None
+        # Reset events require concrete indices: callers (e.g. ManagerBasedRlEnv)
+        # resolve None to all environments upstream. Enforce that here so a future
+        # caller passing None fails loudly instead of leaking a slice into event
+        # functions, which only understand None or a tensor.
+        assert env_ids is not None, "reset events require concrete env_ids, got None"
         min_step_count = term_cfg.min_step_count_between_reset
-        if env_ids is None:
-          env_ids = slice(None)
         if min_step_count == 0:
           self._reset_term_last_triggered_step_id[index][env_ids] = (
             global_env_step_count

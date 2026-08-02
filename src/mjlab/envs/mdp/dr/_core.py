@@ -108,8 +108,7 @@ def _randomize_model_field(
   indexed_data = model_field[env_grid, entity_grid]
 
   if operation.uses_defaults:
-    default_field = env.sim.get_default_field(field)
-    base_values = default_field[entity_indices].unsqueeze(0).expand_as(indexed_data)
+    base_values = _select_default_values(env, field, env_ids, entity_indices)
   else:
     base_values = indexed_data
 
@@ -134,7 +133,19 @@ def _randomize_model_field(
       operation,
     )
 
-  model_field[env_grid, entity_grid] = operation.combine(base_values, random_values)
+  combined = operation.combine(base_values, random_values)
+
+  # Only write back the axes we targeted. Non-target axes in ``combined`` hold the
+  # operation identity applied to ``base_values`` (e.g. ``default * 1`` for scale),
+  # so writing the full slice would clobber modifications made by earlier events
+  # that targeted different axes of the same field. We loop with an integer axis
+  # index (basic indexing) rather than a device index tensor to avoid a
+  # per-call host-to-device copy; ``target_axes`` is tiny (at most 4).
+  if combined.ndim > 2:
+    for axis in target_axes:
+      model_field[env_grid, entity_grid, axis] = combined[..., axis]
+  else:
+    model_field[env_grid, entity_grid] = combined
 
 
 def _randomize_with_string_ranges(
@@ -301,6 +312,38 @@ def _generate_random_values(
   return result
 
 
+# Categorical engine.
+
+
+def _randomize_categorical_field(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  field: str,
+  *,
+  entity_type: str,
+  pool: torch.Tensor,
+  asset_cfg: SceneEntityCfg,
+  shared_random: bool = False,
+) -> None:
+  """Core engine for categorical fields: assign each entry a value from ``pool``."""
+  asset = env.scene[asset_cfg.name]
+
+  if env_ids is None:
+    env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+  else:
+    env_ids = env_ids.to(env.device, dtype=torch.int)
+
+  entity_indices = _get_entity_indices(asset.indexing, asset_cfg, entity_type, False)
+  env_grid, entity_grid = torch.meshgrid(env_ids, entity_indices, indexing="ij")
+
+  sample_shape = (env_ids.numel(), 1) if shared_random else env_grid.shape
+  pick = torch.randint(0, int(pool.numel()), sample_shape, device=env.device)
+  pick = pick.expand(env_grid.shape)
+
+  model_field = getattr(env.sim.model, field)
+  model_field[env_grid, entity_grid] = pool[pick]
+
+
 # Quaternion helpers.
 
 
@@ -355,11 +398,39 @@ def _randomize_quat_field(
   ).reshape(n_envs, n_entities, 4)
 
   # Expand default to (n_envs, n_entities, 4) so quat_mul shapes match.
-  q_default = env.sim.get_default_field(field)[entity_indices]  # (n_entities, 4)
-  q_default_exp = q_default.unsqueeze(0).expand(n_envs, n_entities, 4).contiguous()
+  q_default_exp = _select_default_values(
+    env, field, env_ids, entity_indices
+  ).contiguous()
 
   q_new = quat_mul(q_perturb, q_default_exp)  # (n_envs, n_entities, 4)
 
   model_field = getattr(env.sim.model, field)
   env_grid, entity_grid = torch.meshgrid(env_ids, entity_indices, indexing="ij")
   model_field[env_grid, entity_grid] = q_new
+
+
+def _select_default_values(
+  env,
+  field: str,
+  env_ids: torch.Tensor,
+  entity_indices: torch.Tensor,
+) -> torch.Tensor:
+  """Return default model values indexed as ``(env, entity, ...)``.
+
+  Standard model defaults are stored as ``(nentity, ...)`` and are shared by
+  every env. Per-world mesh compilation snapshots variant-dependent defaults as
+  ``(nworld, nentity, ...)`` so downstream DR must preserve each world's variant
+  baseline instead of indexing the first dimension as entities.
+  """
+  default_field = env.sim.get_default_field(field)
+  if field in env.sim.per_world_default_fields:
+    assert default_field.shape[0] == env.num_envs, (
+      f"Field '{field}' is registered as per-world but its default has "
+      f"shape {tuple(default_field.shape)}; expected leading dim "
+      f"{env.num_envs}."
+    )
+    env_grid, entity_grid = torch.meshgrid(env_ids, entity_indices, indexing="ij")
+    return default_field[env_grid, entity_grid]
+
+  values = default_field[entity_indices].unsqueeze(0)
+  return values.expand((env_ids.numel(),) + values.shape[1:])
