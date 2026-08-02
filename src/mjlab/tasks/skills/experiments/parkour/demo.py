@@ -83,7 +83,7 @@ class DemoConfig:
   jump_checkpoint: str | None = None
 
   # How close to an obstacle the controller calls the jump [m]
-  jump_distance: float = 1.6
+  jump_distance: float = 0.8
 
   # A clear stretch at least this long is worth running [m]
   run_distance: float = 6.0

@@ -80,6 +80,7 @@ class MetaPolicy(ABC):
     self._target = torch.full((num_envs,), NO_SKILL, dtype=torch.long, device=device)
     self._source = torch.full_like(self._target, NO_SKILL)
     self._bridging = torch.zeros(num_envs, dtype=torch.bool, device=device)
+    self._engaged = torch.zeros(num_envs, dtype=torch.bool, device=device)
 
   def notify_reset(self, done: torch.Tensor) -> None:
     """Clear per-episode state in the envs whose episode just ended.
@@ -98,6 +99,7 @@ class MetaPolicy(ABC):
       done, torch.full_like(self._source, NO_SKILL), self._source
     )
     self._bridging = self._bridging & ~done
+    self._engaged = self._engaged & ~done
 
   def act(self, obs: VecEnvObs, command: torch.Tensor) -> torch.Tensor:
     """Actions for every env given the controller's desired skill per env.
@@ -111,6 +113,7 @@ class MetaPolicy(ABC):
     fresh = self._target == NO_SKILL
     if fresh.any():
       self._target = torch.where(fresh, command, self._target)
+      self._engaged = self._engaged & ~fresh
 
     # A switch is a command that differs from the skill control is committed to.
     switching = (command != self._target) & ~fresh
@@ -120,7 +123,13 @@ class MetaPolicy(ABC):
       self._source = torch.where(switching, self._target, self._source)
       self._target = torch.where(switching, command, self._target)
       self._bridging = self._bridging | switching
+      self._engaged = self._engaged & ~switching
       self.begin_switch(switching, self._source, self._target)
+
+    # Whatever is about to act for the first time is engaged first: a skill carrying
+    # per-episode state (the jump's reference anchor) has no other moment to learn
+    # that control has arrived and where the robot is.
+    self.engage(~self._bridging & ~self._engaged)
 
     # Skill actions for every non-bridging env; bridging envs are set to NO_SKILL
     # (SkillPool.act returns zeros for them) and overwritten with the bridge's below.
@@ -155,13 +164,39 @@ class MetaPolicy(ABC):
     target = int(self._target[env_idx])
     return "-" if target < 0 else self.pool[target].name
 
+  def engage(self, mask: torch.Tensor) -> None:
+    """Hand control to the target skill in the envs where `mask` is set.
+
+    Calls `reset` on each target skill, which is how a skill that keeps per-episode
+    state is told it is starting now. The jump is the reason this exists: its reset
+    pins the reference clip to wherever the robot currently is, and a jump that is
+    never engaged tracks a clip still anchored where the last episode reset left it.
+
+    Called by the base class the step before a skill's first action, and by an
+    architecture whose hand-over is immediate (arch_0) from `begin_switch`, since
+    there the target skill acts on the same step the switch fires. Engaging twice is
+    harmless in itself but rewinds a skill that has already started, so the mask is
+    narrowed to envs not already engaged.
+    """
+    mask = mask & ~self._engaged
+    if not mask.any():
+      return
+    for skill_id in self._target[mask].unique().tolist():
+      if skill_id == NO_SKILL:
+        continue
+      self.pool[skill_id].reset(mask & (self._target == skill_id))
+    self._engaged = self._engaged | mask
+
   def begin_switch(  # noqa: B027
     self, switching: torch.Tensor, source: torch.Tensor, target: torch.Tensor
   ) -> None:
     """Start a transition in the envs where `switching` is set.
 
     Called once when a switch fires, before the first `bridge_step` of that
-    transition. The default does nothing, which is right for a stateless bridge.
+    transition. The default does nothing, which is right for a bridge that drives the
+    robot itself for a while: the target skill is engaged by the base class once the
+    bridge hands over, not when the switch is commanded. An architecture that hands
+    over at once has to engage the target here instead.
     """
 
   @abstractmethod

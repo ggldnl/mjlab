@@ -27,6 +27,9 @@ Added
 - Added light domain randomization functions: ``dr.light_diffuse``,
   ``dr.light_specular``, ``dr.light_ambient``, ``dr.light_attenuation``,
   ``dr.light_cutoff``, and ``dr.light_exponent``. Contribution by @bd-pmorais.
+- Added a ``gui`` field to ``CommandTermCfg``, defaulting to ``True``. Set it
+  to ``False`` to keep a command term from adding controls to the Viser
+  viewer, for terms something else already drives.
 
 Changed
 ^^^^^^^

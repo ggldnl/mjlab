@@ -38,6 +38,11 @@ class CommandTermCfg(abc.ABC):
   the command term's ``_debug_vis_impl`` method is called each frame to render
   visual aids (e.g., velocity arrows, target markers)."""
 
+  gui: bool = True
+  """Whether this term may add interactive controls to the Viser viewer. Set False
+  where something else already drives the command and a control writing the same
+  field would silently take it over."""
+
   @abc.abstractmethod
   def build(self, env: ManagerBasedRlEnv) -> CommandTerm:
     """Build the command term from this config."""
@@ -180,6 +185,8 @@ class CommandManager(ManagerBase):
   ) -> None:
     """Let each command term create its GUI controls."""
     for name, term in self._terms.items():
+      if not term.cfg.gui:
+        continue
       term.create_gui(
         name,
         server,

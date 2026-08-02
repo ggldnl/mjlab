@@ -20,6 +20,14 @@ from mjlab.tasks.skills.skill import NO_SKILL
 class Arch0(MetaPolicy):
   """Meta policy with no bridge: switches hand over to the target skill at once."""
 
+  def begin_switch(
+    self, switching: torch.Tensor, source: torch.Tensor, target: torch.Tensor
+  ) -> None:
+    del source, target
+    # There is no bridge to wait for: the target skill produces this step's actions
+    # in `bridge_step` below, so it has to be handed control before it is asked.
+    self.engage(switching)
+
   def bridge_step(
     self,
     obs: VecEnvObs,

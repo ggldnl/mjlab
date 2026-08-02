@@ -436,6 +436,78 @@ class JumpCommand(CommandTerm):
       return 0, 1.0
     return best[2], best[3]
 
+  @property
+  def landing_distances(self) -> torch.Tensor:
+    """How far each clip has travelled by the frame it touches down on, [num_motions].
+
+    Not the same quantity as `motion.distances`, and the difference is what an
+    obstacle cares about. A clip's goal is where its last frame is, and every clip
+    here keeps walking for half a metre after it lands: level 5 travels 1.97 m in
+    total but touches down at 1.47 m. Something that has to come down past a box
+    has to be commanded on the second number.
+    """
+    starts = self.motion.root_pos_w[:, 0, :2]
+    lands = self.motion.root_pos_w[
+      torch.arange(self.motion.num_motions, device=self.device), self.land_steps_all, :2
+    ]
+    return torch.norm(lands - starts, dim=-1)
+
+  @property
+  def takeoff_distances(self) -> torch.Tensor:
+    """How far each clip has travelled by the frame it leaves the ground."""
+    starts = self.motion.root_pos_w[:, 0, :2]
+    takeoffs = self.motion.root_pos_w[
+      torch.arange(self.motion.num_motions, device=self.device),
+      self.takeoff_steps_all,
+      :2,
+    ]
+    return torch.norm(takeoffs - starts, dim=-1)
+
+  @property
+  def land_steps_all(self) -> torch.Tensor:
+    return self.motion.land_steps
+
+  @property
+  def takeoff_steps_all(self) -> torch.Tensor:
+    return torch.tensor(
+      [m.takeoff_step for m in self.motion.metadata],
+      dtype=torch.long,
+      device=self.device,
+    )
+
+  def solve_landing(
+    self, distance: float, takeoff_before: float | None = None
+  ) -> tuple[int, float]:
+    """Pick the clip and stretch that touch down `distance` metres ahead.
+
+    The counterpart of `solve_goal` for a caller that has an obstacle rather than a
+    target: what has to be cleared is decided by where the reference lands, and by
+    where it leaves the ground. `takeoff_before` is the distance to whatever must be
+    airborne over, and clips whose stretched run-up would still be on the ground at
+    that point are rejected outright rather than merely penalized -- a jump that takes
+    off on top of the box is not a worse jump, it is a trip.
+    """
+    lo, hi = self.cfg.scale_range
+    landings = self.landing_distances.tolist()
+    takeoffs = self.takeoff_distances.tolist()
+    best: tuple[float, float, int, float] | None = None
+    fallback: tuple[float, float, int, float] | None = None
+    for i, (land, takeoff) in enumerate(zip(landings, takeoffs, strict=True)):
+      if land < 1e-6:
+        continue
+      scale = float(np.clip(distance / land, lo, hi))
+      candidate = (abs(scale * land - distance), abs(scale - 1.0), i, scale)
+      if fallback is None or candidate[:2] < fallback[:2]:
+        fallback = candidate
+      if takeoff_before is not None and scale * takeoff > takeoff_before:
+        continue
+      if best is None or candidate[:2] < best[:2]:
+        best = candidate
+    best = best or fallback
+    if best is None:
+      return 0, 1.0
+    return best[2], best[3]
+
   def request_goal(self, distance: float) -> None:
     """Ask for a jump distance; applied at the next reset."""
     self._requested_goal = self.solve_goal(distance)
