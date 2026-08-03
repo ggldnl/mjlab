@@ -121,10 +121,32 @@ class SpinUpSkill(Skill):
 
   def __init__(
     self,
-    energy_gain: float = 2.0,
+    energy_gain: float = 20.0,
     center_gain: float = 0.1,
     center_damping: float = 0.2,
   ) -> None:
+    """`energy_gain` is how hard the pump pushes per unit of missing energy.
+
+    It has to be matched to the pole it is swinging. The pump is proportional to the
+    energy still missing, so it fades out as the target is approached, and the controller
+    comes to rest at whatever energy its push balances the pole's losses at. On a
+    frictionless pole there are no losses and any gain gets there eventually, which is
+    where the old default of 2.0 came from. This experiment's pole has a lossy hinge on
+    purpose (see cartpole_env_cfg.py), and at 2.0 the balance point sits so far below
+    upright that spin_up never brings the pole up at all: measured over 256 envs, it
+    reaches balance's basin in 0% of them at any damping at or above 1e-3.
+
+    20.0 restores it: 100% at the damping this experiment uses, in about 32 steps. This
+    is a retune for a different plant, not a change of behavior -- it is the same
+    energy-shaping law doing the same thing, pushing harder.
+
+    Do not raise it much further. Past about 100 the pump saturates into bang-bang and
+    overshoots the upright energy, and a pole carrying surplus energy has its own way of
+    getting caught: damping bleeds the surplus away, and on the way down it passes
+    through exactly the energy that puts it at the top slowly. Measured, the naive
+    hand-off starts succeeding again (up to 36%), which is the experiment quietly
+    breaking in the other direction.
+    """
     self.energy_gain = energy_gain
     # A light cart-centering term keeps the swing from walking off the rail; it
     # is deliberately weak so it never overrides the energy pumping.
@@ -195,9 +217,13 @@ class BalanceSkill(Skill):
     return action.unsqueeze(-1)
 
 
-def analytical_spin_up() -> SpinUpSkill:
-  """The spin_up expert: energy-shaping swing-up that cannot balance."""
-  return SpinUpSkill()
+def analytical_spin_up(energy_gain: float = 20.0) -> SpinUpSkill:
+  """The spin_up expert: energy-shaping swing-up that cannot balance.
+
+  The gain default is tuned against this experiment's damped pole; see `SpinUpSkill`
+  for why it is not the 2.0 a frictionless pole would want.
+  """
+  return SpinUpSkill(energy_gain=energy_gain)
 
 
 def analytical_balance() -> BalanceSkill:

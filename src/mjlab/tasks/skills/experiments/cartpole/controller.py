@@ -38,9 +38,9 @@ class CartpoleController(Controller):
   def __init__(
     self,
     pool: SkillPool,
-    swingup_steps: int = 400,
+    swingup_steps: int = 200,
     position_based: bool = True,
-    down_band: float = 0.35,
+    down_band: float = 0.1,
   ) -> None:
     """
     Initialize the controller.

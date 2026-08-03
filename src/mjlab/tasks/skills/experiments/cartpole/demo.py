@@ -51,8 +51,10 @@ from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 from mjlab.tasks.skills.architectures import ARCHITECTURES
 from mjlab.tasks.skills.experiments.cartpole import (
+  BALANCE_TASK_ID,
   BRIDGE_VIEW,
   EXPERIMENT_NAME,
+  SPINUP_TASK_ID,
   build_pool,
 )
 from mjlab.tasks.skills.experiments.cartpole.controller import CartpoleController
@@ -89,8 +91,8 @@ class DemoConfig:
 
   # The two skill tasks. They share one observation/action space; the arena is
   # built from the swingup task so the pole starts hanging and spin_up has a job
-  spinup_task_id: str = "Mjlab-Cartpole-Swingup"
-  balance_task_id: str = "Mjlab-Cartpole-Balance"
+  spinup_task_id: str = SPINUP_TASK_ID
+  balance_task_id: str = BALANCE_TASK_ID
 
   # Checkpoints for the non-analytical skills. None picks the latest trained
   # checkpoint for the corresponding task
@@ -99,7 +101,9 @@ class DemoConfig:
 
   # Controller parameter: after how many steps spin_up hands over to balance.
   # Sized so the naive hand-off fires while the pole is still swinging
-  swingup_steps: int = 400
+  swingup_steps: int = 200
+
+  position_based: bool = True
 
   num_envs: int = 1
   device: str | None = None
@@ -250,7 +254,9 @@ def run_demo(cfg: DemoConfig) -> None:
       f"Unknown architecture {cfg.architecture}; registered: {sorted(ARCHITECTURES)}."
     )
 
-  controller = CartpoleController(pool, swingup_steps=cfg.swingup_steps)
+  controller = CartpoleController(
+    pool, swingup_steps=cfg.swingup_steps, position_based=cfg.position_based
+  )
   meta = ARCHITECTURES[cfg.architecture](env, pool, BRIDGE_VIEW.resolve(env))
 
   # Every architecture but the baseline carries trained state that must be restored.

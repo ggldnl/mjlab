@@ -24,6 +24,19 @@ fails, and the bridge's job is to hand over exactly when the pole is up and
 slow enough for the balancer's basin of attraction. The failure is unavoidable
 and graded: too much residual energy and the balancer loses the pole.
 
+That gap only exists because this experiment gives the pole a lossy hinge, and it is
+worth knowing why. `spin_up` shapes the pole's energy to exactly the energy of standing
+upright, and "exactly enough energy to reach the top" is the same statement as "arrives
+at the top with no speed left" -- which is precisely what `balance` needs. On the shared
+asset's near-frictionless pole that energy is never lost, so a mistimed hand-over costs
+nothing at all: `balance` sits at zero force outside its basin and the pole comes back
+around to offer itself again, indefinitely. Measured over 256 envs, handing over at the
+bottom of the swing succeeded 100% of the time, so there was nothing for a bridge to do.
+With the damping in cartpole_env_cfg.py it succeeds 0% of the time: the energy bleeds
+away before the pole reaches the top, it falls short, and since `balance` cannot swing
+up, the failure is permanent. `spin_up` is unaffected because it has an energy source
+and can pay the loss; a coasting pole cannot.
+
 The analytical experts live in dynamics.py; they are the handwritten
 counterparts of RL skills trained from the existing Mjlab-Cartpole-Swingup
 (pole starts hanging) and Mjlab-Cartpole-Balance (pole starts upright) tasks,
@@ -43,10 +56,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from mjlab.tasks.cartpole.cartpole_env_cfg import cartpole_ppo_runner_cfg
+from mjlab.tasks.registry import register_mjlab_task
 from mjlab.tasks.skills.architectures.arch_1.config import (
   BridgePhase,
   BridgeTraining,
   SwitchPhase,
+)
+from mjlab.tasks.skills.experiments.cartpole.cartpole_env_cfg import (
+  damped_cartpole_env_cfg,
 )
 from mjlab.tasks.skills.view import StateViewCfg
 from mjlab.tasks.skills.windows import SkillInit, SkillWindowSpec, WindowPlan
@@ -63,8 +81,16 @@ ENTITY_NAME = "cartpole"
 
 # The two skill tasks. They share one observation/action space; the arena is built
 # from the swingup task so the pole starts hanging and spin_up has a job.
-SPINUP_TASK_ID = "Mjlab-Cartpole-Swingup"
-BALANCE_TASK_ID = "Mjlab-Cartpole-Balance"
+#
+# These are this experiment's own registrations, not the shared `Mjlab-Cartpole-*`
+# tasks, and they differ from them in exactly one number: the hinge damping (see
+# cartpole_env_cfg.py). Everything else -- observations, action, rewards, resets -- is
+# the shared config, replaced entity and all. A frictionless pole makes the hand-over
+# impossible to fail, because the energy spin_up built is never lost and the pole keeps
+# re-offering a catchable moment forever; a lossy one makes a mistimed hand-over
+# permanent, since balance coasts at zero force and cannot swing the pole back up.
+SPINUP_TASK_ID = "Mjlab-Skills-Cartpole-Swingup"
+BALANCE_TASK_ID = "Mjlab-Skills-Cartpole-Balance"
 
 
 # How much of each skill is recorded around a hand-over. Shared by every architecture's
@@ -152,14 +178,29 @@ WINDOWS = WindowPlan(
 # survival) has nothing to learn from here. Architecture 3 is the one to compare against
 # architecture 1 on the cart-pole.
 TRAINING = BridgeTraining(
-  bridge=BridgePhase(num_iterations=300, num_windows=512, num_interrupts=4096),
+  bridge=BridgePhase(num_iterations=100, num_windows=512, num_interrupts=4096),
   switch=SwitchPhase(
-    num_iterations=600,
+    num_iterations=200,
     num_interrupts=4096,
     max_transition_steps=40,
     eval_steps=40,
     epsilon_decay_iterations=150,
   ),
+)
+
+
+register_mjlab_task(
+  task_id=SPINUP_TASK_ID,
+  env_cfg=damped_cartpole_env_cfg(swing_up=True),
+  play_env_cfg=damped_cartpole_env_cfg(swing_up=True, play=True),
+  rl_cfg=cartpole_ppo_runner_cfg(),
+)
+
+register_mjlab_task(
+  task_id=BALANCE_TASK_ID,
+  env_cfg=damped_cartpole_env_cfg(swing_up=False),
+  play_env_cfg=damped_cartpole_env_cfg(swing_up=False, play=True),
+  rl_cfg=cartpole_ppo_runner_cfg(),
 )
 
 
