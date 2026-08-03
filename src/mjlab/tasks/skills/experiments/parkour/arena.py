@@ -316,6 +316,20 @@ def parkour_arena_env_cfg(
     sensor for sensor in (velocity.scene.sensors or ()) if sensor.name not in have
   )
 
+  # And the budgets those sensors need. The arena inherits the jump task's, which were
+  # sized for the jump task's sensor set on a bare plane, and it is now carrying the
+  # velocity task's sensors as well. Left alone, both overflow and print a stream of
+  # "contact match overflow" / "nefc overflow" during any long run; a constraint dropped
+  # on overflow is a contact that silently did not happen, which is a robot sinking into
+  # the floor rather than an error.
+  #
+  # The numbers are the larger of what either task asks for, with headroom: bridge
+  # training teleports the robot into harvested states thousands of environments at a
+  # time and some of them land in a pile of contacts no ordinary rollout produces.
+  cfg.sim.contact_sensor_maxmatch = 500
+  cfg.sim.nconmax = 100
+  cfg.sim.njmax = 600
+
   # And the bridge's view: proprioception, nothing else. Taken from the jump group
   # because it is the one already resolved against this scene's sensors.
   jump_terms = cfg.observations[JUMP_OBS_GROUP].terms
@@ -353,8 +367,8 @@ def parkour_arena_env_cfg(
 
   if obstacles:
     cfg.scene.spec_fn = _add_corridor(obstacles)
-    # Boxes are extra contact pairs; the jump task's budget assumed a bare plane.
-    cfg.sim.nconmax = 80
-    cfg.sim.njmax = 400
+    # Boxes are extra contact pairs on top of the bare-plane budget set above.
+    cfg.sim.nconmax = 140
+    cfg.sim.njmax = 800
 
   return cfg

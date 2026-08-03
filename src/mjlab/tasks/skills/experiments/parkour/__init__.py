@@ -123,7 +123,7 @@ WINDOWS = WindowPlan(
       opening=64, closing=64, overrun=0, interrupt_range=(64, 256)
     ),
     "jump": SkillWindowSpec(
-      opening=64, closing=64, overrun=0, interrupt_range=(64, 160)
+      opening=128, closing=64, overrun=0, interrupt_range=(64, 160)
     ),
   }
 )
@@ -137,8 +137,22 @@ WINDOWS = WindowPlan(
 # a run's momentum. `eval_steps` is 128, long enough to see a botched hand-off into the
 # jump land: the clip takes roughly a second to reach its takeoff, and a robot that
 # mistimes it falls during the second after that.
+#
+# `entropy_coef` is a tenth of the family default. Measured, not guessed: at 0.01 the
+# actor's std climbs about a percent per iteration and never stops, because a bridge
+# that cannot yet move the discriminator has a surrogate term far weaker than the
+# entropy bonus. Over 3000 iterations that is `exp` of a large number, and the run dies
+# in PPO with a NaN std. `action_max_std` now bounds it either way, but a policy parked
+# at the bound is exploring at random rather than learning, so the coefficient is the
+# thing to set. Watch `std` in the phase 1 log: if it still climbs to the bound and
+# stays, lower this again.
 TRAINING = BridgeTraining(
-  bridge=BridgePhase(num_iterations=3000, num_windows=2048, num_interrupts=8192),
+  bridge=BridgePhase(
+    num_iterations=3000,
+    num_windows=2048,
+    num_interrupts=8192,
+    entropy_coef=0.001,
+  ),
   switch=SwitchPhase(
     num_iterations=4000,
     num_interrupts=8192,
