@@ -1,12 +1,12 @@
-"""Watch the diffdrive windows a bridge is trained on.
+"""Watch a diffdrive hand-over: the skill being left, then the skill being entered.
 
-Left half of a couple: `drive`, in the last steps before the bridge would take over.
-Right half: `turn`, opening from its own reset. Previous and Next sweep the hand-over
-point across the range training samples from, so you can see the robot go from
-carrying most of drive's momentum to carrying all of it.
+The pair to look at is `drive` into `turn`. The first half is the robot in the last
+steps before the bridge would take over, carrying drive's cruise; the second is `turn`
+opening from its own reset, which is from rest. The viewer's reset button draws a new
+hand-over point, so it can be walked across the range training samples from.
 
     uv run python -m mjlab.tasks.skills.experiments.diffdrive.inspect
-    uv run python -m mjlab.tasks.skills.experiments.diffdrive.inspect --target 0
+    uv run python -m mjlab.tasks.skills.experiments.diffdrive.inspect --source 1 --target 0
 """
 
 from __future__ import annotations

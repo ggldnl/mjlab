@@ -142,9 +142,9 @@ WINDOWS = WindowPlan(
 # ~47 steps it takes to reach cruise, and the robot arcs harder and harder until it
 # rolls.
 TRAINING = BridgeTraining(
-  bridge=BridgePhase(num_iterations=300, num_windows=512, num_interrupts=4096),
+  bridge=BridgePhase(num_iterations=100, num_windows=512, num_interrupts=4096),
   switch=SwitchPhase(
-    num_iterations=600,
+    num_iterations=200,
     num_interrupts=4096,
     max_transition_steps=64,
     eval_steps=96,

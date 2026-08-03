@@ -67,8 +67,19 @@ def _make_drive_success(
   max_speed: float = 0.15,
   max_yaw_rate: float = 0.2,
 ) -> SuccessFn:
-  """Hand-off into drive succeeds when the robot has returned to drive's
-  training distribution: upright, nearly stopped, and no longer turning.
+  """Upright, nearly stopped, and no longer turning: drive's own start distribution.
+
+  WARNING: do not wire this in as it stands. An oracle is read `eval_steps` after the
+  hand-over, not at it (train_switch, phase 2), and by then drive has been driving for
+  a couple of seconds and is at its 2.5 m/s cruise, so `forward_speed < 0.15` is false
+  by construction and every hand-over into drive is scored a failure whatever the bridge
+  did. That is what it used to do, and it is why the drive-target switch-decider trained
+  on an all-negative signal and learned nothing.
+
+  This describes a *pre* hand-over condition, so it would only be usable by a phase 2
+  that read its oracle at the moment of the switch. Kept because that is a reasonable
+  thing to want, and writing it down beats rediscovering it. `_always_success` is what
+  this experiment actually uses for drive.
   """
   entity = env.scene[ENTITY_NAME]
 
@@ -163,11 +174,14 @@ def run_train(cfg: TrainConfig) -> None:
     turn_checkpoint=cfg.turn_checkpoint,
   )
 
-  # One success oracle per target skill. turn is the target the demo bridges into,
-  # so it gets the real "is the robot upright and slow?" test; drive gets the trivial
-  # one.
+  # One success oracle per target skill. turn is the target the demo bridges into, so it
+  # gets the real "is the robot upright and slow?" test. drive gets the trivial one: it
+  # can pick up a cruise from anywhere, and an oracle is read long after the hand-over,
+  # by which point any test of drive's *start* state is meaningless (see
+  # _make_drive_success). Survival is still required by train_switch on top of this, so
+  # a bridge into drive that tips the robot is still scored a failure.
   success_fns: dict[int, SuccessFn] = {
-    DRIVE_STRAIGHT: _make_drive_success(env),
+    DRIVE_STRAIGHT: _always_success,
     TURN: _make_turn_success(env),
   }
 
