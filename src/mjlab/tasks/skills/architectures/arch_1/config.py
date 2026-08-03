@@ -35,6 +35,15 @@ class BridgePhase:
 
   log_every: int = 10
 
+  termination_penalty: float = 2.0
+  """Subtracted from the reward on the step the robot breaks the episode.
+
+  The imitation reward is `softplus(...)`, which is always positive, so on its own it
+  can only ever say "that was more or less like the target skill" and never "that was a
+  disaster". Without this term nothing in phase 1 pays anything for tipping the robot
+  over. Sized to be worth a few steps of ordinary imitation reward, which is around 0.7
+  per step when the referee is undecided."""
+
   # PPO.
   learning_rate: float = 1e-3
   num_learning_epochs: int = 5
@@ -47,6 +56,32 @@ class BridgePhase:
   max_grad_norm: float = 1.0
   critic_hidden_dims: tuple[int, ...] = (64, 64)
 
+  action_init_std: float = 0.4
+  """How much of the useful action range the bridge explores per step, at the start.
+
+  In normalized action units (see spaces.py), where the range the pool's skills command
+  spans roughly [-1, 1]. So 0.4 reads directly as "a fifth of the range in either
+  direction". Lower it if the robot is being thrown around too hard to learn anything;
+  raise it if the bridge is clearly not finding a behavior that exists."""
+
+  action_max_std: float = 1.0
+  """Ceiling on the bridge's exploration, in the same normalized units.
+
+  PPO's entropy bonus raises the std of a Gaussian policy without limit unless something
+  stops it, and the surrogate term that is supposed to balance it is weak here by
+  construction: early on, the bridge cannot move the discriminator much. Left unbounded
+  the std grows geometrically and eventually overflows, which surfaces as a NaN inside
+  `Normal` thousands of iterations into a run. At 1.0 the actor is already exploring the
+  pool's entire commanded range, so there is nothing above this worth reaching."""
+
+  ppo_schedule: str = "fixed"
+  """rsl_rl's PPO adapts its learning rate to hit a target KL divergence unless this is
+  "fixed". Left adaptive it repeatedly halves the rate down to its 1e-5 floor and the
+  bridge stops moving: the KL between two Gaussians scales with the squared mean shift
+  divided by the variance, so a policy whose std is small next to its own action range
+  reports a large KL for an ordinary step. Normalized actions make the schedule sane
+  again, but pinning it keeps one less thing changing underneath a diagnosis."""
+
   # The discriminator: the referee of the copying game.
   disc_hidden_dims: tuple[int, ...] = (100, 100)
   disc_learning_rate: float = 3e-4
@@ -54,14 +89,15 @@ class BridgePhase:
   disc_batch_size: int = 512
   disc_gamma: float = 0.99
 
-  disc_input_clip: float = 10.0
-  """Cap on any one standardized input channel reaching the discriminator. Not a
-  formality: a skill holds some channels near-constant (the diffdrive's drive keeps
-  lateral velocity at zero to within a thousandth), and dividing by that channel's
-  expert standard deviation blows an ordinary deviation up by a thousand, which
-  saturates the discriminator before the first update and leaves the bridge with a flat
-  zero reward. Raise it only if the reward looks healthy and the bridge is plateauing
-  because the referee cannot tell two nearby behaviors apart."""
+  state_clip: float = 5.0
+  """Cap on any one standardized observation channel reaching any bridge network.
+
+  Applied by the run's `StateSpace` (see spaces.py), so the actor, the critic, the
+  discriminator and the switch-decider all see the same capped vector. A bridge starts
+  in states no skill in the pool visits, so without a cap a single unusual channel
+  dominates the first layer of every network reading it. Raise it only if the reward
+  looks healthy and the bridge is plateauing because the referee cannot tell two nearby
+  behaviors apart."""
 
 
 @dataclass(frozen=True)
@@ -95,7 +131,18 @@ class SwitchPhase:
   learning_rate: float = 1e-4
   gamma: float = 0.99
   replay_capacity: int = 200_000
+  """Capacity of *each* of the two replay buffers, one per decision (see below)."""
+
   batch_size: int = 512
+  """Total rows per update, drawn half from each of the two replay buffers.
+
+  The two decisions are recorded at wildly different rates: an env produces at most one
+  "switch" row per window (it can only hand over once) but a "stay" row on every step it
+  did not, so a single shared buffer ends up around fifty to one against the decision
+  that actually matters. Two buffers sampled evenly is the simplest way to keep the
+  Q-network from learning the value of switching from a handful of rows drowned in the
+  alternative."""
+
   updates_per_iteration: int = 8
   update_target_every: int = 20
   warmup_iterations: int = 10

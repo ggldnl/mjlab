@@ -2,17 +2,19 @@
 
 Maps an architecture id to a factory that, given the env and the skill pool, builds the
 `MetaPolicy` that runs the composition, and to the training entry point that fills it
-in. Each architecture *is* a meta policy: it holds the skill pool and whatever
+in. Each architecture is a meta policy: it holds the skill pool and whatever
 machinery it needs to switch between skills.
 
 - Architecture 0 is the no-bridge baseline (a direct hand-off), used to show that naive
   stitching fails.
 - Architecture 1 has one transition policy and one discriminator for each skill, and a
   switch-decider trained against a hand-written success test.
-- Architectures 2 and 3 are architecture 1 with that hand-written test removed: 2 judges
-  a hand-over by whether the episode survived, 3 by the reward the task already defines.
-  They exist to show how much of the result depends on the test rather than the bridge.
-- Architecture 4 has one transition policy and one discriminator for all the skills.
+- Architectures 2 is architecture 1 with that hand-written test removed: it judges
+  a hand-over by whether the episode survived.
+- Architecture 3 is residual-based.
+- Architecture 4 has a single bridge for all the skills. We train it like in
+  Masked-Token Prediction, masking windows in motion clips and learning to
+  reconstruct them.
 """
 
 from collections.abc import Callable
@@ -60,11 +62,8 @@ ARCHITECTURES: dict[int, MetaPolicyFactory] = {
 }
 
 # Every architecture exposes the same train(env, pool, entity_name, meta, success_fns)
-# entry point; this maps an architecture id to it. arch_0's is a no-op stub, arch_4's
-# raises until it is implemented, and arch_2 and arch_3 accept success_fns and ignore
-# it, so an experiment can dispatch by id without special-casing any of them. Typed
-# loosely (each trainer takes its own concrete MetaPolicy subclass) so the id-keyed
-# dispatch type-checks.
+# entry point; this maps an architecture id to it. Typed loosely (each trainer takes
+# its own concrete MetaPolicy subclass) so the id-keyed dispatch type-checks.
 Trainer = Callable[..., MetaPolicy]
 TRAINERS: dict[int, Trainer] = {
   0: train_arch_0,

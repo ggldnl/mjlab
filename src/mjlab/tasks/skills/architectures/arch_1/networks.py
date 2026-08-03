@@ -9,11 +9,21 @@ Two are genuinely new (rsl_rl has no adversarial-imitation or off-policy piece):
 The bridge's actor is a plain rsl_rl `MLPModel`; `build_bridge_actor` is the single
 place it is constructed so the Arch1 meta policy (which holds it for inference) and
 train.py (which trains it) cannot drift on how it was built.
+
+Nothing here converts units. Every tensor arriving at any network in this file is
+already in the bridge's own units: observations standardized and actions normalized by
+the `StateSpace` / `ActionSpace` in spaces.py. That used to be done inside the
+discriminator, on statistics fitted from the target skill alone, which meant the actor
+and the discriminator disagreed about what a number meant and the log-probability
+appearing in the AIRL logit was left in raw units entirely. Keeping the conversion in
+one place, upstream of everything, is what makes the quantities in `logits` below
+comparable.
 """
 
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass
 
 import torch
@@ -25,22 +35,17 @@ from tensordict import TensorDict
 # The obs groups a bridge actor/critic read, and the actor's action distribution.
 # Shared by build_bridge_actor and train.py's critic so they stay in lock-step.
 OBS_GROUPS = {"actor": ["actor"], "critic": ["critic"]}
-GAUSSIAN_DISTRIBUTION_CFG = {
-  "class_name": "GaussianDistribution",
-  "init_std": 1.0,
-  "std_type": "scalar",
-}
 
 
 def bridge_obs_td(state: torch.Tensor) -> TensorDict:
-  """Pack an already-projected state into the TensorDict a bridge's nets read.
+  """Pack an already-standardized state into the TensorDict a bridge's nets read.
 
   The actor and the throwaway critic PPO needs are built against the groups in
   `OBS_GROUPS`, so both entries hold the same vector: the experiment's state view of
-  the observation (see view.py). There is no privileged critic input here on purpose --
-  the bridge is being taught to match a distribution the discriminator judges on this
-  exact vector, and a critic seeing more than the discriminator does would be valuing
-  something the reward cannot express.
+  the observation (see view.py), standardized by the run's `StateSpace`. There is no
+  privileged critic input here on purpose -- the bridge is being taught to match a
+  distribution the discriminator judges on this exact vector, and a critic seeing more
+  than the discriminator does would be valuing something the reward cannot express.
   """
   return TensorDict({"actor": state, "critic": state}, batch_size=[int(state.shape[0])])
 
@@ -62,8 +67,19 @@ def build_bridge_actor(
   action_dim: int,
   hidden_dims: tuple[int, ...],
   device: str,
+  init_std: float = 0.4,
 ) -> MLPModel:
-  """Build a bridge's actor the one way arch_1 ever builds it."""
+  """Build a bridge's actor the one way arch_1 ever builds it.
+
+  `init_std` is in *normalized* action units (see spaces.py), where the range the pool's
+  skills command spans roughly [-1, 1]. It is therefore directly readable as "how much
+  of the useful action range does this policy explore": 0.4 is a fifth of that range per
+  step, which is a lot but not so much that the robot is being driven at random.
+
+  This number used to be 1.0 while the actor emitted raw wheel velocities spanning some
+  forty units, i.e. two percent exploration, which is why the bridge never found the
+  braking behavior it was being asked for.
+  """
   return MLPModel(
     obs_td,
     OBS_GROUPS,
@@ -71,13 +87,84 @@ def build_bridge_actor(
     action_dim,
     hidden_dims=hidden_dims,
     activation="tanh",
-    distribution_cfg=dict(GAUSSIAN_DISTRIBUTION_CFG),
+    distribution_cfg={
+      "class_name": "GaussianDistribution",
+      "init_std": init_std,
+      "std_type": "log",
+    },
   ).to(device)
+
+
+def _std_parameter(actor: MLPModel) -> tuple[torch.Tensor, bool]:
+  """The actor's learnable std, and whether it is held in log space.
+
+  rsl_rl's Gaussian keeps this under one of two names depending on how it was
+  parameterized; `build_bridge_actor` always asks for the log one, but reading both
+  means the three helpers below keep working if that choice ever changes.
+  """
+  distribution = actor.distribution
+  log_std = getattr(distribution, "log_std_param", None)
+  if isinstance(log_std, torch.Tensor):
+    return log_std, True
+  std = getattr(distribution, "std_param", None)
+  if isinstance(std, torch.Tensor):
+    return std, False
+  raise AttributeError(
+    f"{type(distribution).__name__} has neither `log_std_param` nor `std_param`, so "
+    f"its exploration cannot be read or bounded."
+  )
+
+
+def action_std(actor: MLPModel) -> float:
+  """The actor's mean exploration, in normalized action units. For logging."""
+  parameter, is_log = _std_parameter(actor)
+  with torch.no_grad():
+    return float(parameter.exp().mean() if is_log else parameter.mean())
+
+
+@torch.no_grad()
+def set_action_std(actor: MLPModel, std: float) -> None:
+  """Set the actor's exploration to `std`, in normalized action units.
+
+  `build_bridge_actor` picks a default when the network is constructed, which is before
+  any training config has been seen; phase 1 calls this so that the number the
+  experiment actually declared (`BridgePhase.action_init_std`) is the one that applies.
+  """
+  parameter, is_log = _std_parameter(actor)
+  parameter.fill_(math.log(std) if is_log else std)
+
+
+@torch.no_grad()
+def clamp_action_std(actor: MLPModel, max_std: float) -> None:
+  """Hold the actor's exploration below `max_std`, in normalized action units.
+
+  rsl_rl's Gaussian keeps `log_std` as a free parameter and nothing bounds it, so the
+  entropy bonus in PPO's objective pushes it up without limit whenever the surrogate
+  term is weaker than the bonus. That is not a hypothetical trade-off here: a bridge is
+  rewarded by a discriminator that a poor bridge cannot move much, so the surrogate is
+  small from the start, and `log_std` then grows by roughly a percent an iteration
+  forever. Over a humanoid-sized budget of a few thousand iterations that is `exp` of a
+  large number: the std overflows to inf, the next gradient is NaN, and PPO dies inside
+  `Normal` with "expects all elements of std >= 0.0" -- a NaN, not a negative number.
+
+  Clamping rather than lowering `entropy_coef` alone because the two do different jobs.
+  The coefficient sets how hard the run is pushed toward exploring; this sets the point
+  past which more exploration is not exploration at all. In normalized units the pool's
+  whole commanded range is about [-1, 1], so a std of 1 already means the actor's own
+  mean barely matters.
+  """
+  parameter, is_log = _std_parameter(actor)
+  parameter.clamp_max_(math.log(max_std) if is_log else max_std)
 
 
 @dataclass
 class DiscBatch:
-  """One half (policy or expert) of a discriminator update, or a reward query."""
+  """One half (policy or expert) of a discriminator update, or a reward query.
+
+  `obs` and `next_obs` are standardized, `actions` are normalized, and `log_prob` is the
+  actor's log-probability of those *normalized* actions. All three conditions matter;
+  see `AIRLDiscriminator.logits`.
+  """
 
   obs: torch.Tensor
   actions: torch.Tensor
@@ -98,30 +185,11 @@ class AIRLDiscriminator(nn.Module):
   the target skill would be in?", `g` asks "given the state, is this the move it would
   make?". A single discriminator would blend them into one, less informative, number.
 
-  Inputs are standardized before either net sees them. Observations and actions come
-  in whatever units the experiment uses (the diffdrive commands wheel velocities in
-  the tens of rad/s), and feeding those raw into a freshly initialized MLP saturates
-  it on the first batch. `fit_normalization` sets the statistics from the expert data
-  once, and they are buffers so they travel with a checkpoint.
-
-  The standardized values are then clipped, which matters more than it looks. A skill's
-  own behavior is nearly constant along some channels -- the diffdrive's `drive` holds
-  lateral velocity and roll rate at zero to within a thousandth -- so dividing by that
-  channel's expert standard deviation does the opposite of what normalizing is for: it
-  multiplies the bridge's (perfectly ordinary) deviation by a thousand. The states a
-  bridge is dropped into then arrive twenty-odd standard deviations out, the
-  discriminator separates the two halves on the first batch without training, and the
-  reward `softplus(logit)` is flat zero from iteration one. Clipping bounds every
-  channel's contribution, so a degenerate one can still say "the bridge is off here"
-  without drowning out the channels that carry the actual motion.
+  Inputs are expected pre-converted (see the module docstring). This class deliberately
+  holds no normalization of its own: it used to, and having the conversion live here
+  while the log-probability in the logit stayed in raw units is precisely the imbalance
+  described in `logits`.
   """
-
-  # Declared so the registered buffers below have a type; `register_buffer` alone
-  # leaves them looking like `Tensor | Module` to a checker.
-  obs_mean: torch.Tensor
-  obs_std: torch.Tensor
-  action_mean: torch.Tensor
-  action_std: torch.Tensor
 
   def __init__(
     self,
@@ -129,30 +197,11 @@ class AIRLDiscriminator(nn.Module):
     action_dim: int,
     hidden_dims: tuple[int, ...],
     gamma: float,
-    input_clip: float = 10.0,
   ) -> None:
     super().__init__()
     self.gamma = gamma
-    self.input_clip = input_clip
     self.g = _mlp(obs_dim + action_dim, hidden_dims, 1)  # obs+action look right?
     self.h = _mlp(obs_dim, hidden_dims, 1)  # how good is this obs?
-    self.register_buffer("obs_mean", torch.zeros(obs_dim))
-    self.register_buffer("obs_std", torch.ones(obs_dim))
-    self.register_buffer("action_mean", torch.zeros(action_dim))
-    self.register_buffer("action_std", torch.ones(action_dim))
-
-  @torch.no_grad()
-  def fit_normalization(self, obs: torch.Tensor, actions: torch.Tensor) -> None:
-    """Set the input statistics from a batch of expert transitions."""
-    self.obs_mean.copy_(obs.mean(dim=0))
-    self.obs_std.copy_(obs.std(dim=0).clamp_min(1e-3))
-    self.action_mean.copy_(actions.mean(dim=0))
-    self.action_std.copy_(actions.std(dim=0).clamp_min(1e-3))
-
-  def normalize_obs(self, obs: torch.Tensor) -> torch.Tensor:
-    """Standardize and clip an observation the way both nets read it."""
-    z = (obs - self.obs_mean) / self.obs_std
-    return z.clamp(-self.input_clip, self.input_clip)
 
   def f(
     self,
@@ -161,21 +210,45 @@ class AIRLDiscriminator(nn.Module):
     done: torch.Tensor,
     next_obs: torch.Tensor,
   ) -> torch.Tensor:
-    obs_n = self.normalize_obs(obs)
-    next_obs_n = self.normalize_obs(next_obs)
-    actions_n = ((actions - self.action_mean) / self.action_std).clamp(
-      -self.input_clip, self.input_clip
-    )
-    g = self.g(torch.cat([obs_n, actions_n], dim=-1)).squeeze(-1)
-    h = self.h(obs_n).squeeze(-1)
-    h_next = self.h(next_obs_n).squeeze(-1)
+    """The learned reward: does this transition look like the target skill's own?"""
+    g = self.g(torch.cat([obs, actions], dim=-1)).squeeze(-1)
+    h = self.h(obs).squeeze(-1)
+    h_next = self.h(next_obs).squeeze(-1)
     return g + self.gamma * (1.0 - done.float()) * h_next - h
 
+  def split_logits(self, batch: DiscBatch) -> tuple[torch.Tensor, torch.Tensor]:
+    """The two halves of the AIRL logit, kept apart so they can be compared.
+
+    AIRL asks "is this transition better explained by the target skill's reward, or by
+    the bridge's own habits?", and answers it by subtracting one from the other. That
+    only works while the two are the same order of magnitude.
+
+    If the likelihood term is much the larger of the two, it answers the question by
+    itself: the expert's actions are unlikely under the bridge's policy simply because
+    they are different actions, so the referee gets the right answer for free, its loss
+    saturates, and no gradient ever reaches `g` and `h`. The bridge is then rewarded by
+    a network that never learned anything. This is not hypothetical: with raw wheel
+    velocities the likelihood term reached the hundreds while `f` sat near zero.
+
+    Normalized actions keep the likelihood term at a few units, which is where `f` also
+    lives. train.py logs both means side by side every time it prints, so a run drifting
+    back into that state is visible rather than silent.
+    """
+    learned_reward = self.f(batch.obs, batch.actions, batch.done, batch.next_obs)
+    policy_likelihood = batch.log_prob
+    return learned_reward, policy_likelihood
+
   def logits(self, batch: DiscBatch) -> torch.Tensor:
-    return self.f(batch.obs, batch.actions, batch.done, batch.next_obs) - batch.log_prob
+    learned_reward, policy_likelihood = self.split_logits(batch)
+    return learned_reward - policy_likelihood
 
   def reward(self, batch: DiscBatch) -> torch.Tensor:
-    """PPO reward for the bridge: `-logsigmoid(-logit)` (== `softplus(logit)`)."""
+    """PPO reward for the bridge: `-logsigmoid(-logit)` (== `softplus(logit)`).
+
+    Always positive, which is worth keeping in mind: on its own this reward can never
+    punish anything, so a bridge that crashes the robot pays nothing for it here. The
+    crash penalty train.py subtracts is what supplies the other sign.
+    """
     return F.softplus(self.logits(batch))
 
   def loss(self, policy_batch: DiscBatch, expert_batch: DiscBatch) -> torch.Tensor:
@@ -188,8 +261,8 @@ class AIRLDiscriminator(nn.Module):
 class SwitchQNetwork(nn.Module):
   """state -> hidden -> 2 Q-network for the hand-over decision.
 
-  Action 0 is "stay" (keep bridging), action 1 is "switch" (hand control to the
-  target skill now).
+  Reads the same standardized state the bridge actor does. Action 0 is "stay" (keep
+  bridging), action 1 is "switch" (hand control to the target skill now).
   """
 
   def __init__(self, obs_dim: int, hidden_dims: tuple[int, ...]) -> None:

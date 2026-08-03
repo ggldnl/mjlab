@@ -15,7 +15,7 @@ the episode did not end. Nothing to write, nothing to tune.
 That works exactly when the failure being bridged around is a termination, which is the
 case the experiments are built on (the diffdrive tips, a robot falls). It says nothing
 on a task that never terminates, and there the decider will learn no more than "commit
-before the window runs out". arch_3 is the answer for those.
+before the window runs out".
 """
 
 from __future__ import annotations

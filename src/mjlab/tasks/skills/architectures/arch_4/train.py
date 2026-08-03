@@ -1,6 +1,6 @@
-"""Training for arch_4: the single universal bridge.
+"""Training for arch_4: a bridge per skill, trained as in Masked-Token Prediction.
 
-Not implemented yet. The stub keeps arch_4 on the same `train(...)` entry point as the
+Not implemented yet. The stub keeps arch_5 on the same `train(...)` entry point as the
 other architectures, so an experiment can already dispatch to it by id; calling it just
 reports that the architecture is unfinished.
 """

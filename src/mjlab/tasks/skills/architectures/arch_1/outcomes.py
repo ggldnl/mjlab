@@ -9,9 +9,8 @@ fixed schedule, or has no hand-over decision to make, imports none of this.
 `OracleOutcome` is arch_1's own answer: a function the experiment author wrote, saying
 whether the robot is in a state the target skill can take over from. It is the most
 controllable option and the most fragile one, since the test has to encode what "safe"
-means and there is no sign when it is wrong. arch_2 and arch_3 keep the same contract
-and replace the judgement with something the environment already reports; each defines
-its own in its own trainer.
+means and there is no sign when it is wrong. arch_2 keeps the same contract
+and replace the judgement with something the environment already reports;
 """
 
 from __future__ import annotations

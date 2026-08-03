@@ -1,27 +1,41 @@
-"""Architecture 3: arch_1's bridge, judged by the reward the task already defines.
-
-Same machinery as arch_1 and the same phase 1. The difference, again, is only what
-phase 2 learns from.
-
-arch_2 asks whether the episode survived, which is free but blunt: it cannot tell a
-clean hand-over from a barely-recovered one, and on a task that never terminates it
-says nothing at all. arch_3 asks the environment's own reward instead. Every skill task
-already defines what doing well looks like, so the target skill is let drive for a
-while after the hand-over and the reward it collects is the verdict.
-
-The bar is measured rather than chosen. Before training, the target skill is rolled from
-its own reset and the reward it earns per step is recorded; a hand-over passes if it
-earns about that much. So "good" means "the skill did about as well as it does when it
-starts normally", with no threshold to invent per experiment, which was the whole
-complaint about arch_1's oracle.
-"""
+"""Architecture 3: residuals."""
 
 from __future__ import annotations
 
-from mjlab.tasks.skills.architectures.arch_1 import Arch1
+import torch
+
+from mjlab.envs import ManagerBasedRlEnv, VecEnvObs
+from mjlab.tasks.skills.meta import MetaPolicy
+from mjlab.tasks.skills.skill import SkillPool
+from mjlab.tasks.skills.view import StateView
 
 
-class Arch3(Arch1):
-  """arch_1's meta policy. Only how its switch-decider was trained differs."""
+class Arch3(MetaPolicy):
+  def __init__(
+    self,
+    env: ManagerBasedRlEnv,
+    pool: SkillPool,
+    view: StateView | None = None,
+  ) -> None:
 
-  _CHECKPOINT = "arch_3.pt"
+    self.bridge = None
+
+    super().__init__(env, pool, view)
+
+  @torch.no_grad()
+  def bridge_step(
+    self,
+    obs: VecEnvObs,
+    source: torch.Tensor,
+    target: torch.Tensor,
+    active: torch.Tensor,
+  ) -> tuple[torch.Tensor, torch.Tensor]:
+
+    del source  # Source-agnostic: one bridge per target, whatever it came from
+
+    # Homogeneous-batch assumption: the mid-bridge envs all head to the same target
+    # (the composition switches every env on the same schedule), so one target's
+    # actor/switch serves the batch.
+    # TODO Revisit if envs can bridge to different targets at once
+
+    raise ValueError("Not implemented")
