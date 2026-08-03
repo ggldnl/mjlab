@@ -300,11 +300,21 @@ class ManagerState:
         out[f"{owner_name}.{attr}"] = getattr(owner, attr)[mask].clone()
     return out
 
-  def write(self, values: dict[str, torch.Tensor]) -> None:
-    """Overwrite every env's state from a full batch of rows."""
+  def write(
+    self, values: dict[str, torch.Tensor], env_ids: torch.Tensor | None = None
+  ) -> None:
+    """Write state into the envs `env_ids` names, or into every env when None.
+
+    `values` holds one row per env being written, so a partial write passes as many rows
+    as `env_ids` has entries.
+    """
     for owner_name, owner in self._owners:
       for attr in self._per_env_attrs(owner, self._num_envs):
-        getattr(owner, attr)[:] = values[f"{owner_name}.{attr}"]
+        rows = values[f"{owner_name}.{attr}"]
+        if env_ids is None:
+          getattr(owner, attr)[:] = rows
+        else:
+          getattr(owner, attr)[env_ids] = rows
 
 
 ##
@@ -689,26 +699,36 @@ def restore_interrupts(
   interrupts: InterruptSet,
   manager_state: ManagerState,
   indices: torch.Tensor | None = None,
+  env_ids: torch.Tensor | None = None,
 ) -> VecEnvObs:
-  """Reset every env to a sampled harvested interrupt state.
+  """Put envs back at a sampled harvested interrupt state.
 
   Mirrors the tail of `ManagerBasedRlEnv.reset()` (scene write, forward, command,
   sense, abstraction, obs compute) but substitutes a direct state write for the
   event-manager-driven random reset `_reset_idx` would do, and restores the action and
   command terms alongside the physics so the env really is the state that was harvested
   (see `verify_restore`).
+
+  `env_ids` restricts the write to some of the envs, leaving the rest exactly as they
+  are. That is what lets a training loop put a single crashed env back at an interrupt
+  state mid-rollout without disturbing the envs still running. The returned observation
+  is always the full one for every env, recomputed after the write.
   """
+  count = env.num_envs if env_ids is None else int(env_ids.numel())
   if indices is None:
-    indices = interrupts.sample_indices(env.num_envs, env.device)
+    indices = interrupts.sample_indices(count, env.device)
   rows = {name: value[indices] for name, value in interrupts.state.items()}
 
   if interrupts.has_root_state:
-    entity.write_root_state_to_sim(rows["root_state"])
-  entity.write_joint_state_to_sim(rows["joint_pos"], rows["joint_vel"])
-  manager_state.write(rows)
+    entity.write_root_state_to_sim(rows["root_state"], env_ids)
+  entity.write_joint_state_to_sim(rows["joint_pos"], rows["joint_vel"], None, env_ids)
+  manager_state.write(rows, env_ids)
   env.scene.write_data_to_sim()
   env.sim.forward()
-  env.episode_length_buf[:] = 0
+  if env_ids is None:
+    env.episode_length_buf[:] = 0
+  else:
+    env.episode_length_buf[env_ids] = 0
   # compute(dt=0.0) refreshes the command from the restored state without resampling
   # it, which is what we want: the sampled goal was restored above.
   env.command_manager.compute(dt=0.0)
