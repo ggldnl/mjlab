@@ -1,26 +1,35 @@
 """The meta policy: the skill pool plus the machinery that carries out a switch.
 
-A meta policy owns the frozen skill pool and whatever an architecture needs to move
-between skills (a learned bridge, a switch-decider, or nothing at all). It does not
-own the controller. Which skill should be running is decided elsewhere and handed
-in per step; the meta policy only owns how a commanded switch is executed:
-immediately (arch_0's direct hand-off) or through a bridge that first drives
-the robot into a state the next skill can safely start from (arch_1).
+A meta policy owns the frozen pool and whatever an architecture needs to move between
+skills. It does not own the controller: which skill should run is decided elsewhere
+and handed in per step, and all a meta policy owns is how a commanded switch is carried
+out.
 
-Each concrete architecture is a `MetaPolicy` subclass. The base class implements the
-one shared piece: the per-env bookkeeping of which skill control is committed to,
-which one it came from, and which envs are mid-bridge. It leaves the
-architecture-specific behavior to two hooks: `begin_switch` (called once when a
-switch fires) and `bridge_step` (the actions and hand-over decision while bridging).
+Each architecture is a `MetaPolicy` subclass. The base class implements the one shared
+piece, the per-env bookkeeping of which skill control is committed to, which one it came
+from, and which envs are mid-transition. Architectures fill in three hooks:
 
-`ComposedPolicy` pairs a controller with a meta policy into a single `policy(obs)`
-that a viewer or `run_episode` can drive. Keeping the controller out of the meta
-policy is deliberate: it is the one experiment-specific part, swapped freely without
-touching the switching machinery.
+    begin_switch    once, when a switch fires
+    involved        each step, which skills have their hands on the wheel
+    bridge_step     each step, the actions and the hand-over decision
 
-`bridge_step` is handed the full per-env `source`/`target`/`active` tensors, so an
-architecture that keeps a different bridge per (source, target) pair or per target is
-free to route internally.
+One step, in order:
+
+    fresh envs adopt the command directly (a new episode is never bridged into)
+    command != committed target  ->  a switch fires  ->  begin_switch
+    engage anything about to act for the first time  ->  skill.reset()
+    involved()  ->  one pool tick  ->  select rows
+    bridge_step() overwrites the mid-transition envs, and may hand over
+
+`involved` is the load-bearing hook and the easiest to get wrong. The pool is ticked
+once per step (see skill.py), so the mask must name every skill whose action will be
+used that step, not only the ones formally in control. A bridge that drives on its own:
+names neither end (arch_1, arch_4); a bridge built out of the skills' own actions: names
+both (arch_3); a hand-off that is immediate: names the target (arch_0).
+
+`ComposedPolicy` pairs a controller with a meta policy into one `policy(obs)` a viewer
+can drive. Keeping the controller out of the meta policy is deliberate: it is the one
+experiment-specific part, swapped without touching the switching machinery.
 """
 
 from abc import ABC, abstractmethod
@@ -36,12 +45,7 @@ from mjlab.tasks.skills.view import StateView, resolve_view
 
 
 class MetaPolicy(ABC):
-  """Skill pool plus the architecture-specific machinery to switch between skills.
-
-  Given the controller's desired skill per env, produces actions, engaging this
-  architecture's switching machinery whenever the desired skill differs from the one
-  control is already committed to.
-  """
+  """Skill pool plus the architecture-specific machinery to switch between skills."""
 
   def __init__(
     self,
@@ -49,10 +53,12 @@ class MetaPolicy(ABC):
     pool: SkillPool,
     view: StateView | None = None,
   ) -> None:
-    """`view` is the slice of the observation this architecture's bridging machinery
-    works on (see view.py); None means the whole observation. It belongs to the
-    experiment rather than to the architecture, so every architecture takes it here and
-    one that has no machinery to point it at (arch_0) simply ignores it."""
+    """`view` is the slice of the observation this architecture works on (see view.py).
+
+    It belongs to the experiment rather than to the architecture, so every architecture
+    takes it and one with no machinery to point it at (arch_0) ignores it. None means
+    the whole observation.
+    """
     self.env = env
     self.pool = pool
     self.view = resolve_view(env, None) if view is None else view
@@ -62,17 +68,20 @@ class MetaPolicy(ABC):
   def target(self) -> torch.Tensor:
     """The skill control is committed to in each env, shaped (num_envs,) int64.
 
-    The running skill in normal operation, or the skill a bridge is driving toward
-    during a transition. NO_SKILL in an env that has not been commanded yet (right
-    after a reset), which is exactly the controller's cue to decide fresh.
+    The running skill in normal operation, or the skill a transition is driving toward.
+    NO_SKILL in an env that has not been commanded yet, which is the controller's cue to
+    decide fresh.
     """
     return self._target
+
+  ##
+  # Bookkeeping.
+  ##
 
   def reset(self) -> None:
     """Restart the composition, as if a fresh episode were beginning in every env.
 
-    Takes no arguments so a viewer's reset button can call it directly
-    (`BaseViewer.reset_environment` resets the env, then calls this).
+    Takes no arguments so a viewer's reset button can call it directly.
     """
     num_envs = self.env.num_envs
     device = self.env.device
@@ -85,9 +94,8 @@ class MetaPolicy(ABC):
   def notify_reset(self, done: torch.Tensor) -> None:
     """Clear per-episode state in the envs whose episode just ended.
 
-    The pool and our own commitment bookkeeping must not carry across an episode
-    boundary. The committed target drops back to NO_SKILL so the next command is
-    adopted fresh: a new episode starts its skill directly and is never bridged into.
+    The committed target drops back to NO_SKILL so the next command is adopted fresh: a
+    new episode starts its skill directly and is never bridged into.
     """
     if not done.any():
       return
@@ -101,82 +109,60 @@ class MetaPolicy(ABC):
     self._bridging = self._bridging & ~done
     self._engaged = self._engaged & ~done
 
-  def act(self, obs: VecEnvObs, command: torch.Tensor) -> torch.Tensor:
-    """Actions for every env given the controller's desired skill per env.
+  ##
+  # The step.
+  ##
 
-    `command` is what the controller wants running right now. Where it differs from
-    the skill we are already committed to, that is the switch signal (per env, so
-    different envs can switch on different steps).
-    """
-    # Envs with no commitment yet (a fresh episode) adopt the command with no switch:
-    # a new episode starts its skill directly, it is never bridged into.
+  def act(self, obs: VecEnvObs, command: torch.Tensor) -> torch.Tensor:
+    """Actions for every env, given the controller's desired skill per env."""
+    # A fresh episode adopts the command with no switch.
     fresh = self._target == NO_SKILL
     if fresh.any():
       self._target = torch.where(fresh, command, self._target)
       self._engaged = self._engaged & ~fresh
 
-    # A switch is a command that differs from the skill control is committed to.
+    # A command that differs from what control is committed to *is* the switch signal.
     switching = (command != self._target) & ~fresh
     if switching.any():
-      # The skill being left becomes the source the bridge starts from, advanced
-      # before it is used so the bridge sees where control actually came from.
       self._source = torch.where(switching, self._target, self._source)
       self._target = torch.where(switching, command, self._target)
       self._bridging = self._bridging | switching
       self._engaged = self._engaged & ~switching
       self.begin_switch(switching, self._source, self._target)
 
-    # Whatever is about to act for the first time is engaged first: a skill carrying
-    # per-episode state (the jump's reference anchor) has no other moment to learn
-    # that control has arrived and where the robot is.
+    # Whatever is about to act for the first time is engaged first: a skill with memory
+    # has no other moment to learn that control has arrived.
     self.engage(~self._bridging & ~self._engaged)
 
-    # Skill actions for every non-bridging env; bridging envs are set to NO_SKILL
-    # (SkillPool.act returns zeros for them) and overwritten with the bridge's below.
+    # One pool tick, whatever the actions are then used for. An architecture that builds
+    # its transition out of the skills' own actions says so in `involved` and reads them
+    # off `skill_actions` rather than ticking the pool again.
     assignment = torch.where(
       self._bridging, torch.full_like(self._target, NO_SKILL), self._target
     )
-    actions = self.pool.act(obs, assignment)
+    skill_actions = self.pool.act_each(obs, self.involved(assignment))
+    actions = SkillPool.select(skill_actions, assignment)
 
     if self._bridging.any():
       bridge_actions, handover = self.bridge_step(
-        obs, self._source, self._target, self._bridging
+        obs, skill_actions, self._source, self._target, self._bridging
       )
       actions = torch.where(self._bridging.unsqueeze(-1), bridge_actions, actions)
-      # Wherever the bridge signals hand-over, the target skill takes over next step.
+      # Where the architecture signals hand-over, the target takes over next step.
       self._bridging = self._bridging & ~handover
 
     return actions
 
-  def active_label(self, env_idx: int = 0) -> str:
-    """What env env_idx is doing right now, as a short human-readable string.
-
-    The running skill's name in normal operation, or "bridge: A -> B" while this
-    architecture is driving a transition. Used by the viewer's info box; harmless to
-    call at any time.
-    """
-    if bool(self._bridging[env_idx]):
-      source = int(self._source[env_idx])
-      target = int(self._target[env_idx])
-      source_name = self.pool[source].name if source >= 0 else "?"
-      target_name = self.pool[target].name if target >= 0 else "?"
-      return f"bridge: {source_name} -> {target_name}"
-    target = int(self._target[env_idx])
-    return "-" if target < 0 else self.pool[target].name
-
   def engage(self, mask: torch.Tensor) -> None:
-    """Hand control to the target skill in the envs where `mask` is set.
+    """Hand control to the target skill where `mask` is set, by calling its `reset`.
 
-    Calls `reset` on each target skill, which is how a skill that keeps per-episode
-    state is told it is starting now. The jump is the reason this exists: its reset
-    pins the reference clip to wherever the robot currently is, and a jump that is
-    never engaged tracks a clip still anchored where the last episode reset left it.
+    This is how a skill with memory is told it is starting now. The jump is why it
+    exists: its reset pins the reference clip to wherever the robot currently is.
 
-    Called by the base class the step before a skill's first action, and by an
-    architecture whose hand-over is immediate (arch_0) from `begin_switch`, since
-    there the target skill acts on the same step the switch fires. Engaging twice is
-    harmless in itself but rewinds a skill that has already started, so the mask is
-    narrowed to envs not already engaged.
+    Called by the base class the step before a skill's first action, and from
+    `begin_switch` by an architecture whose target skill acts on the switch step itself
+    (arch_0, arch_3). Narrowed to envs not already engaged, since engaging twice rewinds
+    a skill that has already started.
     """
     mask = mask & ~self._engaged
     if not mask.any():
@@ -187,67 +173,84 @@ class MetaPolicy(ABC):
       self.pool[skill_id].reset(mask & (self._target == skill_id))
     self._engaged = self._engaged | mask
 
+  ##
+  # The hooks.
+  ##
+
   def begin_switch(  # noqa: B027
     self, switching: torch.Tensor, source: torch.Tensor, target: torch.Tensor
   ) -> None:
-    """Start a transition in the envs where `switching` is set.
+    """Start a transition where `switching` is set, before its first `bridge_step`.
 
-    Called once when a switch fires, before the first `bridge_step` of that
-    transition. The default does nothing, which is right for a bridge that drives the
-    robot itself for a while: the target skill is engaged by the base class once the
-    bridge hands over, not when the switch is commanded. An architecture that hands
-    over at once has to engage the target here instead.
+    The default does nothing, which is right for an architecture that drives the robot
+    itself for a while: the target is engaged by the base class once it hands over. One
+    that hands over at once has to engage the target here instead.
     """
+
+  def involved(self, assignment: torch.Tensor) -> torch.Tensor:
+    """Which envs each skill drives this step, shaped (num_skills, num_envs).
+
+    The default is the assignment itself, right for a bridge that drives on its own: the
+    skills at either end contribute nothing while it runs. Override to add any skill
+    whose action the transition uses (see the module docstring).
+    """
+    return self.pool.involvement(assignment)
 
   @abstractmethod
   def bridge_step(
     self,
     obs: VecEnvObs,
+    skill_actions: torch.Tensor,
     source: torch.Tensor,
     target: torch.Tensor,
     active: torch.Tensor,
   ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Actions and a hand-over signal for the envs this bridge is driving.
+    """Actions and a hand-over signal for the envs this transition is driving.
 
-    `source`/`target` hold, per env, the skill control came from and the one it is
-    headed to; `active` marks the mid-bridge envs. Returns actions shaped
-    (num_envs, action_dim) and a boolean mask (num_envs,) set where the bridge
-    declares the target skill may take over now (choosing that moment belongs to the
-    architecture).
+    `skill_actions` is this step's pool tick, shaped (num_skills, num_envs, action_dim),
+    covering whatever `involved` asked for; `SkillPool.select` picks rows out of it.
+    `source`/`target` hold, per env, the skill control came from and the one it is headed
+    to; `active` marks the mid-transition envs. Returns actions (num_envs, action_dim)
+    and a bool mask (num_envs,) set where the target skill may take over now.
     """
 
-  def save(self, path: Path) -> None:  # noqa: B027
-    """Persist this architecture's trained state into directory `path`.
+  ##
+  # Persistence and display.
+  ##
 
-    `path` is an existing directory owned by one training run. The default writes
-    nothing, which is exactly right for an architecture that trains nothing (arch_0).
-    Architectures holding networks override this to write whatever they need; the
-    matching `load` reads it back. What each writes is its own business -- only the
-    save/load pair is shared.
+  def save(self, path: Path) -> None:  # noqa: B027
+    """Persist trained state into the existing directory `path`.
+
+    The default writes nothing, right for an architecture that trains nothing (arch_0).
+    What each writes is its own business; only the save/load pair is shared.
     """
 
   def load(self, path: Path) -> None:  # noqa: B027
-    """Restore trained state from a directory an earlier `save` wrote to.
+    """Restore trained state from a directory an earlier `save` wrote to."""
 
-    The default restores nothing (arch_0). Overrides mirror `save`.
-    """
+  def active_label(self, env_idx: int = 0) -> str:
+    """What env `env_idx` is doing right now, for the viewer's info box."""
+    if bool(self._bridging[env_idx]):
+      source = int(self._source[env_idx])
+      target = int(self._target[env_idx])
+      source_name = self.pool[source].name if source >= 0 else "?"
+      target_name = self.pool[target].name if target >= 0 else "?"
+      return f"bridge: {source_name} -> {target_name}"
+    target = int(self._target[env_idx])
+    return "-" if target < 0 else self.pool[target].name
 
 
 class ComposedPolicy:
   """Pairs a controller with a meta policy into one `policy(obs)`.
 
-  Each step: ask the controller which skill should run (given what the meta policy is
-  currently committed to), then let the meta policy carry out any switch. Also absorbs
-  resets, clearing the controller and the meta policy in whichever envs just started a
-  fresh episode, since a caller owning `env.step` never hands the done flags back.
+  Each step: ask the controller which skill should run, then let the meta policy carry
+  out any switch. Also absorbs resets, since a caller owning `env.step` never hands the
+  done flags back.
 
-  A fresh episode is read off `episode_length_buf`, not off `reset_buf`. The two agree
-  on an auto-reset, but only the counter also catches a reset the caller asked for:
-  `env.reset()` (the viewer's reset button) and `env.reset(env_ids=...)` (its per-env
-  one) both rewind the counter and neither touches `reset_buf`, which still holds
-  whatever the last `step` computed. Reading `reset_buf` there leaves the composition
-  committed to the skill it was running before the reset, so a restarted episode carries
-  on mid-sequence instead of beginning at the controller's first skill.
+  A fresh episode is read off `episode_length_buf`, not `reset_buf`. The two agree on an
+  auto-reset, but only the counter also catches a reset the caller asked for: the
+  viewer's reset button calls `env.reset()`, which rewinds the counter and never touches
+  `reset_buf`, so reading `reset_buf` would leave the composition mid-sequence.
   """
 
   def __init__(
@@ -267,11 +270,10 @@ class ComposedPolicy:
   def __call__(self, obs: Any) -> torch.Tensor:
     """Actions for every env. `obs` is a `VecEnvObs`.
 
-    Typed loosely so this object satisfies the viewer's `PolicyProtocol` (which declares
-    a plain tensor) and can be handed to a viewer as-is. That matters beyond typing: a
-    viewer resets the policy through `getattr(policy, "reset")`, so wrapping this in a
-    lambda to appease the annotation would hide `reset` and leave the composition
-    running its old skill after a reset.
+    Typed loosely so this object satisfies the viewer's `PolicyProtocol` and can be
+    handed to a viewer as-is. That matters beyond typing: a viewer resets the policy
+    through `getattr(policy, "reset")`, so wrapping this in a lambda would hide `reset`
+    and leave the composition running its old skill after a reset.
     """
     if self._just_reset:
       self._just_reset = False

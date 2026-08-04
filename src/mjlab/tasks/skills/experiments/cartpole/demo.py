@@ -49,13 +49,13 @@ import tyro
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
-from mjlab.tasks.skills.architectures import ARCHITECTURES
+from mjlab.tasks.skills.architectures import build
+from mjlab.tasks.skills.experiment import Experiment
 from mjlab.tasks.skills.experiments.cartpole import (
   BALANCE_TASK_ID,
-  BRIDGE_VIEW,
   EXPERIMENT_NAME,
   SPINUP_TASK_ID,
-  build_pool,
+  build_experiment,
 )
 from mjlab.tasks.skills.experiments.cartpole.controller import CartpoleController
 from mjlab.tasks.skills.meta import ComposedPolicy
@@ -113,8 +113,10 @@ class DemoConfig:
   steps: int = 1500
 
 
-def _build_pool(cfg: DemoConfig, env: ManagerBasedRlEnv, device: str) -> SkillPool:
-  return build_pool(
+def _build_experiment(
+  cfg: DemoConfig, env: ManagerBasedRlEnv, device: str
+) -> Experiment:
+  return build_experiment(
     env,
     device,
     analytical=cfg.analytical,
@@ -241,23 +243,18 @@ def run_demo(cfg: DemoConfig) -> None:
   env_cfg.scene.num_envs = cfg.num_envs
   env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
 
-  pool = _build_pool(cfg, env, device)
+  exp = _build_experiment(cfg, env, device)
 
-  # Debug: bypass the controller/bridge and test each skill on its own.
+  # Debug: bypass the controller/architecture and test each skill on its own.
   if cfg.debug:
-    _run_debug(cfg, env, pool)
+    _run_debug(cfg, env, exp.pool)
     env.close()
     return
 
-  if cfg.architecture not in ARCHITECTURES:
-    raise ValueError(
-      f"Unknown architecture {cfg.architecture}; registered: {sorted(ARCHITECTURES)}."
-    )
-
   controller = CartpoleController(
-    pool, swingup_steps=cfg.swingup_steps, position_based=cfg.position_based
+    exp.pool, swingup_steps=cfg.swingup_steps, position_based=cfg.position_based
   )
-  meta = ARCHITECTURES[cfg.architecture](env, pool, BRIDGE_VIEW.resolve(env))
+  meta = build(env, cfg.architecture, exp)
 
   # Every architecture but the baseline carries trained state that must be restored.
   # The checkpoint is a run directory from train.py; default to the latest one.

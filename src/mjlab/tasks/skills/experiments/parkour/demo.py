@@ -39,15 +39,15 @@ import mjlab
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_rl_cfg
-from mjlab.tasks.skills.architectures import ARCHITECTURES
+from mjlab.tasks.skills.architectures import build
+from mjlab.tasks.skills.experiment import Experiment
 from mjlab.tasks.skills.experiments.parkour import (
-  BRIDGE_VIEW,
   ENTITY_NAME,
   EXPERIMENT_NAME,
   JUMP_TASK_ID,
   RUN_TASK_ID,
   WALK_TASK_ID,
-  build_pool,
+  build_experiment,
 )
 from mjlab.tasks.skills.experiments.parkour.arena import CORRIDOR, parkour_arena_env_cfg
 from mjlab.tasks.skills.experiments.parkour.controller import ParkourController
@@ -95,8 +95,10 @@ class DemoConfig:
   steps: int = 3000
 
 
-def _build_pool(cfg: DemoConfig, env: ManagerBasedRlEnv, device: str) -> SkillPool:
-  return build_pool(
+def _build_experiment(
+  cfg: DemoConfig, env: ManagerBasedRlEnv, device: str
+) -> Experiment:
+  return build_experiment(
     env,
     device,
     walk_task_id=cfg.walk_task_id,
@@ -241,27 +243,23 @@ def run_demo(cfg: DemoConfig) -> None:
   env_cfg.scene.num_envs = cfg.num_envs
   env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
 
-  pool = _build_pool(cfg, env, device)
+  exp = _build_experiment(cfg, env, device)
 
-  # Debug: bypass the controller/bridge and test each skill on its own.
+  # Debug: bypass the controller/architecture and test each skill on its own.
   if cfg.debug:
-    _run_debug(cfg, env, pool)
+    _run_debug(cfg, env, exp.pool)
     env.close()
     return
 
-  if cfg.architecture not in ARCHITECTURES:
-    raise ValueError(
-      f"Unknown architecture {cfg.architecture}; registered: {sorted(ARCHITECTURES)}."
-    )
-
   controller = ParkourController(
-    pool,
+    exp.pool,
     jump_distance=cfg.jump_distance,
     run_distance=cfg.run_distance,
     entity_name=ENTITY_NAME,
   )
-  # The same view training used: the networks in the checkpoint are sized by it.
-  meta = ARCHITECTURES[cfg.architecture](env, pool, BRIDGE_VIEW.resolve(env))
+  # Built from the same experiment training used: the checkpoint's networks are sized by
+  # its view.
+  meta = build(env, cfg.architecture, exp)
 
   # Every architecture but the baseline carries trained state that must be restored.
   if cfg.architecture != 0:

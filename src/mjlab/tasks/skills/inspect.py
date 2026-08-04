@@ -12,8 +12,8 @@ the pair worth looking at is run into jump: the left half is a robot at speed, t
 right half is a clip that opens from a stand.
 
 Nothing here reads a stored dataset. The couple is rolled live, the same way the
-collectors in windows.py roll theirs, and then *recorded* -- the frames are kept and
-replayed. That split matters for what you see: a closing window is the end of a longer
+collectors in windows.py roll theirs, and then recorded (the frames are kept and
+replayed). That split matters for what you see: a closing window is the end of a longer
 run, so producing it means stepping the simulator up to a couple of hundred times, and
 doing that inside the playback loop is a visible stall every time the loop comes round.
 Recording once and replaying costs a pause when a selection changes and nothing after.

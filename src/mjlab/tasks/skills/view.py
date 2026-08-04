@@ -10,7 +10,7 @@ The diffdrive is the clean example. Its observation ends with the command term, 
 second channel is the live error to a heading target fixed when the episode began. The
 `drive` skill's own recordings all start from a reset, so that error reads ~0 in every
 one of them. The bridge into `drive`, though, is dropped in wherever `turn` left the
-robot -- a quarter turn away, so the error reads ~pi/2. A discriminator comparing the
+robot: a quarter turn away, so the error reads ~pi/2. A discriminator comparing the
 two on the full observation separates them on that one channel alone and never has to
 look at the motion, and the only way for the bridge to close the gap is to steer the
 robot back to the heading the episode started at. So a bridge whose whole job was "shed

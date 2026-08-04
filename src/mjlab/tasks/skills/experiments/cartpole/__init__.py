@@ -58,11 +58,13 @@ from typing import TYPE_CHECKING
 
 from mjlab.tasks.cartpole.cartpole_env_cfg import cartpole_ppo_runner_cfg
 from mjlab.tasks.registry import register_mjlab_task
+from mjlab.tasks.skills.architectures import Budgets
 from mjlab.tasks.skills.architectures.arch_1.config import (
   BridgePhase,
   BridgeTraining,
   SwitchPhase,
 )
+from mjlab.tasks.skills.architectures.arch_3.config import ResidualTraining
 from mjlab.tasks.skills.experiments.cartpole.cartpole_env_cfg import (
   damped_cartpole_env_cfg,
 )
@@ -71,6 +73,7 @@ from mjlab.tasks.skills.windows import SkillInit, SkillWindowSpec, WindowPlan
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
+  from mjlab.tasks.skills.experiment import Experiment
   from mjlab.tasks.skills.skill import SkillPool
 
 # Names shared by this experiment's train and demo entry points. EXPERIMENT_NAME
@@ -170,22 +173,36 @@ WINDOWS = WindowPlan(
   }
 )
 
-# How long to train. Small, because this experiment is small. eval_steps is two seconds
-# of control, long enough for a pole the balancer did not really catch to be visibly
-# falling by the time the hand-over is judged.
+# How long to train, per architecture. Small, because this experiment is small.
+# eval_steps is two seconds of control, long enough for a pole the balancer did not
+# really catch to be visibly falling by the time the hand-over is judged.
 #
 # Note this task never terminates, so architecture 2 (which judges a hand-over purely by
 # survival) has nothing to learn from here. Architecture 3 is the one to compare against
-# architecture 1 on the cart-pole.
-TRAINING = BridgeTraining(
-  bridge=BridgePhase(num_iterations=100, num_windows=512, num_interrupts=4096),
+# architecture 1 on the cart-pole; its fade range and tail mirror arch_1's
+# max_transition_steps and eval_steps.
+_BRIDGE = BridgeTraining(
+  bridge=BridgePhase(num_iterations=50, num_windows=512, num_interrupts=4096),
   switch=SwitchPhase(
-    num_iterations=200,
+    num_iterations=100,
     num_interrupts=4096,
     max_transition_steps=40,
     eval_steps=40,
     epsilon_decay_iterations=150,
   ),
+)
+
+BUDGETS = Budgets(
+  arch_1=_BRIDGE,
+  arch_2=_BRIDGE,
+  arch_3=ResidualTraining(
+    num_iterations=200,
+    num_windows=512,
+    steps=(10, 40),
+    tail_steps=40,
+    inference_steps=24,
+  ),
+  # arch_4 has never been run on this experiment; its defaults stand until it is.
 )
 
 
@@ -239,4 +256,17 @@ def build_pool(
       PolicySkill("spin_up", spinup_task_id, spinup_ckpt, env, device),
       PolicySkill("balance", balance_task_id, balance_ckpt, env, device),
     ]
+  )
+
+
+def build_experiment(env: ManagerBasedRlEnv, device: str, **pool_kwargs) -> Experiment:
+  """Everything an architecture needs from this experiment, in one object."""
+  from mjlab.tasks.skills.experiment import Experiment
+
+  return Experiment(
+    name=EXPERIMENT_NAME,
+    entity_name=ENTITY_NAME,
+    pool=build_pool(env, device, **pool_kwargs),
+    view=BRIDGE_VIEW.resolve(env),
+    windows=WINDOWS,
   )

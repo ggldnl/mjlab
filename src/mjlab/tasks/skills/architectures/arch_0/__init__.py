@@ -1,11 +1,8 @@
-"""Architecture 0: direct hand-off (the no-bridge baseline).
+"""Architecture 0: the no-bridge baseline. A switch is a direct hand-off.
 
-The thing bridging has to beat. The instant the controller commands a switch, the
-target skill takes over from wherever the previous one left the robot, with nothing
-in between. This is a naive cut-over from one skill to the next.
-
-Dropping arch_0 in place of a trained architecture measures what that architecture is
-worth, with everything else (controller, pool, env, switch timing) held fixed.
+The target skill takes the controls on the step the switch fires, with nothing in
+between. This is the failure the others exist to fix, so it is what they are measured
+against. It trains nothing, saves nothing, and has no config.
 """
 
 from __future__ import annotations
@@ -14,29 +11,36 @@ import torch
 
 from mjlab.envs import VecEnvObs
 from mjlab.tasks.skills.meta import MetaPolicy
-from mjlab.tasks.skills.skill import NO_SKILL
+from mjlab.tasks.skills.skill import NO_SKILL, SkillPool
 
 
 class Arch0(MetaPolicy):
-  """Meta policy with no bridge: switches hand over to the target skill at once."""
+  """Hands control over immediately, with no transition of any kind."""
 
   def begin_switch(
     self, switching: torch.Tensor, source: torch.Tensor, target: torch.Tensor
   ) -> None:
     del source, target
-    # There is no bridge to wait for: the target skill produces this step's actions
-    # in `bridge_step` below, so it has to be handed control before it is asked.
+    # The target skill produces this step's action, so it takes control now. The base
+    # class engages a skill the step *before* its first action, which never happens here.
     self.engage(switching)
+
+  def involved(self, assignment: torch.Tensor) -> torch.Tensor:
+    # The target is driving the switching envs, so it has to be marked in the pool's
+    # single tick with those envs set (see skill.py).
+    handing_over = self._bridging & (self._target >= 0)
+    return super().involved(torch.where(handing_over, self._target, assignment))
 
   def bridge_step(
     self,
     obs: VecEnvObs,
+    skill_actions: torch.Tensor,
     source: torch.Tensor,
     target: torch.Tensor,
     active: torch.Tensor,
   ) -> tuple[torch.Tensor, torch.Tensor]:
-    del source  # Where control came from is exactly what a naive hand-off ignores.
-    # Run the target skill on the active envs and declare hand-over immediately, so
-    # from the next step control passes to the skill proper via the normal pool path.
+    del obs, source  # Where control came from is what a naive hand-off ignores
+    # Take the target's row of this step's tick and hand over at once, so from the next
+    # step control passes to the skill through the normal path.
     assignment = torch.where(active, target, torch.full_like(target, NO_SKILL))
-    return self.pool.act(obs, assignment), active.clone()
+    return SkillPool.select(skill_actions, assignment), active.clone()

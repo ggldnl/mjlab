@@ -32,34 +32,30 @@ Then compose them:
     uv run python -m mjlab.tasks.skills.experiments.parkour.train --architecture 1
     uv run python -m mjlab.tasks.skills.experiments.parkour.demo --architecture 1
 
-The failure the bridge exists to remove is the one from the problem statement, and it
-is here rather than by construction: the controller calls the jump on distance alone,
-so the jump is handed a robot that has been running. The jump is a motion-tracking
-policy whose clip begins from a stand, and its reference is pinned to wherever the
-robot is when control arrives (see skills.py). A robot arriving at 4 m/s is being told
+Problem: the controller calls the jump on distance alone, so the jump is handed
+a robot that has been running. The jump is a motion-tracking policy whose clip
+begins from a stand, and its reference is pinned to wherever the robot is when
+control arrives (see skills.py). A robot arriving at 4 m/s is being told
 to reproduce a crouch it has no way to reproduce.
 
-The pieces, in the order they matter:
-
-    arena.py       the shared environment: corridor, and every skill's observation
-    skills.py      the three frozen policies, wired to their own observation groups
-    controller.py  the corridor rule above
-    demo.py        run the composition, watch it or count the failures
-    train.py       train a bridging architecture on it
-    inspect.py     look at the windows a bridge is trained on
-
-    walk/  run/  jump/   the three skills, each a registered task of its own
+Training as we do now won't work: on a cartpole random actions are survivable,
+same on a two-wheeled robot; on a 29-joint humanoid, a random policy falls over ù
+immediately. It is standard practice with adversarial imitation on high-joint-count
+robots to warm-start the robot, precisely because random exploration can't discover
+anything by flailing.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from mjlab.tasks.skills.architectures import Budgets
 from mjlab.tasks.skills.architectures.arch_1.config import (
   BridgePhase,
   BridgeTraining,
   SwitchPhase,
 )
+from mjlab.tasks.skills.architectures.arch_3.config import ResidualTraining
 from mjlab.tasks.skills.experiments.parkour.jump import JUMP_TASK_ID
 from mjlab.tasks.skills.experiments.parkour.run import RUN_TASK_ID
 from mjlab.tasks.skills.experiments.parkour.walk import WALK_TASK_ID
@@ -68,6 +64,7 @@ from mjlab.tasks.skills.windows import SkillWindowSpec, WindowPlan
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
+  from mjlab.tasks.skills.experiment import Experiment
   from mjlab.tasks.skills.skill import SkillPool
 
 # EXPERIMENT_NAME is the folder architecture checkpoints are saved under; ENTITY_NAME
@@ -77,13 +74,14 @@ ENTITY_NAME = "robot"
 
 __all__ = [
   "BRIDGE_VIEW",
+  "BUDGETS",
   "ENTITY_NAME",
   "EXPERIMENT_NAME",
   "JUMP_TASK_ID",
   "RUN_TASK_ID",
-  "TRAINING",
   "WALK_TASK_ID",
   "WINDOWS",
+  "build_experiment",
   "build_pool",
 ]
 
@@ -128,15 +126,22 @@ WINDOWS = WindowPlan(
   }
 )
 
-# How long to train. An order of magnitude above the diffdrive's budget, because a
-# humanoid is not a two-wheeled cart: the state is 29 joints rather than two wheels, the
-# skills are learned rather than analytic, and a bad bridge here means falling over
-# rather than a tipped chassis.
+# How long to train. The state is 29 joints, the skills are learned rather than analytic,
+# and a bad bridge here means falling over. We should train for longer.
 #
 # `max_transition_steps` is 96 (about 2 s), long enough for the bridge to actually shed
-# a run's momentum. `eval_steps` is 128, long enough to see a botched hand-off into the
-# jump land: the clip takes roughly a second to reach its takeoff, and a robot that
-# mistimes it falls during the second after that.
+# a run's momentum.
+#
+# `eval_steps` is 160, and it is the jump's clip that sets it rather than any judgment
+# about how long a failure takes to develop. A hand-over into the jump is judged on
+# whether the clip got where it was going (see `_make_jump_success` in train.py), so the
+# measurement has to fall after the clip lands and before it runs out. Measured on the
+# current checkpoints: the clips are 177 to 227 steps long and touch down between steps
+# 90 and 141. At 128 steps, which is what this used to be, only just over half of them
+# had landed and the goal error was still mid-flight at half a metre; at 160 all of them
+# have landed and the error has settled to under 0.2 m at the ninetieth percentile. Past
+# about 200 the reference ends, the policy is left tracking nothing, and episodes start
+# being lost for reasons that have nothing to do with the hand-over.
 #
 # `entropy_coef` is a tenth of the family default. Measured, not guessed: at 0.01 the
 # actor's std climbs about a percent per iteration and never stops, because a bridge
@@ -146,20 +151,37 @@ WINDOWS = WindowPlan(
 # at the bound is exploring at random rather than learning, so the coefficient is the
 # thing to set. Watch `std` in the phase 1 log: if it still climbs to the bound and
 # stays, lower this again.
-TRAINING = BridgeTraining(
+_BRIDGE = BridgeTraining(
   bridge=BridgePhase(
-    num_iterations=3000,
+    num_iterations=100,
     num_windows=2048,
     num_interrupts=8192,
     entropy_coef=0.001,
   ),
   switch=SwitchPhase(
-    num_iterations=4000,
+    num_iterations=200,
     num_interrupts=8192,
     max_transition_steps=96,
-    eval_steps=128,
+    eval_steps=160,
     epsilon_decay_iterations=1000,
   ),
+)
+
+# arch_3's fade range is arch_1's `max_transition_steps` by another name, and its tail is
+# `eval_steps`: both are set by the jump's clip, as explained above. `entropy_coef` is
+# lowered for the same reason it is in phase 1 here.
+BUDGETS = Budgets(
+  arch_1=_BRIDGE,
+  arch_2=_BRIDGE,
+  arch_3=ResidualTraining(
+    num_iterations=200,
+    num_windows=2048,
+    steps=(32, 96),
+    tail_steps=160,
+    inference_steps=64,
+    entropy_coef=0.001,
+  ),
+  # arch_4 has never been run on this experiment; its defaults stand until it is.
 )
 
 
@@ -230,4 +252,17 @@ def build_pool(
         critic_group=JUMP_CRITIC_GROUP,
       ),
     ]
+  )
+
+
+def build_experiment(env: ManagerBasedRlEnv, device: str, **pool_kwargs) -> Experiment:
+  """Everything an architecture needs from this experiment, in one object."""
+  from mjlab.tasks.skills.experiment import Experiment
+
+  return Experiment(
+    name=EXPERIMENT_NAME,
+    entity_name=ENTITY_NAME,
+    pool=build_pool(env, device, **pool_kwargs),
+    view=BRIDGE_VIEW.resolve(env),
+    windows=WINDOWS,
   )

@@ -1,13 +1,16 @@
-"""Skills: the frozen, independently trained policies that a bridge composes.
+"""Skills: the frozen, independently trained policies that an architecture composes.
 
 A skill is trained on its own, knows nothing about the other skills, and is never
 fine-tuned to make a transition work. Preserving that independence is the point of
-bridging, so nothing here may modify a skill. A skill also makes no claim about its
-own progress: it is not required to say whether it succeeded, failed, or is done,
-since that would force every skill (analytic controllers included) to carry extra
-machinery it may not have. Whatever decides to switch away from a skill (the
-controller) or judges whether a switch landed safely (the bridge) has to work from
-what it can observe of the world, not from a self-report.
+bridging, so nothing here may modify a skill.
+
+A skill makes no claim about its own progress either: it never reports success, failure
+or completion, since that would force every skill (analytic controllers included) to
+carry machinery it may not have. Whatever decides to switch away (the controller) or
+judges whether a switch landed (the architecture) works from what it can observe.
+
+A skill may or may not have memory. diffdrive's `TurnSkill` for example integrates
+a yaw rate to know how far it has turned.
 """
 
 from abc import ABC, abstractmethod
@@ -19,8 +22,8 @@ import torch
 from tensordict import TensorDict
 
 from mjlab.envs import ManagerBasedRlEnv, VecEnvObs
-from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
-from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
+from mjlab.rl import MjlabOnPolicyRunner
+from mjlab.tasks.registry import load_runner_cls
 
 # Skill id standing for no skill, used wherever an id may be absent.
 NO_SKILL = -1
@@ -35,16 +38,14 @@ class Skill(ABC):
   def act(self, obs: VecEnvObs, active: torch.Tensor) -> torch.Tensor:
     """Actions for every env, shaped (num_envs, action_dim).
 
-    active marks the envs this skill is driving. Actions returned for the other envs
-    are discarded, so a stateless policy may ignore the mask, while a skill that
-    carries internal state must advance it only where active is set.
+    `active` marks the envs this skill is driving. Actions returned for the others are
+    discarded, so a stateless policy may ignore the mask; a skill with memory must
+    advance it only where `active` is set, and may read the mask's rising edge to learn
+    that control has arrived.
     """
 
   def reset(self, mask: torch.Tensor) -> None:  # noqa: B027
-    """Clear whatever internal state this skill keeps, where mask is set.
-
-    The default does nothing, which is right for a stateless policy.
-    """
+    """Clear this skill's memory where `mask` is set. Stateless skills need nothing."""
 
 
 class PolicySkill(Skill):
@@ -61,10 +62,8 @@ class PolicySkill(Skill):
     """Load `task_id`'s policy from `checkpoint_path` against `env`.
 
     `env` must already be built from that task's own env cfg (matching
-    observation/action spaces), and is shared with whatever else is using it --
-    wrapping it here resets it once, as `RslRlVecEnvWrapper` documents ("rsl_rl
-    does not call reset"), which is harmless since arch_0's own collection and
-    training loops always reset explicitly before doing anything with a skill.
+    observation/action spaces). Wrapping it here resets it once, as `RslRlVecEnvWrapper`
+    documents; harmless, since every caller resets before using a skill.
     """
     self.name = name
     agent_cfg = load_rl_cfg(task_id)
@@ -78,7 +77,7 @@ class PolicySkill(Skill):
 
   @torch.no_grad()
   def act(self, obs: VecEnvObs, active: torch.Tensor) -> torch.Tensor:
-    del active
+    del active  # Stateless
     state = obs["actor"]
     assert isinstance(state, torch.Tensor)
     obs_td = TensorDict(obs, batch_size=[state.shape[0]])
@@ -88,8 +87,8 @@ class PolicySkill(Skill):
 class SkillPool:
   """The ordered set of skills a controller may choose from.
 
-  Position in the pool fixes a skill's integer id. Those ids are what a controller
-  emits and what a bridge is conditioned on, so the order is part of the experiment.
+  Position in the pool fixes a skill's integer id. Those ids are what a controller emits
+  and what an architecture is conditioned on, so the order is part of the experiment.
   """
 
   def __init__(self, skills: Sequence[Skill]) -> None:
@@ -104,46 +103,89 @@ class SkillPool:
   def __getitem__(self, skill_id: int) -> Skill:
     return self.skills[skill_id]
 
-  def act(self, obs: VecEnvObs, assignment: torch.Tensor) -> torch.Tensor:
-    """Actions for every env, taken from the skill that env is assigned to.
+  ##
+  # The one tick, and the two pure helpers around it.
+  ##
 
-    assignment holds one skill id per env; envs set to NO_SKILL get zeros. Every
-    skill is evaluated on the whole batch and its rows are then selected, which keeps
-    the call batched at the cost of one forward pass per skill.
+  def act_each(self, obs: VecEnvObs, involved: torch.Tensor) -> torch.Tensor:
+    """Tick every skill once. Returns (num_skills, num_envs, action_dim).
+
+    `involved` is (num_skills, num_envs): the envs each skill is driving this step. It
+    must already name every skill whose action will be used, whatever it is used for,
+    because this is the only pass over the pool in a step (see the module docstring).
+    Rows for envs a skill is not driving are produced anyway and discarded by the caller.
     """
-    actions = [skill.act(obs, assignment == i) for i, skill in enumerate(self.skills)]
-    out = actions[0]
-    for skill_id, action in enumerate(actions[1:], start=1):
-      out = torch.where((assignment == skill_id).unsqueeze(-1), action, out)
-    return torch.where((assignment >= 0).unsqueeze(-1), out, torch.zeros_like(out))
+    return torch.stack(
+      [skill.act(obs, involved[i]) for i, skill in enumerate(self.skills)]
+    )
+
+  def involvement(self, assignment: torch.Tensor) -> torch.Tensor:
+    """The plain mask for an assignment: each skill drives the envs assigned to it."""
+    return torch.stack([assignment == i for i in range(len(self.skills))])
+
+  def driven_by(self, skill_id: int, num_envs: int, device: str) -> torch.Tensor:
+    """The mask in which `skill_id` drives every env and the rest drive none."""
+    mask = torch.zeros(len(self.skills), num_envs, dtype=torch.bool, device=device)
+    if skill_id != NO_SKILL:
+      mask[skill_id] = True
+    return mask
+
+  @staticmethod
+  def select(skill_actions: torch.Tensor, assignment: torch.Tensor) -> torch.Tensor:
+    """Each env's row of `act_each`'s output; envs set to NO_SKILL get zeros."""
+    width = skill_actions.shape[-1]
+    index = assignment.clamp_min(0).view(1, -1, 1).expand(1, -1, width)
+    chosen = skill_actions.gather(0, index).squeeze(0)
+    return torch.where(
+      (assignment >= 0).unsqueeze(-1), chosen, torch.zeros_like(chosen)
+    )
+
+  def act(self, obs: VecEnvObs, assignment: torch.Tensor) -> torch.Tensor:
+    """Tick the pool and take each env's action from the skill it is assigned to.
+
+    The convenience form of the three calls above, for a caller with nothing else to do
+    with the actions. `assignment` holds one skill id per env; NO_SKILL gets zeros.
+    """
+    return self.select(self.act_each(obs, self.involvement(assignment)), assignment)
 
   def reset(self, mask: torch.Tensor) -> None:
-    """Reset every skill's internal state where mask is set."""
+    """Reset every skill's memory where `mask` is set."""
     for skill in self.skills:
       skill.reset(mask)
 
 
 if __name__ == "__main__":
-  """
-  Visualize a skill (checkpoint or an analytical function) in Viser.
+  """Watch one skill on its own, with no controller and no architecture.
 
-  The env is built straight from a registered task id and left running the same
-  skill forever (there is no controller here to switch away from it).
+  The env is built straight from a registered task id and left running the same skill
+  forever, so this answers "does this skill work at all" before anything is composed.
+
+      uv run python -m mjlab.tasks.skills.skill --task-id <id> --checkpoint <path>
+      uv run python -m mjlab.tasks.skills.skill --task-id <id> --factory module:attr
   """
 
   from dataclasses import dataclass
 
+  import torch
   import tyro
+
+  from mjlab.envs import ManagerBasedRlEnv
+  from mjlab.rl import RslRlVecEnvWrapper
+  from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
+  from mjlab.tasks.skills.skill import PolicySkill, Skill
 
   @dataclass(frozen=True)
   class ViewSkillConfig:
     task_id: str
     """Registered mjlab task id; its (play-mode) env cfg is what the skill acts in."""
+
     checkpoint: str | None = None
     """Path to a trained checkpoint, loaded as a `PolicySkill`."""
+
     factory: str | None = None
-    """'module:attribute' resolving to a zero-arg callable returning a `Skill`,
-    for visualizing a hand-written analytical skill instead of a checkpoint."""
+    """'module:attribute' resolving to a zero-arg callable returning a `Skill`, for
+    watching a hand-written analytical skill instead of a checkpoint."""
+
     name: str = "skill"
     num_envs: int = 1
     device: str | None = None
@@ -167,14 +209,9 @@ if __name__ == "__main__":
     else:
       assert cfg.factory is not None
       built = string_to_callable(cfg.factory)()
-      # Duck-typed, not isinstance: running this file as __main__ makes this a
-      # second, distinct execution of the `mjlab.tasks.skills.skill` module, so a
-      # factory that imports `Skill` normally gets a different class object than
-      # the one defined here -- isinstance would reject a perfectly good Skill.
-      if not (hasattr(built, "act") and callable(built.act)):
+      if not isinstance(built, Skill):
         raise TypeError(
-          f"'{cfg.factory}' must return a Skill (an object with `.act`), got "
-          f"{type(built).__name__}"
+          f"'{cfg.factory}' must return a Skill, got {type(built).__name__}"
         )
       skill = built
 
