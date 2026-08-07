@@ -2,7 +2,7 @@
 
 Learning to move like the target skill needs no notion of success: that is a copying
 game (see common/imitation.py). Only learning when to let go needs one, and only an
-architecture with a decider needs that. arch_3 and arch_4 hand over on a schedule and
+architecture with a decider needs that. arch_3 and arch_4_backup hand over on a schedule and
 import none of this.
 
 A `SuccessFn` is deliberately a plain function rather than a class: both architectures

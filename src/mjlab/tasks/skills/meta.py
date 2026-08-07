@@ -24,7 +24,7 @@ One step, in order:
 `involved` is the load-bearing hook and the easiest to get wrong. The pool is ticked
 once per step (see skill.py), so the mask must name every skill whose action will be
 used that step, not only the ones formally in control. A bridge that drives on its own:
-names neither end (arch_1, arch_4); a bridge built out of the skills' own actions: names
+names neither end (arch_1, arch_4_backup); a bridge built out of the skills' own actions: names
 both (arch_3); a hand-off that is immediate: names the target (arch_0).
 
 `ComposedPolicy` pairs a controller with a meta policy into one `policy(obs)` a viewer

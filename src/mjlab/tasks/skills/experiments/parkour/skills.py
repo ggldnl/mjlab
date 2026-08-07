@@ -90,6 +90,10 @@ class JumpSkill(ArenaSkill):
   def __init__(self, *args, command_name: str = "motion", **kwargs) -> None:
     self._env: ManagerBasedRlEnv = kwargs.get("env") or args[3]
     self._command_name = command_name
+    self.entry_frame = 0
+    """Which frame of the clip control arrives at. Zero is the clip's own opening, a
+    stand. An architecture that can deliver the robot somewhere better sets this before
+    handing over; arch_0 through arch_3 cannot, and leave it alone."""
     super().__init__(*args, **kwargs)
 
   @property
@@ -103,4 +107,4 @@ class JumpSkill(ArenaSkill):
   def reset(self, mask: torch.Tensor) -> None:
     env_ids = mask.nonzero(as_tuple=False).squeeze(-1)
     if env_ids.numel() > 0:
-      self.command.anchor_to_robot(env_ids)
+      self.command.anchor_to_robot(env_ids, start_frame=self.entry_frame)

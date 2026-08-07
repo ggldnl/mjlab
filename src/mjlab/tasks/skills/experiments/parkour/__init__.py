@@ -181,7 +181,7 @@ BUDGETS = Budgets(
     inference_steps=64,
     entropy_coef=0.001,
   ),
-  # arch_4 has never been run on this experiment; its defaults stand until it is.
+  # arch_4_backup has never been run on this experiment; its defaults stand until it is.
 )
 
 

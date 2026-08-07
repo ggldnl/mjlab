@@ -218,22 +218,44 @@ class JumpCommand(CommandTerm):
   def body_ang_vel_w(self) -> torch.Tensor:
     return self._rotate(self.motion.body_ang_vel_w[self._index])
 
-  def anchor_to_robot(self, env_ids: torch.Tensor) -> None:
-    """Pin the clip to where the robot is now and rewind it to its first frame.
+  def anchor_to_robot(
+    self,
+    env_ids: torch.Tensor,
+    start_frame: int = 0,
+    at_pos: torch.Tensor | None = None,
+    at_quat: torch.Tensor | None = None,
+  ) -> None:
+    """Pin the clip to where the robot is now and wind it to `start_frame`.
 
     What a skill's `reset` does for this skill: called when the composition hands
     control to the jump, so the reference starts from the robot's current position
     and heading rather than from the origin. Nothing is written to the simulation --
     the robot is not moved, the reference is.
+
+    `start_frame` is the entry handle. A tracking policy has no privileged beginning:
+    any frame of its clip is a state it knows how to continue from, provided the robot
+    is actually in that state when it takes over. Zero is the clip's own opening, a
+    stand, which is what a naive hand-off gets. The bottom of the crouch is a second and
+    a half further in, and a robot delivered there skips the stand-up-and-settle
+    entirely. Whoever passes a frame is responsible for the robot being in it; that is
+    the bridge's job and the reason this parameter exists.
+
+    `at_pos` and `at_quat` pin the clip to a pose that is not the robot's current one,
+    which is what a bridge needs. The robot is not at the entry frame yet -- crossing to
+    it is the bridge's job -- so the clip has to be placed where the robot *will* be,
+    once, before the bridge starts. Anchoring again at hand-over would slide the clip
+    onto wherever the robot actually arrived, which erases the arrival error instead of
+    leaving it for the entered skill to cope with.
     """
-    self.time_steps[env_ids] = 0
+    frame = int(start_frame)
+    self.time_steps[env_ids] = frame
     self.motion_done[env_ids] = False
 
-    root_quat = self.robot_root_quat_w[env_ids]
-    # The clip's own first frame carries a heading (its pelvis is not exactly aligned
+    root_quat = self.robot_root_quat_w[env_ids] if at_quat is None else at_quat
+    # The clip's own entry frame carries a heading (its pelvis is not exactly aligned
     # with the direction it travels), so the anchor rotation is the robot's heading
     # relative to the clip's, not the robot's heading outright.
-    clip_quat = self.motion.body_quat_w[self.motion_ids[env_ids], 0, 0]
+    clip_quat = self.motion.body_quat_w[self.motion_ids[env_ids], frame, 0]
     delta = quat_mul(yaw_quat(root_quat), quat_inv(yaw_quat(clip_quat)))
     self.anchor_yaw[env_ids] = torch.atan2(
       2.0 * (delta[:, 0] * delta[:, 3]), 1.0 - 2.0 * delta[:, 3] ** 2
@@ -243,11 +265,11 @@ class JumpCommand(CommandTerm):
 
     # Position last: it is measured against the freshly rotated clip origin, so the
     # robot ends up exactly on the reference's first frame rather than near it.
-    clip_root = self.motion.body_pos_w[self.motion_ids[env_ids], 0, 0].clone()
+    clip_root = self.motion.body_pos_w[self.motion_ids[env_ids], frame, 0].clone()
     rotated = quat_apply(self.anchor_yaw_quat[env_ids], clip_root)
-    robot_xy = (
-      self.robot_root_pos_w[env_ids, :2] - self._env.scene.env_origins[env_ids, :2]
-    )
+    robot_xy = (self.robot_root_pos_w[env_ids] if at_pos is None else at_pos)[
+      :, :2
+    ] - self._env.scene.env_origins[env_ids, :2]
     self.anchor_pos[env_ids] = robot_xy - rotated[:, :2]
 
     self.update_relative_body_poses()
@@ -642,8 +664,16 @@ class JumpCommand(CommandTerm):
       self.time_steps[env_ids] = 0
 
     self.motion_done[env_ids] = False
-    # A resample puts the clip back at the origin: the reference is about to be
-    # written into the simulation, so the robot goes to the clip, not the reverse.
+
+    if not self.cfg.reset_robot_to_clip:
+      # A composition owns where the robot is. The reference is re-pinned to it and the
+      # simulation is left alone; whoever hands control to this skill decides the entry
+      # frame and calls `anchor_to_robot` itself.
+      self.anchor_to_robot(env_ids)
+      return
+
+    # Otherwise the clip goes back to the origin, because the reference is about to be
+    # written into the simulation: the robot goes to the clip, not the reverse.
     self.anchor_pos[env_ids] = 0.0
     self.anchor_yaw[env_ids] = 0.0
 
@@ -868,6 +898,22 @@ class JumpCommandCfg(CommandTermCfg):
   anchor_body_name: str
   body_names: tuple[str, ...]
   entity_name: str
+
+  reset_robot_to_clip: bool = True
+  """Whether a reset moves the robot onto the clip, or the clip onto the robot.
+
+  True is what training this skill needs: an episode begins by placing the robot on the
+  reference's first frame, so the two start together and the tracking reward means
+  something from the first step.
+
+  False is what a composition needs, and the difference is not cosmetic. In a corridor
+  the robot is wherever the previous skill left it, and an episode ending -- a fall, a
+  time-out -- resets this command like any other. With the default that reset teleports
+  the robot back onto the clip at the origin, which reads as the jump inexplicably
+  restarting from the start line halfway down the corridor. It is also silent, because
+  mjlab resets terminated environments inside `step`, so nothing in the composition ever
+  sees it happen.
+  """
 
   pose_range: dict[str, tuple[float, float]] = field(default_factory=dict)
   velocity_range: dict[str, tuple[float, float]] = field(default_factory=dict)

@@ -160,7 +160,7 @@ BUDGETS = Budgets(
     tail_steps=96,
     inference_steps=40,
   ),
-  # arch_4 has never been run on this experiment; its defaults stand until it is.
+  # arch_4_backup has never been run on this experiment; its defaults stand until it is.
 )
 
 

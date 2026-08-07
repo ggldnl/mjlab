@@ -83,6 +83,7 @@ class PatientMeta(MetaPolicy):
   def bridge_step(
     self,
     obs: VecEnvObs,
+    skill_actions: torch.Tensor,
     source: torch.Tensor,
     target: torch.Tensor,
     active: torch.Tensor,
@@ -178,7 +179,10 @@ def test_arch0_is_a_pure_cut_over(device):
   source = torch.zeros(num_envs, dtype=torch.int64, device=device)
   target = torch.ones(num_envs, dtype=torch.int64, device=device)
   active = torch.ones(num_envs, dtype=torch.bool, device=device)
-  actions, handover = meta.bridge_step(obs, source, target, active)
+  # The pool is passed once per step and the bridge reads its row out (see
+  # SkillPool.act_each), so the caller supplies that pass here too.
+  skill_actions = pool.act_each(obs, meta.involved(target))
+  actions, handover = meta.bridge_step(obs, skill_actions, source, target, active)
 
   # Target skill's action, and control released the very same step.
   assert torch.equal(actions, torch.full_like(actions, skill_1.value))

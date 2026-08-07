@@ -308,6 +308,12 @@ def parkour_arena_env_cfg(
   motion.debug_vis = False
   motion.gui = False
 
+  # In the corridor the robot is wherever walking left it, so a reset re-pins the clip to
+  # the robot rather than teleporting the robot onto the clip. Without this an episode
+  # ending anywhere in the corridor -- a fall, a time-out -- puts the robot back on the
+  # start line, and does it inside `step`, where nothing in the composition can see it.
+  motion.reset_robot_to_clip = False
+
   # Sensors the velocity observation reads and the jump environment does not have.
   # Its critic scans the ground under each foot; the two environments' contact and
   # self-collision sensors are already the same, so only the new ones are added.
