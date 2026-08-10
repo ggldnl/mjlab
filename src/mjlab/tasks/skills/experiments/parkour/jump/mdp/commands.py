@@ -381,6 +381,12 @@ class JumpCommand(CommandTerm):
     the goal descriptor reports. Retargeting leaves some clips drifting a little
     after landing, and having the number the policy is shown disagree with the
     number it is paid for would be a slow, quiet source of bias.
+
+    Pinned by the anchor like every other reference quantity above. Training never
+    notices, because there the anchor is zero and the clip is at the env origin. A
+    composition does: re-anchoring moves the whole reference to the robot and the goal
+    has to move with it, or the policy is shown a target metres away from the motion it
+    is being asked to track, and lunges at it.
     """
     mid = self.motion_ids
     last = self.motion.time_step_total_per_motion[mid] - 1
@@ -389,6 +395,8 @@ class JumpCommand(CommandTerm):
       self.motion.root_pos_w[mid, last, :2] - self.motion.root_pos_w[mid, 0, :2]
     )
     pos[:, :2] += (self.scales - 1.0).unsqueeze(-1) * travelled
+    pos = self._rotate(pos)
+    pos[:, :2] += self.anchor_pos
     return pos + self._env.scene.env_origins
 
   @property

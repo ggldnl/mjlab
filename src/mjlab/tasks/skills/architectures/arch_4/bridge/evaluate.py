@@ -24,8 +24,12 @@ obvious. Here the robot is standing on the floor because the floor is pushing ba
 
 `Resume clip after bridge` decides what happens on the far side. On, the clip is written
 back onto the robot, which is the composition as it will really be assembled and makes the
-arrival error visible as a jump. Off, the policy keeps driving into the tail it was trained
-on, which shows whether it could have carried on by itself.
+arrival error visible as a jump. Off, the policy keeps driving through the second window
+the way training scores it, which shows whether it could have carried on by itself.
+
+The number to read is `hand-off score`: the arrival across every channel a skill taking
+over would care about, squashed into (0, 1]. It is the same number training multiplies the
+whole second window by, so this panel and the reward agree by construction.
 """
 
 from __future__ import annotations
@@ -179,7 +183,7 @@ class BridgeViewer:
     self.gap = int(self.command.gap[0])
     self.before = self.command.context_before(0).cpu().numpy()
     self.after = self.command.reference[0].cpu().numpy()
-    self.tail = self.command.tail
+    self.resume = self.command.resume
     self.phase = BEFORE
     self.cursor = 0
     self.arrival_error = (0.0, 0.0)
@@ -227,7 +231,7 @@ class BridgeViewer:
       with torch.inference_mode():
         action = self.policy(obs)
       self.env.step(action)
-      self.cursor = int(self.command.step[0])
+      self.cursor = max(int(self.command.step[0]), 0)
       if self.cursor >= self.gap:
         # The hand-back. How far the robot is from where the clip resumes is the number
         # this whole architecture is judged on.
@@ -248,8 +252,8 @@ class BridgeViewer:
       with torch.inference_mode():
         action = self.policy(obs)
       self.env.step(action)
-      self.cursor = int(self.command.step[0])
-    if self.cursor >= self.gap + self.tail:
+      self.cursor = max(int(self.command.step[0]), 0)
+    if self.cursor >= self.gap + self.resume:
       self.load(self.index)
 
   def _draw(self) -> None:
@@ -288,6 +292,7 @@ class BridgeViewer:
       f"<br/><b>Now:</b> <span style='color:{colour}'>{name}</span> "
       f"({self.cursor + 1})"
       f"<br/><b>At hand-back:</b> {distance:.3f} m, {joints:.3f} rad"
+      f"<br/><b>Hand-off score:</b> {float(self.command.hand_off_score[0]):.3f}"
       "</div>"
     )
 

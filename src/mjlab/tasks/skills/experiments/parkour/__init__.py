@@ -32,6 +32,10 @@ Then compose them:
     uv run python -m mjlab.tasks.skills.experiments.parkour.train --architecture 1
     uv run python -m mjlab.tasks.skills.experiments.parkour.demo --architecture 1
 
+Score a bridge on the hand-over itself, walk into jump, rather than on a corpus window:
+
+    uv run python -m mjlab.tasks.skills.experiments.parkour.tests.walk2jump
+
 Problem: the controller calls the jump on distance alone, so the jump is handed
 a robot that has been running. The jump is a motion-tracking policy whose clip
 begins from a stand, and its reference is pinned to wherever the robot is when

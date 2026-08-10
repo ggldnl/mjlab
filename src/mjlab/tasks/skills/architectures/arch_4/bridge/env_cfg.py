@@ -14,6 +14,22 @@ things that were wrong are no longer expressible.
 The observation is proprioception plus the command, and the command is the target strip
 and the phase. The reference inside the hole reaches the reward and never the observation,
 which is what makes this a bridge rather than a tracker.
+
+An episode is the hole, the hand-off, and then the whole second window driven by the same
+policy and scored on terms the hand-off set (see mdp/commands.py). That is the part that
+answers the question inference asks, and it is why the observation carries three phase
+channels rather than two: a policy that cannot tell the hole from the resume is being
+asked to solve a different, partly unobserved problem. Checkpoints from before that change
+do not load against this config, and should not: they were fitted to a task that stopped
+caring a fifth of a second after the hole closed.
+
+A share of the windows have two halves that were never adjacent, ramping up over the first
+part of a run (`SpliceCfg`). Those are the ones that ask the question a composition asks,
+and their hole has no reference in it, so the six tracking terms below are gated off there
+and `approach` pays instead. Nothing about the observation changes, which is deliberate:
+the actor must not be able to tell the two kinds of window apart, because at inference
+every window is the mismatched kind. It also means a checkpoint trained before the splice
+existed loads against this config unchanged, which is what makes it the warm start.
 """
 
 from __future__ import annotations
@@ -41,12 +57,25 @@ from mjlab.viewer import ViewerConfig
 FOOT_BODIES = ("left_ankle_roll_link", "right_ankle_roll_link")
 
 
-def bridge_env_cfg(play: bool = False, split: str = "train") -> ManagerBasedRlEnvCfg:
-  """The bridging environment. `split` picks which subjects the windows come from."""
+def bridge_env_cfg(
+  play: bool = False, split: str = "train", splice: mdp.SpliceCfg | None = None
+) -> ManagerBasedRlEnvCfg:
+  """The bridging environment. `split` picks which subjects the windows come from.
+
+  `splice` says how unlike each other a window's two halves are allowed to be. Training
+  defaults to the ramp in `SpliceCfg`; `play` defaults to none of it, because `evaluate.py`
+  is built around showing the recording a window was cut from and there is no such
+  recording once the halves come from different places. Pass a `SpliceCfg` with
+  `warmup_steps=0` to watch a mismatched pair anyway, and read the ghost inside the hole as
+  the arrival rather than as a body.
+  """
   command = mdp.BridgeCommandCfg(
     entity_name="robot",
     corpus=CorpusCfg(),
     windows=WindowCfg(),
+    splice=splice
+    if splice is not None
+    else mdp.SpliceCfg(fraction=0.0 if play else mdp.SpliceCfg.fraction),
     split=split,
     # Windows are redrawn only when an episode ends, never mid-episode: a hole that
     # changed halfway through would be two different questions scored as one.
@@ -139,7 +168,32 @@ def bridge_env_cfg(play: bool = False, split: str = "train") -> ManagerBasedRlEn
       weight=0.5,
       params={"command_name": "bridge", "std": 3.14},
     ),
+    # What pays for the hole of a spliced window, where the six terms above are gated off
+    # because the frames they would score against lead somewhere the robot is no longer
+    # going. The weight is the sum of those six, so the two kinds of window are worth the
+    # same per step and a bridge cannot prefer one to the other. That parity is load
+    # bearing: the critic sees the same observation either way and cannot tell them apart,
+    # so a reward that differed between them would be variance it has no way to explain.
+    "approach": RewardTermCfg(
+      func=mdp.approach,
+      weight=4.5,
+      params={"command_name": "bridge", "pos_std": 1.5, "ori_std": 1.0},
+    ),
+    # The second window, paid per frame and scaled by how good the hand-off was. Weighted
+    # to be worth roughly what one frame of good tracking is: the resume is not a bonus
+    # on top of the hole, it is the other half of the same job, and a bridge choosing
+    # between a tidier crossing and a usable arrival should not find the crossing worth
+    # more.
+    "resumed": RewardTermCfg(
+      func=mdp.resumed, weight=4.0, params={"command_name": "bridge"}
+    ),
     "action_rate": RewardTermCfg(func=base_mdp.action_rate_l2, weight=-1e-1),
+    # Falling over or losing the reference now costs something outright, on top of the
+    # frames it forfeits. Every other term here is positive, so this cannot create the
+    # suicide trap it would in a reward that goes slack: ending early was already the
+    # worst option and this widens the margin. `is_terminated` excludes the time-out, so
+    # running the window to its end never pays it.
+    "failed": RewardTermCfg(func=base_mdp.is_terminated, weight=-50.0),
     "joint_limits": RewardTermCfg(
       func=base_mdp.joint_pos_limits,
       weight=-10.0,
@@ -153,11 +207,20 @@ def bridge_env_cfg(play: bool = False, split: str = "train") -> ManagerBasedRlEn
   }
 
   terminations: dict[str, TerminationTermCfg] = {
-    "hole_closed": TerminationTermCfg(
-      func=mdp.hole_closed, params={"command_name": "bridge"}, time_out=True
+    "window_done": TerminationTermCfg(
+      func=mdp.window_done, params={"command_name": "bridge"}, time_out=True
     ),
     "lost_tracking": TerminationTermCfg(
-      func=mdp.lost_tracking, params={"command_name": "bridge", "threshold": 0.6}
+      func=mdp.lost_tracking,
+      params={
+        "command_name": "bridge",
+        "threshold": 0.6,
+        "resume_threshold": 0.35,
+        # Slack over the distance a spliced hole opened at, where there is no reference to
+        # be off and the only failure left is walking away from the target. Generous, so
+        # that a run-up or a turn on the spot is never mistaken for one.
+        "stray_margin": 1.5,
+      },
     ),
     "fell_over": TerminationTermCfg(
       func=mdp.fell_over,
@@ -191,7 +254,7 @@ def bridge_env_cfg(play: bool = False, split: str = "train") -> ManagerBasedRlEn
       nconmax=35, njmax=250, mujoco=MujocoCfg(timestep=0.005, iterations=10)
     ),
     decimation=4,
-    # The longest hole plus its tail, at the control rate. Nothing should ever reach this:
-    # `hole_closed` ends an episode first, and this is only the backstop.
-    episode_length_s=(WindowCfg().gap_range[1] + 10) / 50.0 + 0.5,
+    # The longest hole plus the whole second window, at the control rate. Nothing should
+    # ever reach this: `window_done` ends an episode first, and this is only the backstop.
+    episode_length_s=(WindowCfg().gap_range[1] + WindowCfg().future) / 50.0 + 0.5,
   )

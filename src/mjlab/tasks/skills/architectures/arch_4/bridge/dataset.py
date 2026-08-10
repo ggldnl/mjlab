@@ -24,9 +24,19 @@ Two stages, both cached, both skipped for work already done.
    the hole and is not on the ground, which is what keeps the corpus from being mostly
    idle standing.
 
-Nothing here is made up. Every window is a real stretch of a real recording and the
-frames inside the hole are the true answer. Pairs that were never continuations, stitched
-from two different clips, are a separate idea and are not in this file.
+Every clip is also carried in mirror image, reflected about its own sagittal plane, which
+doubles the corpus for the cost of an index and a sign (see `mirror_states`). This is the
+one augmentation that adds motion rather than noise: a body is left-right symmetric, so
+the mirror of a real recording is a motion a real body could have performed, and a corpus
+of a few takes is otherwise strongly handed -- LAFAN1's subjects lead with the same foot,
+turn the same way out of the same corners, and plant the same leg before a jump. A bridge
+fitted to that learns the handedness along with the motion and is worse on the half of
+the hand-overs that come in from the other side.
+
+Nothing here is made up. Every window is a real stretch of a real recording, or the mirror
+of one, and the frames inside the hole are the true answer. Pairs that were never
+continuations, stitched from two different clips, are a separate idea and are not in this
+file.
 
 The `__main__` plays the result back so the cut can be looked at rather than guessed at:
 green while the ghost is in context, red while it is inside the hole.
@@ -60,7 +70,13 @@ from mjlab.tasks.skills.architectures.arch_4.bridge.view import (
   visual_meshes,
 )
 from mjlab.terrains import TerrainEntityCfg
-from mjlab.utils.lab_api.math import axis_angle_from_quat, quat_conjugate, quat_mul
+from mjlab.utils.lab_api.math import (
+  axis_angle_from_quat,
+  quat_apply,
+  quat_conjugate,
+  quat_mul,
+  yaw_quat,
+)
 
 # The 29 joints the retargeted CSV holds, in the order its columns use. This is Unitree's
 # own order for the G1 and it is not mjlab's; column k below is written into the joint of
@@ -211,6 +227,12 @@ class CorpusCfg:
   max_seconds: float | None = None
   """Truncate every clip, for a quick run over a small corpus. Applied after the trim."""
 
+  mirror: bool = True
+  """Carry every clip in mirror image as well, doubling the corpus.
+
+  Held in memory rather than written to disk: the reflection is an index and a sign (see
+  `mirror_states`), so recomputing it costs less than reading it back."""
+
 
 @dataclass(frozen=True)
 class WindowCfg:
@@ -285,6 +307,141 @@ def subject_of(clip_name: str) -> str:
   """The subject a clip name belongs to, e.g. walk1_subject5 -> subject5."""
   _, _, subject = clip_name.rpartition("_")
   return subject
+
+
+##
+# Mirroring.
+#
+# The reflection is about the body's own sagittal plane, which in this corpus is the world
+# plane y = 0: the frames are already position-independent by the time anything reads them
+# (see frames.py), so reflecting the world and reflecting the body are the same operation
+# and the world one is the one that can be written down.
+#
+# Under that reflection every quantity falls into one of two kinds. A true vector -- a
+# position, a linear velocity -- has its y component negated. A pseudovector -- an angular
+# velocity, the vector part of a quaternion -- picks up the reflection's determinant as
+# well, so it is x and z that are negated and y that survives. Getting those two the wrong
+# way round produces a body that walks correctly and turns the wrong way, which is not a
+# thing anybody notices in a loss curve.
+#
+# The joints then have to be relabelled: whatever the left leg was doing, the right leg of
+# the mirrored motion is doing. A hinge keeps its angle if it turns about y (every pitch
+# joint, including the knee and the elbow, which are pitch hinges whose names do not say
+# so) and flips it otherwise (roll about x, yaw about z). `G1.check_mirror` proves that
+# against the model's own joint axes rather than trusting the naming.
+##
+
+MIRROR_AXIS = 1
+"""World axis the reflection negates. 1 is y: left becomes right, forward stays forward."""
+
+
+def mirror_partner(joint_name: str) -> str:
+  """The joint that plays this one's part in the mirrored body."""
+  if joint_name.startswith("left_"):
+    return "right_" + joint_name.removeprefix("left_")
+  if joint_name.startswith("right_"):
+    return "left_" + joint_name.removeprefix("right_")
+  return joint_name
+
+
+def mirror_joint_sign(joint_name: str) -> float:
+  """+1 if the mirrored joint holds the same angle, -1 if it holds the negation."""
+  if "pitch" in joint_name or "knee" in joint_name or "elbow" in joint_name:
+    return 1.0
+  if "roll" in joint_name or "yaw" in joint_name:
+    return -1.0
+  raise ValueError(
+    f"Cannot tell which way '{joint_name}' mirrors from its name. Joints are matched by "
+    f"the axis they turn about: pitch (and the knee and elbow) keep their angle, roll and "
+    f"yaw flip it. Name it accordingly, or extend this function."
+  )
+
+
+def mirror_joint_map(joint_names: list[str]) -> tuple[np.ndarray, np.ndarray]:
+  """Where each joint's mirrored value comes from, and with what sign.
+
+  Returns `(index, sign)`, both of length J, such that the mirrored joint vector is
+  `q[index] * sign`. `sign` is indexed by destination and is symmetric under the
+  permutation, which is another way of saying a body has two sides rather than three.
+  """
+  lookup = {name: i for i, name in enumerate(joint_names)}
+  missing = [name for name in joint_names if mirror_partner(name) not in lookup]
+  if missing:
+    raise ValueError(
+      f"These joints have no mirror partner in the model: {missing}. A one-sided limb "
+      f"cannot be reflected, so the corpus cannot be mirrored for this robot."
+    )
+  index = np.array(
+    [lookup[mirror_partner(name)] for name in joint_names], dtype=np.int64
+  )
+  sign = np.array([mirror_joint_sign(name) for name in joint_names], dtype=np.float32)
+  return index, sign
+
+
+def mirror_states(
+  states: torch.Tensor, index: np.ndarray, sign: np.ndarray
+) -> torch.Tensor:
+  """One clip reflected about the sagittal plane. (T, 13 + 2J) -> (T, 13 + 2J).
+
+  A copy rather than a view: the two are separate clips from here on and a window cut
+  from one must not be able to reach into the other.
+  """
+  num_joints = index.shape[0]
+  if states.shape[-1] != state_dim(num_joints):
+    raise ValueError(
+      f"States are {states.shape[-1]} wide, which is not {state_dim(num_joints)} for "
+      f"{num_joints} joints."
+    )
+  joint_index = torch.from_numpy(index).to(states.device)
+  joint_sign = torch.from_numpy(sign).to(states.device)
+
+  out = states.clone()
+  # True vectors: position and linear velocity lose their y.
+  out[:, MIRROR_AXIS] = -out[:, MIRROR_AXIS]
+  out[:, 7 + MIRROR_AXIS] = -out[:, 7 + MIRROR_AXIS]
+  # Pseudovectors: the quaternion's vector part and the angular velocity keep only y.
+  out[:, 4] = -out[:, 4]  # quat x
+  out[:, 6] = -out[:, 6]  # quat z
+  out[:, 10] = -out[:, 10]  # angular velocity x
+  out[:, 12] = -out[:, 12]  # angular velocity z
+
+  joints = slice(ROOT_STATE_DIM, ROOT_STATE_DIM + num_joints)
+  velocities = slice(ROOT_STATE_DIM + num_joints, None)
+  out[:, joints] = states[:, joints][:, joint_index] * joint_sign
+  out[:, velocities] = states[:, velocities][:, joint_index] * joint_sign
+  return out
+
+
+def rebase_states(
+  states: torch.Tensor, to_pos: torch.Tensor, to_yaw: torch.Tensor
+) -> torch.Tensor:
+  """A strip of motion carried rigidly so its first frame sits at `to_pos` / `to_yaw`.
+
+  `states` is (N, T, 13 + 2J), `to_pos` is (N, 3) and `to_yaw` is (N, 4), heading only.
+  Returns a copy.
+
+  A yaw rotation about the strip's own first root, then a translation, applied to the root
+  position, the root orientation and both root velocities. Joint columns are untouched:
+  they are already in the body's own frame, and a motion is not a different motion because
+  it happened facing east.
+
+  This is what lets a second window be put somewhere the corpus never put it. Nothing
+  inside the strip moves relative to anything else inside it, so it is still a recording of
+  something a body did. What changes is where the bridge has to get to in order to meet it.
+  """
+  anchor_pos = states[:, 0, 0:3]
+  anchor_yaw = yaw_quat(states[:, 0, 3:7])
+  delta = quat_mul(to_yaw, quat_conjugate(anchor_yaw))
+  spread = delta.unsqueeze(1).expand(-1, states.shape[1], -1)
+
+  out = states.clone()
+  out[:, :, 0:3] = quat_apply(
+    spread, states[:, :, 0:3] - anchor_pos.unsqueeze(1)
+  ) + to_pos.unsqueeze(1)
+  out[:, :, 3:7] = quat_mul(spread, states[:, :, 3:7])
+  out[:, :, 7:10] = quat_apply(spread, states[:, :, 7:10])
+  out[:, :, 10:ROOT_STATE_DIM] = quat_apply(spread, states[:, :, 10:ROOT_STATE_DIM])
+  return out
 
 
 @dataclass
@@ -448,6 +605,46 @@ class G1:
 
     self.standing_foot_height = self._standing_foot_height()
 
+  def check_mirror(self) -> None:
+    """Prove the mirror map against the model's joint axes, or say why it is wrong.
+
+    The map is read off joint names, which is convenient and is exactly the kind of thing
+    that is quietly wrong after somebody renames a link. The model knows the truth: a
+    hinge keeps its angle under the reflection precisely when its axis survives it, and
+    the two sides' axes are written in their own parents' frames, which for this robot are
+    themselves mirror images. So `axis_right == M @ axis_left` means the two hinges turn
+    opposite ways in the mirrored body and the angle flips, and `axis_right == -M @
+    axis_left` means it does not.
+    """
+    reflect = np.ones(3, dtype=np.float64)
+    reflect[MIRROR_AXIS] = -1.0
+    axes = {}
+    for i in range(self.model.njnt):
+      name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_JOINT, i)
+      if name and self.model.jnt_type[i] != mujoco.mjtJoint.mjJNT_FREE:
+        axes[name.removeprefix(f"{ENTITY_NAME}/")] = self.model.jnt_axis[i]
+
+    for name, axis in axes.items():
+      partner = mirror_partner(name)
+      reflected = reflect * axis
+      expected = mirror_joint_sign(name)
+      if np.allclose(axes[partner], reflected, atol=1e-6):
+        actual = -1.0
+      elif np.allclose(axes[partner], -reflected, atol=1e-6):
+        actual = 1.0
+      else:
+        raise RuntimeError(
+          f"'{name}' and '{partner}' are not mirror images: their axes are {axis} and "
+          f"{axes[partner]}, and no sign relates them. This robot's two sides are not "
+          f"built the same way, so its motion cannot be mirrored by relabelling joints."
+        )
+      if actual != expected:
+        raise RuntimeError(
+          f"The name of '{name}' says it mirrors with sign {expected:+.0f}, its axis "
+          f"{axis} says {actual:+.0f}. Fix `mirror_joint_sign`; a corpus mirrored the "
+          f"wrong way is motion no body performed."
+        )
+
   def _standing_foot_height(self) -> float:
     """Height of the lower ankle roll link with the robot in its default pose.
 
@@ -518,6 +715,9 @@ def convert_clip(
     num_joints=np.int32(g1.num_joints),
     max_seconds=np.float32(-1.0 if cfg.max_seconds is None else cfg.max_seconds),
     trim_seconds=np.float32(cfg.trim_seconds),
+    # Written so a clip can be mirrored without compiling the model to find out which
+    # column is which joint. The order is the model's, not the source CSV's.
+    joint_names=np.array(g1.joint_names),
     name=name,
   )
 
@@ -540,6 +740,10 @@ def _converted_with(path: Path, cfg: CorpusCfg) -> bool:
   Without this a run that truncated the corpus leaves short clips behind that the next,
   full run happily reuses, and the only symptom is a corpus quietly smaller than the one
   that was asked for.
+
+  `joint_names` is checked for presence rather than value: clips converted before
+  mirroring existed do not carry it, and a missing field is a rebuild rather than an
+  error. The CSVs are cached, so that costs a few seconds and no downloads.
   """
   try:
     blob = np.load(path)
@@ -548,6 +752,7 @@ def _converted_with(path: Path, cfg: CorpusCfg) -> bool:
       float(blob["fps"]) == cfg.fps
       and float(blob["max_seconds"]) == max_seconds
       and float(blob["trim_seconds"]) == cfg.trim_seconds
+      and "joint_names" in blob
     )
   except (KeyError, OSError, ValueError):
     return False
@@ -561,6 +766,8 @@ def build_corpus(cfg: CorpusCfg) -> list[Path]:
 
   g1 = G1()
   print(f"G1: {g1.num_joints} joints, foot stands at {g1.standing_foot_height:.4f} m")
+  if cfg.mirror:
+    g1.check_mirror()
 
   paths: list[Path] = []
   summaries: list[dict[str, float | str | int]] = []
@@ -592,9 +799,16 @@ def build_corpus(cfg: CorpusCfg) -> list[Path]:
 
 
 class Corpus:
-  """Every converted clip, held as one tensor per clip."""
+  """Every converted clip, held as one tensor per clip, optionally mirrored as well.
 
-  def __init__(self, paths: list[Path]) -> None:
+  A mirrored clip is a clip like any other from here on: it is cut into windows on the
+  same terms and sampled with the same probability. What it is not is a separate subject.
+  It keeps the subject of the take it came from, so a held-out subject stays held out in
+  both handednesses -- scoring a bridge on the mirror of motion it trained on is scoring
+  it on motion it trained on.
+  """
+
+  def __init__(self, paths: list[Path], mirror: bool = False) -> None:
     missing = [p for p in paths if not p.exists()]
     if missing:
       raise FileNotFoundError(
@@ -603,7 +817,10 @@ class Corpus:
       )
 
     self.names: list[str] = []
+    self.subjects: list[str] = []
+    self.mirrored: list[bool] = []
     self.states: list[torch.Tensor] = []
+    self.joint_names: list[str] = []
     fps: set[float] = set()
     joints: set[int] = set()
     for path in paths:
@@ -614,15 +831,40 @@ class Corpus:
           f"pipeline writes npz of the same name holding per-body poses; point "
           f"--corpus.motion-dir somewhere else."
         )
-      self.names.append(str(blob["name"]))
+      name = str(blob["name"])
+      self.names.append(name)
+      self.subjects.append(subject_of(name))
+      self.mirrored.append(False)
       self.states.append(torch.from_numpy(blob["states"]))
       fps.add(float(blob["fps"]))
       joints.add(int(blob["num_joints"]))
+      if "joint_names" in blob:
+        self.joint_names = [str(n) for n in blob["joint_names"]]
 
     if len(fps) != 1 or len(joints) != 1:
       raise ValueError(f"Corpus is not uniform: fps={fps}, joints={joints}.")
     self.fps = fps.pop()
     self.num_joints = joints.pop()
+
+    if mirror:
+      self._add_mirrors()
+
+  def _add_mirrors(self) -> None:
+    """Append the reflection of every clip loaded so far."""
+    if len(self.joint_names) != self.num_joints:
+      raise ValueError(
+        f"Mirroring needs the joint order, and these clips do not carry it (found "
+        f"{len(self.joint_names)} names for {self.num_joints} joints). They were "
+        f"converted before mirroring existed; delete the corpus directory and rebuild:\n"
+        f"  uv run python -m mjlab.tasks.skills.architectures.arch_4.bridge.dataset "
+        f"--view False"
+      )
+    index, sign = mirror_joint_map(self.joint_names)
+    for clip in range(len(self.names)):
+      self.names.append(f"{self.names[clip]} (mirrored)")
+      self.subjects.append(self.subjects[clip])
+      self.mirrored.append(True)
+      self.states.append(mirror_states(self.states[clip], index, sign))
 
   def __len__(self) -> int:
     return len(self.names)
@@ -682,7 +924,7 @@ class BridgeDataset:
     windows: list[Window] = []
 
     for clip in range(len(corpus)):
-      held_out = subject_of(corpus.names[clip]) in cfg.eval_subjects
+      held_out = corpus.subjects[clip] in cfg.eval_subjects
       if held_out != (self.split == "eval"):
         continue
 
@@ -991,14 +1233,22 @@ class Config:
 def main(cfg: Config) -> None:
   """Build the corpus, cut it into windows, and play the result back."""
   paths = build_corpus(cfg.corpus)
-  corpus = Corpus(paths)
+  corpus = Corpus(paths, mirror=cfg.corpus.mirror)
 
   train = BridgeDataset(corpus, cfg.windows, split="train")
   evaluation = BridgeDataset(corpus, cfg.windows, split="eval")
   held_out = sorted(
-    {n for n in corpus.names if subject_of(n) in cfg.windows.eval_subjects}
+    {
+      corpus.names[i]
+      for i in range(len(corpus))
+      if corpus.subjects[i] in cfg.windows.eval_subjects
+    }
   )
-  print(f"\n{len(corpus)} clips at {corpus.fps:g} Hz, {corpus.num_joints} joints")
+  mirrored = sum(corpus.mirrored)
+  print(
+    f"\n{len(corpus)} clips at {corpus.fps:g} Hz, {corpus.num_joints} joints "
+    f"({len(corpus) - mirrored} recorded, {mirrored} mirrored)"
+  )
   for name, dataset in (("train", train), ("eval", evaluation)):
     rejected = dataset.rejected
     offered = len(dataset) + sum(rejected.values())

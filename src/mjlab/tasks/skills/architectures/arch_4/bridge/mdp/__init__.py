@@ -10,6 +10,12 @@ from mjlab.tasks.skills.architectures.arch_4.bridge.mdp.commands import (
 from mjlab.tasks.skills.architectures.arch_4.bridge.mdp.commands import (
   BridgeCommandCfg as BridgeCommandCfg,
 )
+from mjlab.tasks.skills.architectures.arch_4.bridge.mdp.commands import (
+  SpliceCfg as SpliceCfg,
+)
+from mjlab.tasks.skills.architectures.arch_4.bridge.mdp.rewards import (
+  approach as approach,
+)
 from mjlab.tasks.skills.architectures.arch_4.bridge.mdp.rewards import (
   feet_below_ground as feet_below_ground,
 )
@@ -18,6 +24,9 @@ from mjlab.tasks.skills.architectures.arch_4.bridge.mdp.rewards import (
 )
 from mjlab.tasks.skills.architectures.arch_4.bridge.mdp.rewards import (
   joint_vel_error_exp as joint_vel_error_exp,
+)
+from mjlab.tasks.skills.architectures.arch_4.bridge.mdp.rewards import (
+  resumed as resumed,
 )
 from mjlab.tasks.skills.architectures.arch_4.bridge.mdp.rewards import (
   root_ang_vel_error_exp as root_ang_vel_error_exp,
@@ -35,8 +44,8 @@ from mjlab.tasks.skills.architectures.arch_4.bridge.mdp.terminations import (
   fell_over as fell_over,
 )
 from mjlab.tasks.skills.architectures.arch_4.bridge.mdp.terminations import (
-  hole_closed as hole_closed,
+  lost_tracking as lost_tracking,
 )
 from mjlab.tasks.skills.architectures.arch_4.bridge.mdp.terminations import (
-  lost_tracking as lost_tracking,
+  window_done as window_done,
 )

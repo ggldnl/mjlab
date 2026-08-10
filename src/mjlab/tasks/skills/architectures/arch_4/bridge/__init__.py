@@ -2,8 +2,15 @@
 
 A policy that drives a real robot across a hole cut out of recorded motion. It is handed
 the state a body was actually in at the hand-off, momentum included, told where it has to
-arrive, and paid for reproducing what the body did in between. It is never shown that
-in-between, because at inference there is not one.
+arrive, and paid for getting there in a state the next motion can carry on from. Where a
+recorded in-between exists it is paid for reproducing that too, but it is never shown it,
+because at inference there is not one.
+
+For a growing share of windows there is not one during training either: the two halves are
+taken from different places, moved apart and given a fresh time budget, so the pair is one
+no body ever performed (`mdp/commands.SpliceCfg`). Those are the windows that ask what a
+composition asks. Trained only on halves cut from a single recording, a bridge learns to
+continue a motion, which is a different and much easier problem than joining two.
 
 This is one component of the architecture, not the architecture. arch_4 as a whole is a
 single bridge for the whole pool plus a chooser that decides which moment of the next

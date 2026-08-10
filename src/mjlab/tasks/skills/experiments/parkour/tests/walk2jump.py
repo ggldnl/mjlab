@@ -14,42 +14,80 @@ The whole script is four steps.
    how fast it is going at the instant control is taken away. The `past` frames leading
    into it are the first unmasked window.
 
-2. Jump, from the hand-off. The jump policy is rolled from its nominal conditions, the
-   clip's first frame, exactly the state its own training reset produces, but standing on
-   the hand-off's spot on the floor and facing the hand-off's heading. That is what "the
-   jump happens where the robot was when the signal came" means: only the ground position
-   and the heading come from the walk, the pose and the momentum are the jump's own.
+   The walk is then left running for `gap` frames past its own cut. Those frames are
+   handed to nothing and are no part of the hand-over; they are what this policy would
+   have gone on to do had the signal never come, which is what step 2 needs and what
+   `SkillWindowSpec.overrun` names. Collected here directly rather than through the
+   window plan, which asks for it nowhere in this experiment.
 
-   The second unmasked window is the stretch of that rollout starting at the crouch, the
-   frame where the torso is lowest before takeoff. Everything before the crouch is the
-   policy standing up and settling, which is the second and a half a robot arriving at
-   speed should not have to spend.
+2. Jump, from where the walk was going. The jump policy is rolled from its nominal
+   conditions, the clip's first frame, exactly the state its own training reset produces,
+   but standing on the spot the walk would have reached `gap` frames after the cut and
+   facing the heading it would have had there. Only that ground position and that heading
+   come from the walk; the pose and the momentum are the jump's own.
 
-3. The hole is what lies between the hand-off and the crouch, and it is empty. No
+   The look-ahead is the arrangement's whole point. Anchoring the jump on the cut asks
+   the question after the fact: the target sits on ground the robot has already covered,
+   and a body carrying a metre a second into the hole can only satisfy it by throwing the
+   momentum away and stepping back into its own past. Anchored ahead, the same hole reads
+   as an instruction rather than a correction. In `gap` frames you were going to be there;
+   be in this state instead. What the bridge has to change is the state it arrives in, not
+   the ground it covers.
+
+   It is also the shape the bridge was trained on. Every corpus window travels across its
+   hole, by construction (`WindowCfg.min_travel`), so a target sitting on top of the
+   hand-off is a displacement the training set does not contain.
+
+   The second unmasked window is the stretch of that rollout starting at the entry.
+   `--entry-lead` says where that is: zero puts it on the crouch, the frame where the torso
+   is lowest before takeoff, and a positive lead moves it that many frames earlier. What
+   lies before it is the policy standing up and settling, which is the second and a half a
+   robot arriving at speed should not have to spend, and how much of it to leave the jump
+   policy is the thing the lead trades.
+
+3. The hole is what lies between the hand-off and the entry, and it is empty. No
    recording covers it because no body performed this pair, and producing something a body
-   could perform there is the bridge's whole job. What the viewer draws in it is a straight
-   interpolation: the question, not an answer.
+   could perform there is the bridge's whole job. The bridge is handed the hole the way
+   training hands it a spliced window: the arrival frame held across it and nothing to
+   track, because there is nothing there to track.
+
+   How long it is, is now an input. The look-ahead cannot be taken without committing to
+   a duration first, and the jump that follows is rolled at whatever that duration picked
+   out, so the entry is downstream of the hole rather than the thing that sizes it.
+   `--gap` is that duration, and it is both quantities at once: how far ahead the target
+   is placed, and how long the bridge has to arrive in it.
 
 4. Resume. The jump policy is handed the robot wherever the bridge left it, with its clip
-   pinned exactly where the nominal rollout had it and wound to the crouch. The clip is
+   pinned exactly where the nominal rollout had it and wound to the entry. The clip is
    never re-pinned onto the robot's actual arrival; doing that would slide the target onto
    whatever the bridge produced and erase the error this script exists to measure.
 
 Everything lives in one world, the arena's, and never moves between coordinate systems.
 The one exception is the bridge, which runs in its own environment and slides the hand-off
-onto its origin; `bridge_across` shifts back on the way out.
+onto its origin; `bridge_across` shifts back on the way out, so nothing above it ever sees
+the bridge's coordinates.
 
 The same hand-over is run again with no bridge at all, the walk's final state passed
-straight to the jump, which is architecture 0. That column is the thing to beat.
+straight to the jump, which is architecture 0. That column is the thing to beat, and the
+look-ahead is what makes it a real column: standing still through the hole now costs it
+the whole delta t of ground the target was placed across, on top of arriving in the wrong
+state. Under the old placement it was already about where it needed to be.
 
     uv run python -m mjlab.tasks.skills.experiments.parkour.tests.walk2jump
     uv run python -m mjlab.tasks.skills.experiments.parkour.tests.walk2jump --view True
     uv run python -m mjlab.tasks.skills.experiments.parkour.tests.walk2jump \\
         --num-envs 32 --bridge False
 
-The viewer colours it the way the corpus viewer does. Green is a policy: the walk running
-into the hand-off, and the nominal jump from the crouch onward. Red is the hole. Solid
-blue is what actually happened.
+The viewer colours it the way the corpus viewer does. Solid blue is what actually
+happened. The ghost is the nominal jump, wound so its entry falls on the frame the solid
+robot arrives at: green once the two are supposed to agree, red across the hole, where the
+ghost is standing up and settling and the bridge is being asked to skip all of it. The two
+meeting at the entry is the thing to watch for, and the gap between them when they get
+there is the arrival error.
+
+The ghost now stands a look-ahead ahead of the robot when the hole opens, rather than on
+top of it, so the two closing over the hole is the shape a good crossing has. A bridge
+that brakes leaves the ghost behind and reaches the entry late and short.
 """
 
 from __future__ import annotations
@@ -72,7 +110,6 @@ from mjlab.tasks.skills.architectures.arch_4.bridge.dataset import (
   G1,
   ROOT_STATE_DIM,
   WindowCfg,
-  slerp,
 )
 from mjlab.tasks.skills.architectures.arch_4.bridge.env_cfg import bridge_env_cfg
 from mjlab.tasks.skills.architectures.arch_4.bridge.evaluate import (
@@ -124,13 +161,41 @@ class Config:
   checkpoint: Path | None = None
   """The bridge to score. Defaults to the newest under logs/; the path is printed."""
 
-  gap: int | None = None
-  """Frames the bridge gets, hand-off to crouch. Defaults to however long the nominal jump
-  took to reach its own crouch, capped at the widest hole the bridge was trained on. The
-  cap is not a workaround: the stand-and-settle it cuts off is the part a robot arriving
-  with momentum has no reason to reproduce."""
+  gap: int = 30  # WindowCfg().gap_range[0]
+  """Delta t, in frames. How far past the cut the walk is looked ahead to place the
+  target, and how long the bridge then has to arrive in it. One number rather than two,
+  because the hole says "in this many frames you were going to be there, be in this state
+  instead", and the horizon and the deadline are the same instant.
 
-  jump_distance: tuple[float, float] = (0.8, 1.6)
+  It can no longer be derived from the jump the way it once was. The nominal jump is
+  rolled at the look-ahead, so the frame it crouches on is downstream of this number and
+  cannot also set it. Keep it inside `WindowCfg.gap_range`, which is the span of hole
+  durations the bridge was trained across and also where the old derivation capped out on
+  nearly every hand-over."""
+
+  entry_lead: int = 10
+  """Frames before the crouch to hand the robot over: which state of the nominal jump the
+  bridge is aimed at. Zero is the crouch itself, the bottom of the dip.
+
+  The crouch is the hardest frame in the rollout to be delivered into. It is the most
+  loaded pose the jump makes before it leaves the ground, and a bridge that arrives in it
+  slightly wrong has no frames left to be wrong in. Entering earlier hands over a shallower
+  state and leaves the jump policy the last stretch of its own descent to absorb the
+  residual with, which is what a tracking policy is good at. What it costs is that the
+  entry walks back into the stand-and-settle this arrangement exists to skip, so there is a
+  lead beyond which the bridge is being asked to reproduce the standing up rather than skip
+  it. Somewhere between those is what this parameter exists to sweep.
+
+  Anchored on the crouch rather than counted from the start of the rollout, on purpose. The
+  crouch lands anywhere between step 73 and 111 depending on which clip was drawn and how
+  far it was stretched, so a fixed index from the start is a different moment of the motion
+  in every environment and the hand-overs stop being the same question. A lead is the same
+  moment in all of them.
+
+  Negative enters after the crouch, during the push off the ground. Allowed, and unlikely
+  to be a good idea: the bridge would have to deliver a body already on its way up."""
+
+  jump_distance: tuple[float, float] = (1.5, 1.6)
   """Range the per-environment jump goal is drawn from [m]."""
 
   walk_settle: int = 64
@@ -139,6 +204,13 @@ class Config:
   jump_steps: int = 200
   """Steps of the nominal jump rollout. Long enough to cover the longest clip's crouch,
   its flight and its landing."""
+
+  window: int = WindowCfg().future
+  """Frames of the nominal jump kept from the entry onward: the second unmasked window.
+
+  The bridge is aimed at the first `WindowCfg().future` of it, which is the width its
+  target observation was trained on, so making this longer changes what the viewer and the
+  resume are shown against rather than what the bridge is pointed at."""
 
   resume_steps: int = 160
   """Steps the jump policy is given after the hand-over. The experiment's own number: the
@@ -209,26 +281,6 @@ def reference_state(jump: JumpCommand) -> torch.Tensor:
   )
 
 
-def interpolate(start: torch.Tensor, end: torch.Tensor, steps: int) -> torch.Tensor:
-  """The straight line between two states, exclusive of both. (S,), (S,) -> (steps, S).
-
-  Not a guess at what the bridge should do, and never scored against. It exists so the
-  hole has something in it for the viewer to draw and for the environment's metrics to
-  subtract from, and it is drawn in red for the same reason the corpus viewer draws a
-  masked stretch in red: it is the question, not an answer.
-  """
-  if steps <= 0:
-    return start.new_zeros((0, start.shape[-1]))
-  alpha = torch.arange(1, steps + 1, device=start.device, dtype=start.dtype) / (
-    steps + 1
-  )
-  out = start.unsqueeze(0) + (end - start).unsqueeze(0) * alpha.unsqueeze(-1)
-  out[:, 3:7] = slerp(
-    start[3:7].expand(steps, 4), end[3:7].expand(steps, 4), alpha.unsqueeze(-1)
-  )
-  return out
-
-
 ##
 # The two rollouts.
 ##
@@ -238,14 +290,26 @@ def interpolate(start: torch.Tensor, end: torch.Tensor, steps: int) -> torch.Ten
 class Rollout:
   """One policy driven for a while, recorded frame by frame.
 
-  `states` is (N, T + 1, S): the state before any action, then one per action. `alive`
-  marks the environments that never terminated, and `torso_z` is kept alongside because
-  the crouch is defined by it and a root height cannot tell a crouch from a short robot.
+  `states` is (N, T + 1, S): the state before any action, then one per action. `torso_z`
+  is kept alongside because the crouch is defined by it and a root height cannot tell a
+  crouch from a short robot.
+
+  `alive` is (N, T + 1) and says, frame by frame, whether that environment had terminated
+  yet. Frames after a termination are held copies of the last real one, so this is what
+  separates a recording from a freeze. It is per frame rather than a single flag because
+  the walk is deliberately rolled past the point each environment cares about: asking
+  whether it was still up at the end would judge every hand-over on a stretch of walking
+  that happens after the signal it is built around.
   """
 
   states: torch.Tensor
   torso_z: torch.Tensor
   alive: torch.Tensor
+
+  @property
+  def survived(self) -> torch.Tensor:
+    """(N,). Environments that were still up at the last recorded frame."""
+    return self.alive[:, -1]
 
 
 def jump_command(env: ManagerBasedRlEnv) -> JumpCommand:
@@ -288,6 +352,7 @@ def record(
 
   frames = [read_state(robot)]
   heights = [robot.data.body_link_pos_w[:, torso, 2]]
+  standing = [alive.clone()]
   for _ in range(steps):
     with torch.inference_mode():
       action = pool.act(obs, assignment)
@@ -297,11 +362,12 @@ def record(
     heights.append(
       torch.where(alive, robot.data.body_link_pos_w[:, torso, 2], heights[-1])
     )
+    standing.append(alive.clone())
 
   return Rollout(
     states=torch.stack(frames, dim=1),
     torso_z=torch.stack(heights, dim=1),
-    alive=alive,
+    alive=torch.stack(standing, dim=1),
   )
 
 
@@ -314,6 +380,13 @@ def roll_walk(
   every bridging architecture here samples hand-overs from. A cut is a moment in a gait,
   not a moment in time: half of them catch a foot planted and half catch one in the air,
   and a bridge that only ever leaves from one of those has not been tested.
+
+  The recording runs `gap` frames past the latest cut, so every environment has its own
+  cut plus a delta t of walking on the end of it. That tail is counterfactual and is
+  handed to nothing: it is only ever read for where it says the robot was going, which is
+  the ex ante half of the question. The command is safe to leave alone across it, since
+  the arena pushes the twist resampling clock out of reach (`arena._constrain_twist`), so
+  the walk keeps the speed and the heading it was given the whole way.
   """
   low, high = WINDOWS["walk"].interrupt_range
   low = max(low, cfg.walk_settle, WindowCfg().past)
@@ -325,7 +398,7 @@ def roll_walk(
   twist.vel_command_b[:, 0] = WALK_SPEED
   twist.vel_command_b[:, 1] = 0.0
 
-  return record(env, pool, WALK, obs, int(cut.max()), torso), cut
+  return record(env, pool, WALK, obs, int(cut.max()) + cfg.gap, torso), cut
 
 
 def cut_walk(walk: Rollout, cut: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -342,25 +415,70 @@ def cut_walk(walk: Rollout, cut: torch.Tensor) -> tuple[torch.Tensor, torch.Tens
   return history, history[:, -1]
 
 
+def look_ahead(
+  walk: Rollout, cut: torch.Tensor, gap: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+  """Where the walk would have been `gap` frames after the cut, and whether it got there.
+
+  This is the whole ex ante mechanism, and it is one index. The walk kept running past
+  every cut, so the frame is already recorded; nothing here predicts anything, it reads
+  off what the outgoing policy actually went on to do. That is an oracle, and it is the
+  right one for this script: the question is whether a target placed ahead of the robot
+  is a better thing to ask a bridge for, not whether the placement can be guessed. A
+  composition running for real has to estimate this frame instead, from the skill it is
+  leaving, and that estimate is a separate piece of work.
+
+  The second return says the walk was still up at that frame rather than at the end of
+  the shared recording. An environment whose counterfactual tail falls over has no target
+  and is not a question; one that falls over later, long after its own cut, is untouched
+  by it.
+  """
+  index = torch.arange(walk.states.shape[0], device=walk.states.device)
+  ahead = cut + gap
+  return walk.states[index, ahead], walk.alive[index, ahead]
+
+
+@dataclass
+class Pinning:
+  """Where the nominal rollout had its clip, as it was pinned before the rollout ran.
+
+  Captured before rather than read after, because a rollout that terminates is auto-reset
+  inside `env.step` and a reset resamples the clip and its scale. Read afterwards, an
+  environment that fell would report the placement of a clip that never ran, and the resume
+  would be restored onto it.
+  """
+
+  motion_ids: torch.Tensor
+  scales: torch.Tensor
+  anchor_pos: torch.Tensor
+  anchor_yaw: torch.Tensor
+
+
 def roll_jump(
   env: ManagerBasedRlEnv,
   pool: SkillPool,
   cfg: Config,
   torso: int,
-  hand_off: torch.Tensor,
+  at: torch.Tensor,
   num_joints: int,
-) -> tuple[Rollout, torch.Tensor]:
-  """Roll the jump from its own initiation set, standing where the walk handed over.
+) -> tuple[Rollout, torch.Tensor, Pinning]:
+  """Roll the jump from its own initiation set, standing where the walk was going.
 
   Nominal means nominal in everything except placement: the robot is written onto the
   clip's first frame, which is the state this policy's training reset produces and the
   only one it can be assumed to be good from. What is not nominal is where that happens.
-  The clip is pinned to the hand-off's horizontal position and heading first, so the whole
-  jump plays out from the spot the walk was interrupted on rather than from the origin.
-  That is the question being asked: what a jump started at this instant would have done.
+  The clip is pinned to `at` first, so the whole jump plays out from there rather than
+  from the origin.
 
-  Note that only the hand-off's xy and yaw are used. Its joint angles, its height and its
-  momentum are the walk's, and reproducing them is the bridge's job, not the reference's.
+  `at` is the look-ahead frame, where the walk would have been a delta t after the cut,
+  not the cut itself. Pinning on the cut asks what a jump started at this instant would
+  have done, which is a target on ground the robot has already left; a body still carrying
+  its walking speed can only reach it by braking. Pinning ahead asks what a jump started
+  from here would have done by the time the robot got here anyway, and leaves the momentum
+  something to do.
+
+  Only `at`'s xy and yaw are used. Its joint angles, its height and its momentum are the
+  walk's, and reproducing them is the bridge's job, not the reference's.
 
   What is recorded is the robot, not the clip. A reference is what the policy was aiming
   at; the window has to be a stretch of motion that actually happened.
@@ -369,6 +487,10 @@ def roll_jump(
   only up to takeoff is what keeps it a crouch: a body in flight passes through lower
   torso heights on the way down, and the bottom of a landing is not somewhere to hand a
   robot over to.
+
+  It is returned as a landmark, not as the hand-over. Where the hand-over actually goes is
+  `--entry-lead` frames ahead of it and `assemble` decides that, because this function has
+  no business knowing how much of its own run-up the jump policy is being left.
   """
   robot: Entity = env.scene[ENTITY_NAME]
   jump = jump_command(env)
@@ -378,22 +500,28 @@ def roll_jump(
   distances = torch.empty(env.num_envs, device=env.device).uniform_(*cfg.jump_distance)
   # Which clip each environment jumps, and how far it is stretched.
   jump.apply_goals(env_ids, distances)
-  # Then move the clip to the hand-off, and the robot onto the clip.
-  jump.anchor_to_robot(
-    env_ids, start_frame=0, at_pos=hand_off[:, 0:3], at_quat=hand_off[:, 3:7]
-  )
+  # Then move the clip to the look-ahead, and the robot onto the clip.
+  jump.anchor_to_robot(env_ids, start_frame=0, at_pos=at[:, 0:3], at_quat=at[:, 3:7])
   write_state(robot, reference_state(jump), num_joints)
   obs = refresh(env)
 
+  # Everything about where this clip is, before a step can auto-reset it out from under us.
+  pinning = Pinning(
+    motion_ids=jump.motion_ids.clone(),
+    scales=jump.scales.clone(),
+    anchor_pos=jump.anchor_pos.clone(),
+    anchor_yaw=jump.anchor_yaw.clone(),
+  )
+
   rollout = record(env, pool, JUMP, obs, cfg.jump_steps, torso)
 
-  takeoff = jump.takeoff_steps_all[jump.motion_ids]
+  takeoff = jump.takeoff_steps_all[pinning.motion_ids]
   span = rollout.torso_z.shape[1]
   before_takeoff = torch.arange(span, device=env.device).unsqueeze(
     0
   ) < takeoff.unsqueeze(1)
   crouch = rollout.torso_z.masked_fill(~before_takeoff, float("inf")).argmin(dim=1)
-  return rollout, crouch
+  return rollout, crouch, pinning
 
 
 ##
@@ -409,20 +537,38 @@ class Handover:
   """(N, past, S). The walk running into the hand-off."""
 
   hand_off: torch.Tensor
-  """(N, S). The last frame the walk produced: what the bridge is handed."""
+  """(N, S). The frame the walk was cut on: what the bridge is handed."""
 
-  hole: torch.Tensor
-  """(N, gap, S). Straight interpolation across the hole. Not motion; see `interpolate`."""
+  ahead: torch.Tensor
+  """(N, S). Where the walk would have been `gap` frames later, had nothing interrupted
+  it. Never handed to anything and never scored against; the jump was pinned on its xy and
+  yaw, and it is kept so the report and the viewer can say how far ahead that put the
+  target."""
 
   future: torch.Tensor
-  """(N, future, S). The nominal jump from the crouch onward."""
+  """(N, window, S). The nominal jump from the entry onward: the second unmasked window,
+  and what the bridge is aimed at."""
+
+  nominal: torch.Tensor
+  """(N, jump_steps + 1, S). The whole nominal jump rollout, crouch and all.
+
+  Kept because it is what the viewer draws in the hole. The stand-and-settle before the
+  entry is the stretch the bridge is being asked to replace, and showing it against the
+  bridge replacing it is the only way to see whether the replacement was worth making."""
 
   gap: int
-  """Frames from the hand-off to the crouch, shared by every environment so one viewer
-  timeline serves all of them."""
+  """Delta t: frames from the hand-off to the entry, and the horizon the target was placed
+  at. One number for every environment, so one viewer timeline serves all of them."""
+
+  entry_frame: torch.Tensor
+  """(N,). Which step of its own nominal rollout each environment is entered at: the
+  crouch, less `--entry-lead`. Everything downstream reads this rather than the crouch,
+  because it is the frame the bridge is aimed at, the frame the resume winds the clip to
+  and the frame the ghost is wound around."""
 
   crouch_frame: torch.Tensor
-  """(N,). Which frame of its own clip each environment's crouch is."""
+  """(N,). Where the crouch itself was, kept so the report can say how far ahead of it the
+  entry sits. Nothing else uses it."""
 
   motion_ids: torch.Tensor
   scales: torch.Tensor
@@ -436,52 +582,58 @@ class Handover:
 
 
 def assemble(
-  walk: Rollout,
   history: torch.Tensor,
   hand_off: torch.Tensor,
+  ahead: torch.Tensor,
+  still_walking: torch.Tensor,
   jump: Rollout,
   crouch: torch.Tensor,
-  command: JumpCommand,
+  pinning: Pinning,
   cfg: Config,
-  max_gap: int,
 ) -> Handover:
   """Cut the window out of the two rollouts.
 
   There is no coordinate work here, and that is the point: the jump was rolled at the
-  hand-off, so its frames are already in the right place and the window is a slice.
+  look-ahead, so its frames are already in the right place and the window is a slice.
+  Where the slice starts is the one decision: the crouch is a landmark in the rollout, the
+  entry is where `--entry-lead` puts the hand-over relative to it, and it is the entry the
+  window opens on.
+
+  The clamp at zero is for a lead longer than the run-up an environment had. That leaves it
+  entering on the rollout's first frame, the clip's own opening stand, with a shorter
+  effective lead than the ones around it. Reported rather than rejected, since a hand-over
+  into the stand is still a hand-over, just not the one that was asked for.
   """
-  device = walk.states.device
-  count = walk.states.shape[0]
-  future = WindowCfg().future
+  device = history.device
+  count = history.shape[0]
   index = torch.arange(count, device=device)
+
+  entry = (crouch - cfg.entry_lead).clamp(min=0)
 
   last = jump.states.shape[1] - 1
   window = torch.stack(
-    [jump.states[index, (crouch + k).clamp(max=last)] for k in range(future)], dim=1
-  )
-
-  gap = cfg.gap if cfg.gap is not None else min(int(crouch.min()) - 1, max_gap)
-  gap = max(int(gap), 1)
-  hole = torch.stack(
-    [interpolate(hand_off[i], window[i, 0], gap) for i in range(count)], dim=0
+    [jump.states[index, (entry + k).clamp(max=last)] for k in range(cfg.window)], dim=1
   )
 
   # A rollout that fell over is not a hand-over, and neither is one whose future window
-  # ran off the end of what was recorded.
-  room = (crouch + future) < jump.states.shape[1]
-  valid = walk.alive & jump.alive & room
+  # ran off the end of what was recorded. The walk's side of that is `still_walking`,
+  # which is aliveness at the look-ahead rather than at the end of its recording.
+  room = (entry + cfg.window) < jump.states.shape[1]
+  valid = still_walking & jump.survived & room
 
   return Handover(
     past=history,
     hand_off=hand_off,
-    hole=hole,
+    ahead=ahead,
     future=window,
-    gap=gap,
+    nominal=jump.states,
+    gap=cfg.gap,
+    entry_frame=entry,
     crouch_frame=crouch,
-    motion_ids=command.motion_ids.clone(),
-    scales=command.scales.clone(),
-    anchor_pos=command.anchor_pos.clone(),
-    anchor_yaw=command.anchor_yaw.clone(),
+    motion_ids=pinning.motion_ids,
+    scales=pinning.scales,
+    anchor_pos=pinning.anchor_pos,
+    anchor_yaw=pinning.anchor_yaw,
     valid=valid,
   )
 
@@ -494,12 +646,20 @@ def assemble(
 def bridge_across(
   env: ManagerBasedRlEnv, policy, wrapped, window: Handover
 ) -> tuple[torch.Tensor, torch.Tensor]:
-  """Drive the bridge from the hand-off to where the crouch is supposed to be.
+  """Drive the bridge from the hand-off to where the entry is supposed to be.
 
-  Returns every frame it produced, in the bridge environment's own coordinates, and the
-  environments still standing when it got there. The window is injected rather than drawn
-  from the corpus (`BridgeCommand.place_window`), which is the only reason this is possible
-  at all: no corpus contains a walk that turns into a jump.
+  Returns every frame it produced, back in the arena's coordinates, and the environments
+  still standing when it got there. The window is injected rather than drawn from the
+  corpus (`BridgeCommand.place_window`), which is the only reason this is possible at all:
+  no corpus contains a walk that turns into a jump.
+
+  The hole is handed over as unscored, which is what it is: no body performed this pair, so
+  there is no in-between to be off. That is the same thing a spliced training window says
+  about itself, so the reference is laid out the same way -- the arrival frame held across
+  the hole, then the window -- and the environment reads it the same way. It is also why
+  `lost_tracking` can be left switched on. Against a held arrival frame that termination
+  becomes the stray bound, which ends an episode for a robot walking away from the entry
+  and not for one taking a run-up at it.
 
   It runs for `gap + 1` steps, not `gap`. The reference frame the bridge is aimed at is the
   one after the last hole frame, so reaching it takes one action more than there are frames
@@ -512,33 +672,41 @@ def bridge_across(
   device = env.device
   count = env.num_envs
   env_ids = torch.arange(count, device=device)
+  gap = window.gap
 
   env.reset()
 
-  # The reference this run needs, padded out to the fixed width the command expects.
+  # The reference, trimmed or padded to the fixed width the command expects.
   span = command.reference.shape[1]
-  tail = torch.cat([window.hole, window.future], dim=1)
+  tail = torch.cat([window.future[:, :1].expand(-1, gap, -1), window.future], dim=1)
   if tail.shape[1] < span:
-    pad = tail[:, -1:].expand(-1, span - tail.shape[1], -1)
-    tail = torch.cat([tail, pad], dim=1)
+    tail = torch.cat([tail, tail[:, -1:].expand(-1, span - tail.shape[1], -1)], dim=1)
   command.place_window(
     env_ids,
     hand_off=window.hand_off,
     reference=tail[:, :span].contiguous(),
-    gap=torch.full((count,), window.gap, dtype=torch.long, device=device),
+    gap=torch.full((count,), gap, dtype=torch.long, device=device),
+    scored_hole=torch.zeros(count, dtype=torch.bool, device=device),
   )
   refresh(env)
 
   alive = torch.ones(count, dtype=torch.bool, device=device)
   frames = [read_state(robot)]
-  for _ in range(window.gap + 1):
+  for _ in range(gap + 1):
     with torch.inference_mode():
       action = policy(wrapped.get_observations())
     _, _, terminated, time_out, _ = env.step(action)
     alive = alive & ~(terminated | time_out)
     frames.append(torch.where(alive.unsqueeze(-1), read_state(robot), frames[-1]))
 
-  return torch.stack(frames, dim=1), alive
+  # Out of the bridge's world and back into the arena's, here rather than at the call site.
+  # `place_window` slid the window so the hand-off sat on this environment's origin, so
+  # undoing it is the same shift backwards, and it has to reach every frame: the caller
+  # wants the crossing to draw, not only the state it ended in.
+  states = torch.stack(frames, dim=1)
+  shift = window.hand_off[:, 0:2] - env.scene.env_origins[:, :2]
+  states[:, :, 0:2] += shift.unsqueeze(1)
+  return states, alive
 
 
 ##
@@ -571,7 +739,7 @@ def resume_jump(
   `arrival` is a corpus-layout state per environment, in the arena's coordinates: the
   bridge's last frame, or the walk's hand-off when there is no bridge. The robot is put
   there and the clip is restored to the exact placement it had during `roll_jump`, wound
-  to the crouch. It is not re-pinned onto the robot, and that distinction is the whole
+  to the entry. It is not re-pinned onto the robot, and that distinction is the whole
   measurement: re-pinning would slide the jump onto the arrival error and the composition
   would look perfect no matter what the bridge did.
   """
@@ -589,7 +757,7 @@ def resume_jump(
   jump.scales[:] = window.scales
   jump.anchor_pos[:] = window.anchor_pos
   jump.anchor_yaw[:] = window.anchor_yaw
-  jump.time_steps[:] = window.crouch_frame
+  jump.time_steps[:] = window.entry_frame
   jump.motion_done[:] = False
   jump.update_relative_body_poses()
   obs = refresh(env)
@@ -640,21 +808,38 @@ class Arm:
 def report(window: Handover, arms: dict[str, Arm], num_joints: int) -> None:
   """One row per hand-over, one summary per arm.
 
-  `arrival` is the root distance from the crouch, and it is the number that flatters a
-  direct hand-over most: a walking robot is already about where the crouch is, it is just
-  not in it. `score` is the honest one, the same across-every-channel measure training
-  gates the resume on (`arrival_error`), and it is where the momentum and the joint pose
-  show up.
+  `arrival` is the root distance from the entry and `score` is the honest one, the same
+  across-every-channel measure training gates the resume on (`arrival_error`), where the
+  momentum and the joint pose show up.
+
+  Both are read differently now that the target is placed ahead. Under the old ex post
+  placement `arrival` flattered a direct hand-over, because the entry sat about where a
+  walking robot already was and only the state was wrong. Placed a delta t downrange it
+  no longer does: the baseline stands still through the hole, so the metre it did not
+  travel is in its arrival distance, and the number now separates the two arms instead of
+  compressing them. That is not the baseline being handicapped. It is the deficit
+  architecture 0 always had, finally being asked about.
   """
   valid = window.valid
   count = valid.shape[0]
   target = window.future[:, 0]
   tolerances = BridgeCommandCfg(resampling_time_range=(1.0e9, 1.0e9))
+  travel = (window.ahead[:, :2] - window.hand_off[:, :2]).norm(dim=-1)
+  reach = (target[:, :2] - window.hand_off[:, :2]).norm(dim=-1)
+  lead = window.crouch_frame - window.entry_frame
+  seen = valid if bool(valid.any()) else torch.ones_like(valid)
 
   print(
     f"\nhole {window.gap} frames ({window.gap / CONTROL_HZ:.2f} s), "
-    f"crouch at clip frame {int(window.crouch_frame.min())}"
-    f"-{int(window.crouch_frame.max())}, "
+    f"look-ahead {float(travel[seen].mean()):.2f} m, "
+    f"target {float(reach[seen].mean()):.2f} m from the hand-off"
+  )
+  print(
+    f"entry at rollout step {int(window.entry_frame.min())}"
+    f"-{int(window.entry_frame.max())}, "
+    f"{int(lead.min())}"
+    f"{'' if int(lead.min()) == int(lead.max()) else f'-{int(lead.max())}'} "
+    f"frames before the crouch, "
     f"{int(valid.sum())} of {count} hand-overs built"
   )
 
@@ -705,23 +890,42 @@ def report(window: Handover, arms: dict[str, Arm], num_joints: int) -> None:
 def build_tracks(
   window: Handover, bridge: torch.Tensor | None, resume: Resume, frames: int
 ) -> tuple[np.ndarray, np.ndarray]:
-  """The two timelines the viewer plays: what happened, and what the policies alone did.
+  """The two timelines the viewer plays: what happened, and what the jump alone would do.
 
   Both are (N, past + gap + frames, S), so the same frame index is the same moment in each.
   Where there is no bridge run, the solid track holds the hand-off for the length of the
   hole, which reads as the robot waiting, which is exactly what architecture 0 does with
   the time.
+
+  The ghost is the nominal rollout, wound backwards from its own entry so that the entry
+  lands on the frame the solid robot arrives at. Every frame of it is motion a policy
+  actually produced. What it shows during the hole is the tail of the stand-and-settle the
+  bridge is being asked to skip, and the entry is where the two tracks are supposed to
+  meet: the distance between them at that instant is the arrival error, and it is visible
+  rather than tabulated.
+
+  The ghost steps forward by the look-ahead distance at the hand-off frame, because that
+  is where the jump was pinned. It reads as the target standing a metre down the lane
+  rather than on top of the robot, which is the ex ante arrangement drawn: the two are
+  supposed to converge over the hole, not start together and be pulled apart.
   """
+  device = window.future.device
+  gap = window.gap
   crossing = (
-    bridge[:, 1 : window.gap + 1]
+    bridge[:, 1 : gap + 1]
     if bridge is not None
-    else window.hand_off.unsqueeze(1).expand(-1, window.gap, -1)
+    else window.hand_off.unsqueeze(1).expand(-1, gap, -1)
   )
-  # The resume's first frame is the arrival, which is the same moment the ghost shows the
-  # crouch. Lining those up is what makes the arrival error visible as a gap between the
-  # solid robot and the green one rather than as a lag.
   solid = torch.cat([window.past, crossing, resume.states[:, :frames]], dim=1)
-  ghost = torch.cat([window.past, window.hole, window.future[:, :frames]], dim=1)
+
+  last = window.nominal.shape[1] - 1
+  reach = torch.arange(-gap, frames, device=device).unsqueeze(0)
+  index = (window.entry_frame.unsqueeze(1) + reach).clamp(0, last)
+  wound = torch.gather(
+    window.nominal, 1, index.unsqueeze(-1).expand(-1, -1, window.nominal.shape[-1])
+  )
+  ghost = torch.cat([window.past, wound], dim=1)
+
   span = min(solid.shape[1], ghost.shape[1])
   return solid[:, :span].cpu().numpy(), ghost[:, :span].cpu().numpy()
 
@@ -841,6 +1045,9 @@ class HandoverViewer:
     window = self.window
     target = window.future[self.index, 0, 0:3].cpu().numpy()
     speed = window.past[self.index, -1, 7:10].norm().item()
+    travel = (
+      (window.ahead[self.index, :2] - window.hand_off[self.index, :2]).norm().item()
+    )
     stage = (
       "hole (bridge)" if in_hole else ("walk" if self.frame < self.past else "jump")
     )
@@ -851,6 +1058,8 @@ class HandoverViewer:
       f"<br/><b>Layout:</b> {self.past} + <span style='color:#e13a2d'>{self.gap}</span>"
       f" + {window.future.shape[1]} frames"
       f"<br/><b>Handed over at:</b> {speed:.2f} m/s"
+      f"<br/><b>Look-ahead:</b> {travel:.2f} m in "
+      f"{self.gap / CONTROL_HZ:.2f} s"
       f"<br/><b>Must reach:</b> "
       f"({target[0]:.2f}, {target[1]:.2f}, {target[2]:.2f})"
       f"<br/><b>Now:</b> <span style='color:{colour}'>{stage}</span> "
@@ -877,6 +1086,13 @@ class HandoverViewer:
 def main(cfg: Config) -> None:
   import mjlab.tasks  # noqa: F401  (populates the task registry)
 
+  if cfg.gap < 1:
+    raise SystemExit(
+      "--gap is a delta t in frames and has to be at least 1: the target is placed where "
+      "the walk would have been that many frames on, and a hole of zero frames has "
+      "nowhere to place it."
+    )
+
   torch.manual_seed(cfg.seed)
   device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -896,28 +1112,36 @@ def main(cfg: Config) -> None:
   torso = robot.body_names.index(ANCHOR_BODY)
   pool = build_pool(arena, device)
 
-  print(f"\nrolling the walk, cut somewhere in {WINDOWS['walk'].interrupt_range}")
+  print(
+    f"\nrolling the walk, cut somewhere in {WINDOWS['walk'].interrupt_range}, "
+    f"then {cfg.gap} frames past each cut for the look-ahead"
+  )
   walk, cut = roll_walk(arena, pool, cfg, torso)
   history, hand_off = cut_walk(walk, cut)
+  ahead, still_walking = look_ahead(walk, cut, cfg.gap)
 
-  print(f"rolling the jump from the hand-off, {cfg.jump_steps} steps")
-  jump, crouch = roll_jump(arena, pool, cfg, torso, hand_off, num_joints)
+  print(f"rolling the jump from the look-ahead, {cfg.jump_steps} steps")
+  jump, crouch, pinning = roll_jump(arena, pool, cfg, torso, ahead, num_joints)
   print(
-    f"crouch found at clip frame {int(crouch.min())}-{int(crouch.max())} "
+    f"crouch found at rollout step {int(crouch.min())}-{int(crouch.max())} "
     f"({float(crouch.float().mean()) / CONTROL_HZ:.2f} s in on average)"
   )
-  max_gap = WindowCfg().gap_range[1]
-  window = assemble(
-    walk, history, hand_off, jump, crouch, jump_command(arena), cfg, max_gap
-  )
-  natural = int(crouch.min()) - 1
-  if cfg.gap is None and natural > max_gap:
+  window = assemble(history, hand_off, ahead, still_walking, jump, crouch, pinning, cfg)
+
+  low, high = WindowCfg().gap_range
+  if not low <= cfg.gap <= high:
     print(
-      f"\n[note] the nominal jump takes {natural} frames to reach its crouch, and the "
-      f"bridge was trained on holes of at most {max_gap}. The hole is capped at "
-      f"{window.gap}, which asks the bridge to skip the stand-and-settle rather than "
-      f"reproduce it. Pass --gap to override, or widen --windows.gap-range and retrain "
-      f"to ask for the whole thing."
+      f"\n[note] --gap {cfg.gap} is outside the {low} to {high} the bridge was trained "
+      f"on, so it is being asked for a hole of a duration it has never seen. Bring it "
+      f"back inside, or widen --windows.gap-range and retrain."
+    )
+  natural = int(window.entry_frame.min()) - 1
+  if natural > cfg.gap:
+    print(
+      f"\n[note] the nominal jump takes {natural} frames to reach the entry and the "
+      f"bridge is given {cfg.gap}, so it is being asked to skip the stand-and-settle "
+      f"rather than reproduce it. That is the intent: a robot arriving with momentum has "
+      f"no reason to spend a second and a half standing up first."
     )
 
   arms: dict[str, Arm] = {}
@@ -927,10 +1151,6 @@ def main(cfg: Config) -> None:
   if cfg.bridge:
     bridge_cfg = bridge_env_cfg(play=True)
     bridge_cfg.scene.num_envs = cfg.num_envs
-    # The hole holds an interpolation rather than a recording (see `interpolate`), so
-    # ending an episode for straying from it would be ending it for disagreeing with a
-    # straight line. Falling over is still a failure and is still caught.
-    bridge_cfg.terminations.pop("lost_tracking", None)
     bridge_env = ManagerBasedRlEnv(cfg=bridge_cfg, device=device)
 
     checkpoint = find_checkpoint(
@@ -951,12 +1171,7 @@ def main(cfg: Config) -> None:
     term = bridge_env.command_manager.get_term("bridge")
     assert isinstance(term, BridgeCommand)
     command = term
-
-    # Out of the bridge's world and back into the arena's: the bridge slid the window so
-    # the hand-off sat on its own origin, so undoing that is the same shift backwards.
-    shift = window.hand_off[:, 0:2] - bridge_env.scene.env_origins[:, :2]
     arrival = bridge_states[:, -1].clone()
-    arrival[:, 0:2] += shift
 
     # A bridge that fell in the hole is judged on that, not on what the jump then made of
     # a state it should never have been given. The baseline is unaffected: it has no hole
@@ -990,9 +1205,7 @@ def main(cfg: Config) -> None:
     import viser
 
     name = "with bridge" if "with bridge" in arms else "no bridge"
-    track, ghost = build_tracks(
-      window, bridge_states, arms[name].resume, WindowCfg().future
-    )
+    track, ghost = build_tracks(window, bridge_states, arms[name].resume, cfg.window)
     server = viser.ViserServer(port=cfg.port, label="Walk to jump")
     viewer = HandoverViewer(server, G1(), window, track, ghost, num_joints)
     print(f"\nViewer at http://localhost:{cfg.port} -- Ctrl-C to quit.")
