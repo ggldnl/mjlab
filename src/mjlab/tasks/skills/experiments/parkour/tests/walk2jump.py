@@ -733,6 +733,7 @@ def resume_jump(
   arrival: torch.Tensor,
   cfg: Config,
   num_joints: int,
+  keep_falling: bool = False,
 ) -> Resume:
   """Start the jump from `arrival`, with its clip back where the nominal rollout had it.
 
@@ -742,12 +743,27 @@ def resume_jump(
   to the entry. It is not re-pinned onto the robot, and that distinction is the whole
   measurement: re-pinning would slide the jump onto the arrival error and the composition
   would look perfect no matter what the bridge did.
+
+  `keep_falling` is about what is recorded and changes nothing about what is scored. By
+  default an environment that terminates is latched and its last good frame is held from
+  then on, because `env.step` auto-resets it and reading the robot afterwards would put a
+  teleport into a fresh episode in the middle of the states. A termination fires the
+  moment a body is judged to be going over, though, well before it is on the floor, so
+  what a recording gets out of that is a fall frozen halfway down. Set this and the
+  auto-reset is switched off for the rollout, every frame is the robot as it actually
+  was, and a body that goes over carries on to the ground and stays there.
+
+  The numbers do not move either way. `fell`, `landed` and `goal_error` only ever
+  accumulate while an environment is alive, and aliveness is latched at the first
+  termination whether or not the world it happened in was reset out from under it.
   """
   robot: Entity = env.scene[ENTITY_NAME]
   device = env.device
   count = env.num_envs
   jump = jump_command(env)
 
+  auto_reset = env.cfg.auto_reset
+  env.cfg.auto_reset = auto_reset and not keep_falling
   env.reset()
   write_state(robot, arrival, num_joints)
   env.scene.write_data_to_sim()
@@ -773,15 +789,23 @@ def resume_jump(
     with torch.inference_mode():
       action = pool.act(obs, assignment)
     obs, _, terminated, time_out, _ = env.step(action)
+    if keep_falling:
+      # With the auto-reset off the env wants a reset before the next step; the whole
+      # point here is not to give it one, so the request is cleared and the fall runs on.
+      env._manual_reset_pending.zero_()  # noqa: SLF001
     fell = fell | (terminated & alive)
     alive = alive & ~(terminated | time_out)
-    frames.append(torch.where(alive.unsqueeze(-1), read_state(robot), frames[-1]))
+    state = read_state(robot)
+    frames.append(
+      state if keep_falling else torch.where(alive.unsqueeze(-1), state, frames[-1])
+    )
     # The goal error is only meaningful once the reference has touched down, and only for
     # environments still standing when it did.
     settled = jump.has_landed & alive
     error = torch.where(settled, jump.goal_pos_error, error)
     landed = landed | settled
 
+  env.cfg.auto_reset = auto_reset
   return Resume(
     states=torch.stack(frames, dim=1), fell=fell, goal_error=error, landed=landed
   )
@@ -1083,35 +1107,32 @@ class HandoverViewer:
 ##
 
 
-def main(cfg: Config) -> None:
-  import mjlab.tasks  # noqa: F401  (populates the task registry)
+def build_arena(num_envs: int, device: str) -> ManagerBasedRlEnv:
+  """The world everything above is rolled in.
 
-  if cfg.gap < 1:
-    raise SystemExit(
-      "--gap is a delta t in frames and has to be at least 1: the target is placed where "
-      "the walk would have been that many frames on, and a hole of zero frames has "
-      "nowhere to place it."
-    )
+  The arena on a bare plane: the two skills are being rolled, not run down a corridor,
+  and an obstacle in the way would be a second thing going wrong at once.
 
-  torch.manual_seed(cfg.seed)
-  device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
-
-  # The arena on a bare plane: the two skills are being rolled, not run down a corridor,
-  # and an obstacle in the way would be a second thing going wrong at once.
+  Startup randomization is off. It is right for training and wrong here: the bridge runs
+  in its own environment, which has none, and a robot whose centre of mass moved between
+  the two is a state transfer that silently is not one.
+  """
   arena_cfg = parkour_arena_env_cfg(obstacles=None)
-  arena_cfg.scene.num_envs = cfg.num_envs
-  # Startup randomization off. It is right for training and wrong here: the bridge runs in
-  # its own environment, which has none, and a robot whose centre of mass moved between
-  # the two is a state transfer that silently is not one.
+  arena_cfg.scene.num_envs = num_envs
   for name in ("base_com", "encoder_bias", "foot_friction"):
     arena_cfg.events.pop(name, None)
-  arena = ManagerBasedRlEnv(cfg=arena_cfg, device=device)
+  return ManagerBasedRlEnv(cfg=arena_cfg, device=device)
 
-  robot: Entity = arena.scene[ENTITY_NAME]
-  num_joints = robot.data.joint_pos.shape[-1]
-  torso = robot.body_names.index(ANCHOR_BODY)
-  pool = build_pool(arena, device)
 
+def build_handover(
+  arena: ManagerBasedRlEnv, pool: SkillPool, cfg: Config, torso: int, num_joints: int
+) -> Handover:
+  """Steps 1 to 3: roll the walk, cut it, roll the jump from the look-ahead, assemble.
+
+  The whole question, up to but not including anyone's attempt to cross it. Both the
+  report below and the side-by-side recording in `skills/compare.py` start here, so
+  neither can be comparing a different hand-over from the other.
+  """
   print(
     f"\nrolling the walk, cut somewhere in {WINDOWS['walk'].interrupt_range}, "
     f"then {cfg.gap} frames past each cut for the look-ahead"
@@ -1143,34 +1164,70 @@ def main(cfg: Config) -> None:
       f"rather than reproduce it. That is the intent: a robot arriving with momentum has "
       f"no reason to spend a second and a half standing up first."
     )
+  return window
+
+
+def cross_with_bridge(
+  cfg: Config, window: Handover, device: str
+) -> tuple[torch.Tensor, torch.Tensor, BridgeCommand]:
+  """Step 4: run the bridge across the hole, in the environment it was trained in.
+
+  Its own world, built and torn down here, since nothing outside the crossing has any
+  use for it. What comes back is already in the arena's coordinates (`bridge_across`),
+  plus the command term, which is read afterwards for the score it latched.
+  """
+  bridge_cfg = bridge_env_cfg(play=True)
+  bridge_cfg.scene.num_envs = cfg.num_envs
+  bridge_env = ManagerBasedRlEnv(cfg=bridge_cfg, device=device)
+
+  checkpoint = find_checkpoint(
+    cfg.checkpoint, load_rl_cfg(BRIDGE_TASK_ID).experiment_name
+  )
+  print(f"bridge: {checkpoint}")
+  try:
+    policy, wrapped = load_policy(bridge_env, checkpoint, device)
+  except (RuntimeError, ValueError) as exc:
+    raise SystemExit(
+      f"That checkpoint does not fit this environment: {exc}\n"
+      f"The bridge observation gained a third phase channel when the second window was "
+      f"added to training (see bridge/env_cfg.py), so checkpoints from before that do "
+      f"not load. Retrain, or rerun this with --no-bridge for the baseline alone."
+    ) from exc
+
+  states, standing = bridge_across(bridge_env, policy, wrapped, window)
+  term = bridge_env.command_manager.get_term("bridge")
+  assert isinstance(term, BridgeCommand)
+  bridge_env.close()
+  return states, standing, term
+
+
+def main(cfg: Config) -> None:
+  import mjlab.tasks  # noqa: F401  (populates the task registry)
+
+  if cfg.gap < 1:
+    raise SystemExit(
+      "--gap is a delta t in frames and has to be at least 1: the target is placed where "
+      "the walk would have been that many frames on, and a hole of zero frames has "
+      "nowhere to place it."
+    )
+
+  torch.manual_seed(cfg.seed)
+  device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+
+  arena = build_arena(cfg.num_envs, device)
+  robot: Entity = arena.scene[ENTITY_NAME]
+  num_joints = robot.data.joint_pos.shape[-1]
+  torso = robot.body_names.index(ANCHOR_BODY)
+  pool = build_pool(arena, device)
+
+  window = build_handover(arena, pool, cfg, torso, num_joints)
 
   arms: dict[str, Arm] = {}
   bridge_states: torch.Tensor | None = None
   command: BridgeCommand | None = None
 
   if cfg.bridge:
-    bridge_cfg = bridge_env_cfg(play=True)
-    bridge_cfg.scene.num_envs = cfg.num_envs
-    bridge_env = ManagerBasedRlEnv(cfg=bridge_cfg, device=device)
-
-    checkpoint = find_checkpoint(
-      cfg.checkpoint, load_rl_cfg(BRIDGE_TASK_ID).experiment_name
-    )
-    print(f"bridge: {checkpoint}")
-    try:
-      policy, wrapped = load_policy(bridge_env, checkpoint, device)
-    except (RuntimeError, ValueError) as exc:
-      raise SystemExit(
-        f"That checkpoint does not fit this environment: {exc}\n"
-        f"The bridge observation gained a third phase channel when the second window was "
-        f"added to training (see bridge/env_cfg.py), so checkpoints from before that do "
-        f"not load. Retrain, or rerun this with --no-bridge for the baseline alone."
-      ) from exc
-
-    bridge_states, standing = bridge_across(bridge_env, policy, wrapped, window)
-    term = bridge_env.command_manager.get_term("bridge")
-    assert isinstance(term, BridgeCommand)
-    command = term
+    bridge_states, standing, command = cross_with_bridge(cfg, window, device)
     arrival = bridge_states[:, -1].clone()
 
     # A bridge that fell in the hole is judged on that, not on what the jump then made of
@@ -1182,7 +1239,6 @@ def main(cfg: Config) -> None:
       resume=resume_jump(arena, pool, window, arrival, cfg, num_joints),
       crossed=standing,
     )
-    bridge_env.close()
 
   # The baseline: no bridge at all, the walk's last state handed straight over. This is
   # architecture 0, and it is the thing a bridge has to be better than.
