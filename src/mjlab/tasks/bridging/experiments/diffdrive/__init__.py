@@ -27,9 +27,9 @@ analytical experts are trivial and reliable, and buy the experiment nothing.
 
 Watch an analytical expert on its own:
 
-    uv run python -m mjlab.tasks.skills.view_skill \\
+    uv run python -m mjlab.tasks.bridging.view_skill \\
         --task-id Mjlab-Diffdrive-Drive \\
-        --factory mjlab.tasks.skills.experiments.diffdrive.dynamics:analytical_drive
+        --factory mjlab.tasks.bridging.experiments.diffdrive.dynamics:analytical_drive
 """
 
 from __future__ import annotations
@@ -37,20 +37,20 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
-from mjlab.tasks.skills.architectures import Budgets
-from mjlab.tasks.skills.architectures.arch_1.config import (
+from mjlab.tasks.bridging.architectures import Budgets
+from mjlab.tasks.bridging.architectures.arch_1.config import (
   BridgePhase,
   BridgeTraining,
   SwitchPhase,
 )
-from mjlab.tasks.skills.architectures.arch_3.config import ResidualTraining
-from mjlab.tasks.skills.view import StateViewCfg
-from mjlab.tasks.skills.windows import SkillWindowSpec, WindowPlan
+from mjlab.tasks.bridging.architectures.arch_3.config import ResidualTraining
+from mjlab.tasks.bridging.view import StateViewCfg
+from mjlab.tasks.bridging.windows import SkillWindowSpec, WindowPlan
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
-  from mjlab.tasks.skills.experiment import Experiment
-  from mjlab.tasks.skills.skill import SkillPool
+  from mjlab.tasks.bridging.experiment import Experiment
+  from mjlab.tasks.bridging.skill import SkillPool
 
 
 # Names shared by this experiment's train and demo entry points. EXPERIMENT_NAME is the
@@ -164,12 +164,12 @@ BUDGETS = Budgets(
 )
 
 
-from mjlab.tasks.registry import register_mjlab_task
-from mjlab.tasks.skills.experiments.diffdrive.diffdrive_env_cfg import (
+from mjlab.tasks.bridging.experiments.diffdrive.diffdrive_env_cfg import (
   diffdrive_ppo_runner_cfg,
   drive_env_cfg,
   turn_env_cfg,
 )
+from mjlab.tasks.registry import register_mjlab_task
 
 register_mjlab_task(
   task_id="Mjlab-Diffdrive-Drive",
@@ -207,12 +207,12 @@ def build_pool(
 
   # Imported lazily so merely importing this package stays cheap (the demo imports it
   # just for the constants above).
-  from mjlab.tasks.skills.experiments.diffdrive.dynamics import (
+  from mjlab.tasks.bridging.experiments.diffdrive.dynamics import (
     analytical_drive,
     analytical_turn,
   )
-  from mjlab.tasks.skills.skill import PolicySkill, SkillPool
-  from mjlab.tasks.skills.utils import retrieve_latest_checkpoint
+  from mjlab.tasks.bridging.skill import PolicySkill, SkillPool
+  from mjlab.tasks.bridging.utils import retrieve_latest_checkpoint
 
   if analytical:
     return SkillPool(
@@ -238,7 +238,7 @@ def build_experiment(env: ManagerBasedRlEnv, device: str, **pool_kwargs) -> Expe
   The single thing train.py and demo.py both build, so the pool, the view and the window
   plan cannot drift apart between them.
   """
-  from mjlab.tasks.skills.experiment import Experiment
+  from mjlab.tasks.bridging.experiment import Experiment
 
   return Experiment(
     name=EXPERIMENT_NAME,

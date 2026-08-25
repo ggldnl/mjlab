@@ -7,11 +7,11 @@ experiment-specific pieces and lets the architecture do the rest.
 arch_0 has nothing to train; running this on it just saves an empty run so the demo has a
 checkpoint to point at, uniform with the others.
 
-    uv run python -m mjlab.tasks.skills.experiments.cartpole.train --architecture 1
+    uv run python -m mjlab.tasks.bridging.experiments.cartpole.train --architecture 1
 
 Use trained RL skills instead of the analytical experts (discouraged):
 
-    uv run python -m mjlab.tasks.skills.experiments.cartpole.train \\
+    uv run python -m mjlab.tasks.bridging.experiments.cartpole.train \\
         --architecture 1 --no-analytical
 """
 
@@ -23,10 +23,9 @@ import torch
 import tyro
 
 from mjlab.envs import ManagerBasedRlEnv
-from mjlab.tasks.registry import load_env_cfg
-from mjlab.tasks.skills.architectures import Budgets, train
-from mjlab.tasks.skills.architectures.arch_1.switch import SuccessFn, always_ok
-from mjlab.tasks.skills.experiments.cartpole import (
+from mjlab.tasks.bridging.architectures import Budgets, train
+from mjlab.tasks.bridging.architectures.arch_1.switch import SuccessFn, always_ok
+from mjlab.tasks.bridging.experiments.cartpole import (
   BALANCE_TASK_ID,
   BUDGETS,
   ENTITY_NAME,
@@ -34,8 +33,9 @@ from mjlab.tasks.skills.experiments.cartpole import (
   SPINUP_TASK_ID,
   build_experiment,
 )
-from mjlab.tasks.skills.experiments.cartpole.controller import BALANCE, SPIN_UP
-from mjlab.tasks.skills.utils import new_architecture_run_dir
+from mjlab.tasks.bridging.experiments.cartpole.controller import BALANCE, SPIN_UP
+from mjlab.tasks.bridging.utils import new_architecture_run_dir
+from mjlab.tasks.registry import load_env_cfg
 
 
 def _make_balance_success(

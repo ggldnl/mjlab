@@ -46,8 +46,12 @@ import math
 import torch
 
 from mjlab.envs import VecEnvObs
-from mjlab.tasks.skills.experiments.diffdrive import DRIVE_SPEED, TURN_ANGLE, TURN_SPEED
-from mjlab.tasks.skills.skill import Skill
+from mjlab.tasks.bridging.experiments.diffdrive import (
+  DRIVE_SPEED,
+  TURN_ANGLE,
+  TURN_SPEED,
+)
+from mjlab.tasks.bridging.skill import Skill
 
 ##
 # Chassis geometry. Mirrors `diffdrive_env_cfg.py` / the diffdrive asset XML.

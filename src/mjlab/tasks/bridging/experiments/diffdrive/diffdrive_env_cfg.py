@@ -81,7 +81,7 @@ from mjlab.rl import (
 )
 from mjlab.scene import SceneCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
-from mjlab.tasks.skills.experiments.diffdrive import (
+from mjlab.tasks.bridging.experiments.diffdrive import (
   DRIVE_SPEED,
   TURN_ANGLE,
   TURN_SPEED,

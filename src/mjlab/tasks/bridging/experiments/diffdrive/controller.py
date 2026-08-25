@@ -8,8 +8,8 @@ from __future__ import annotations
 import torch
 
 from mjlab.envs import ManagerBasedRlEnv
-from mjlab.tasks.skills.controller import Controller
-from mjlab.tasks.skills.skill import NO_SKILL, SkillPool
+from mjlab.tasks.bridging.controller import Controller
+from mjlab.tasks.bridging.skill import NO_SKILL, SkillPool
 
 DRIVE_STRAIGHT = 0
 TURN = 1

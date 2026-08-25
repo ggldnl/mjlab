@@ -47,34 +47,34 @@ reliable: we can trust them working individually but not together.
 
 Watch an analytical expert on its own:
 
-    uv run python -m mjlab.tasks.skills.skill \\
+    uv run python -m mjlab.tasks.bridging.skill \\
         --task-id Mjlab-Cartpole-Swingup \\
-        --factory mjlab.tasks.skills.experiments.cartpole.dynamics:analytical_spin_up
+        --factory mjlab.tasks.bridging.experiments.cartpole.dynamics:analytical_spin_up
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from mjlab.tasks.cartpole.cartpole_env_cfg import cartpole_ppo_runner_cfg
-from mjlab.tasks.registry import register_mjlab_task
-from mjlab.tasks.skills.architectures import Budgets
-from mjlab.tasks.skills.architectures.arch_1.config import (
+from mjlab.tasks.bridging.architectures import Budgets
+from mjlab.tasks.bridging.architectures.arch_1.config import (
   BridgePhase,
   BridgeTraining,
   SwitchPhase,
 )
-from mjlab.tasks.skills.architectures.arch_3.config import ResidualTraining
-from mjlab.tasks.skills.experiments.cartpole.cartpole_env_cfg import (
+from mjlab.tasks.bridging.architectures.arch_3.config import ResidualTraining
+from mjlab.tasks.bridging.experiments.cartpole.cartpole_env_cfg import (
   damped_cartpole_env_cfg,
 )
-from mjlab.tasks.skills.view import StateViewCfg
-from mjlab.tasks.skills.windows import SkillInit, SkillWindowSpec, WindowPlan
+from mjlab.tasks.bridging.view import StateViewCfg
+from mjlab.tasks.bridging.windows import SkillInit, SkillWindowSpec, WindowPlan
+from mjlab.tasks.cartpole.cartpole_env_cfg import cartpole_ppo_runner_cfg
+from mjlab.tasks.registry import register_mjlab_task
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
-  from mjlab.tasks.skills.experiment import Experiment
-  from mjlab.tasks.skills.skill import SkillPool
+  from mjlab.tasks.bridging.experiment import Experiment
+  from mjlab.tasks.bridging.skill import SkillPool
 
 # Names shared by this experiment's train and demo entry points. EXPERIMENT_NAME
 # is the folder architecture checkpoints are saved under; ENTITY_NAME is the
@@ -239,12 +239,12 @@ def build_pool(
   """
   # Imported lazily so merely importing this package stays cheap (the demo imports
   # it just for the constants above).
-  from mjlab.tasks.skills.experiments.cartpole.dynamics import (
+  from mjlab.tasks.bridging.experiments.cartpole.dynamics import (
     analytical_balance,
     analytical_spin_up,
   )
-  from mjlab.tasks.skills.skill import PolicySkill, SkillPool
-  from mjlab.tasks.skills.utils import retrieve_latest_checkpoint
+  from mjlab.tasks.bridging.skill import PolicySkill, SkillPool
+  from mjlab.tasks.bridging.utils import retrieve_latest_checkpoint
 
   if analytical:
     return SkillPool([analytical_spin_up(), analytical_balance()])
@@ -261,7 +261,7 @@ def build_pool(
 
 def build_experiment(env: ManagerBasedRlEnv, device: str, **pool_kwargs) -> Experiment:
   """Everything an architecture needs from this experiment, in one object."""
-  from mjlab.tasks.skills.experiment import Experiment
+  from mjlab.tasks.bridging.experiment import Experiment
 
   return Experiment(
     name=EXPERIMENT_NAME,

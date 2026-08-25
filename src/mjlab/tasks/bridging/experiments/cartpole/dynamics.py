@@ -29,7 +29,7 @@ from __future__ import annotations
 import torch
 
 from mjlab.envs import VecEnvObs
-from mjlab.tasks.skills.skill import Skill
+from mjlab.tasks.bridging.skill import Skill
 
 ##
 # Physical constants. Mirror `asset_zoo/robots/cartpole/xmls/cartpole.xml`.

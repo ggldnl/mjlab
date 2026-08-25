@@ -13,27 +13,27 @@ Analytical experts are recommended over RL.
 
 Watch the baseline live (analytical experts, architecture 0, no training needed):
 
-    uv run python -m mjlab.tasks.skills.experiments.diffdrive.demo
+    uv run python -m mjlab.tasks.bridging.experiments.diffdrive.demo
 
 Watch a trained architecture instead (train it first with this experiment's
 train.py). Its state is restored from a run directory; --checkpoint points at one,
 and if omitted the latest trained run for that architecture is used:
 
-    uv run python -m mjlab.tasks.skills.experiments.diffdrive.demo --architecture 1
-    uv run python -m mjlab.tasks.skills.experiments.diffdrive.demo \\
+    uv run python -m mjlab.tasks.bridging.experiments.diffdrive.demo --architecture 1
+    uv run python -m mjlab.tasks.bridging.experiments.diffdrive.demo \\
         --architecture 1 --checkpoint logs/skills/diffdrive/arch_1/<run>
 
 Use trained RL checkpoints instead of the analytical experts (discouraged):
 
-    uv run python -m mjlab.tasks.skills.experiments.diffdrive.demo --no-analytical
+    uv run python -m mjlab.tasks.bridging.experiments.diffdrive.demo --no-analytical
 
 Measure how often the robot tips, headless:
 
-    uv run python -m mjlab.tasks.skills.experiments.diffdrive.demo --viewer headless --steps 1500
+    uv run python -m mjlab.tasks.bridging.experiments.diffdrive.demo --viewer headless --steps 1500
 
 Manually control which skill is currently active:
 
-    uv run python -m mjlab.tasks.skills.experiments.diffdrive.demo --debug
+    uv run python -m mjlab.tasks.bridging.experiments.diffdrive.demo --debug
 """
 
 from __future__ import annotations
@@ -48,10 +48,9 @@ import tyro
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
-from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
-from mjlab.tasks.skills.architectures import build
-from mjlab.tasks.skills.experiment import Experiment
-from mjlab.tasks.skills.experiments.diffdrive import (
+from mjlab.tasks.bridging.architectures import build
+from mjlab.tasks.bridging.experiment import Experiment
+from mjlab.tasks.bridging.experiments.diffdrive import (
   DRIVE_SPEED,
   DRIVE_TASK_ID,
   EXPERIMENT_NAME,
@@ -60,10 +59,11 @@ from mjlab.tasks.skills.experiments.diffdrive import (
   TURN_TASK_ID,
   build_experiment,
 )
-from mjlab.tasks.skills.experiments.diffdrive.controller import DiffdriveController
-from mjlab.tasks.skills.meta import ComposedPolicy
-from mjlab.tasks.skills.skill import SkillPool
-from mjlab.tasks.skills.utils import retrieve_latest_architecture_checkpoint
+from mjlab.tasks.bridging.experiments.diffdrive.controller import DiffdriveController
+from mjlab.tasks.bridging.meta import ComposedPolicy
+from mjlab.tasks.bridging.skill import SkillPool
+from mjlab.tasks.bridging.utils import retrieve_latest_architecture_checkpoint
+from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 
 
 @dataclass(frozen=True)

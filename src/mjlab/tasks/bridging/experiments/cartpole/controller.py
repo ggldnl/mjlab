@@ -19,8 +19,8 @@ import math
 import torch
 
 from mjlab.envs import ManagerBasedRlEnv
-from mjlab.tasks.skills.controller import Controller
-from mjlab.tasks.skills.skill import SkillPool
+from mjlab.tasks.bridging.controller import Controller
+from mjlab.tasks.bridging.skill import SkillPool
 
 SPIN_UP = 0
 BALANCE = 1
