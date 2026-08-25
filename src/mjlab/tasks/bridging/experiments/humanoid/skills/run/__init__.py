@@ -17,8 +17,10 @@ from __future__ import annotations
 from dataclasses import replace
 
 from mjlab.rl import RslRlOnPolicyRunnerCfg
+from mjlab.tasks.bridging.experiments.humanoid.skills.run.run_env_cfg import (
+  g1_run_env_cfg,
+)
 from mjlab.tasks.registry import register_mjlab_task
-from mjlab.tasks.skills.experiments.parkour.run.run_env_cfg import g1_run_env_cfg
 from mjlab.tasks.velocity.config.g1.rl_cfg import unitree_g1_ppo_runner_cfg
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 

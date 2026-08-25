@@ -32,7 +32,9 @@ import numpy as np
 import torch
 
 from mjlab.managers import CommandTerm, CommandTermCfg
-from mjlab.tasks.skills.experiments.parkour.jump.motion_lib import MotionLibrary
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump.motion_lib import (
+  MotionLibrary,
+)
 from mjlab.utils.lab_api.math import (
   matrix_from_quat,
   quat_apply,
@@ -631,6 +633,34 @@ class JumpCommand(CommandTerm):
     self.time_steps[env_ids] = 0
     self.metrics["sampling_entropy"][:] = 1.0
 
+  def _pretakeoff_sampling(self, env_ids: torch.Tensor) -> None:
+    """Start anywhere in the run-up, never in the air.
+
+    These are the frames another policy could hand this one control at. A hand-over into
+    the middle of a flight is not a hard case but an impossible one: whatever was driving
+    would have had to launch the robot on the reference's behalf, and nothing does.
+
+    Uniform over the run-up rather than failure-weighted like `_adaptive_sampling`. The
+    run-up is a few dozen frames of one continuous descent, so there is little for an
+    adaptive scheme to find, and a uniform draw leaves one less thing between a change to
+    the perturbation and its effect on the log.
+    """
+    self.motion_ids[env_ids] = torch.randint(
+      0, self.motion.num_motions, (len(env_ids),), device=self.device
+    )
+    motion_ids = self.motion_ids[env_ids]
+    lengths = self.motion.time_step_total_per_motion[motion_ids]
+    takeoff = self.takeoff_steps_all[motion_ids]
+    # A clip whose flight was never detected is stored with -1 (see dataset.py). Falling
+    # back to its whole length keeps such a clip usable; collapsing it to frame zero
+    # would look like sampling working and be a silent bug.
+    last = torch.where(
+      takeoff > 0, takeoff - self.cfg.pretakeoff_margin, lengths - 1
+    ).clamp(min=0)
+    frac = sample_uniform(0.0, 1.0, (len(env_ids),), device=self.device)
+    self.time_steps[env_ids] = (frac * last).long()
+    self.metrics["sampling_entropy"][:] = 1.0
+
   def _sample_scales(self, env_ids: torch.Tensor) -> None:
     lo, hi = self.cfg.scale_range
     self.scales[env_ids] = sample_uniform(lo, hi, (len(env_ids),), device=self.device)
@@ -659,6 +689,8 @@ class JumpCommand(CommandTerm):
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     if self.cfg.sampling_mode == "start":
       self._start_sampling(env_ids)
+    elif self.cfg.sampling_mode == "pretakeoff":
+      self._pretakeoff_sampling(env_ids)
     elif self.cfg.sampling_mode == "uniform":
       self._uniform_sampling(env_ids)
     else:
@@ -709,6 +741,18 @@ class JumpCommand(CommandTerm):
     rand = sample_uniform(ranges[:, 0], ranges[:, 1], (len(env_ids), 6), self.device)
     root_lin_vel += rand[:, :3]
     root_ang_vel += rand[:, 3:]
+
+    # Momentum the reference does not have. Only meaningful alongside "pretakeoff"
+    # sampling, but not gated on it: the field is empty everywhere else, and gating would
+    # hide the one case where somebody wants both.
+    if self.cfg.entry_velocity_range:
+      entry_list = [
+        self.cfg.entry_velocity_range.get(k, (0.0, 0.0)) for k in ("x", "y", "z")
+      ]
+      entry = torch.tensor(entry_list, device=self.device)
+      root_lin_vel += sample_uniform(
+        entry[:, 0], entry[:, 1], (len(env_ids), 3), self.device
+      )
 
     joint_pos = self.joint_pos[env_ids].clone()
     joint_vel = self.joint_vel[env_ids]
@@ -935,7 +979,32 @@ class JumpCommandCfg(CommandTermCfg):
   goal_success_threshold: float = 0.25
   """Landing within this many metres of the target counts as reaching the goal."""
 
-  sampling_mode: Literal["adaptive", "uniform", "start"] = "adaptive"
+  sampling_mode: Literal["adaptive", "uniform", "start", "pretakeoff"] = "adaptive"
+  """Where in a clip an episode begins.
+
+  "adaptive" and "uniform" draw from the whole clip, flight included, which is what
+  learning the airborne phase needs. "start" always begins at frame zero. "pretakeoff"
+  draws only from the run-up, which is the set of frames another policy could plausibly
+  hand this one control at: nothing can deliver a robot into the middle of a flight.
+  """
+
+  pretakeoff_margin: int = 2
+  """Frames before takeoff that "pretakeoff" sampling stops at.
+
+  A start one frame before the feet leave the ground has no time to correct whatever the
+  perturbation did, so it measures the perturbation rather than the policy."""
+
+  entry_velocity_range: dict[str, tuple[float, float]] = field(default_factory=dict)
+  """Root linear velocity written at reset on top of the clip's own, in m/s.
+
+  `velocity_range` is symmetric noise around the reference; this is momentum the
+  reference does not have. These clips are standing jumps, so their run-up frames carry
+  almost no forward travel, and this is the only way an episode begins with any. Given in
+  the clip's frame, which during training is the world's: a reset pins the reference at
+  the origin facing +x before this is applied.
+
+  Empty by default, which leaves every existing task's reset unchanged."""
+
   adaptive_bins: int = 8
   adaptive_kernel_size: int = 3
   adaptive_lambda: float = 0.8

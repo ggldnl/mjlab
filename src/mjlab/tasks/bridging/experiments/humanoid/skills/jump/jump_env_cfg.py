@@ -27,7 +27,7 @@ so the reachable distances are continuous rather than five discrete points. See
 
 Run it:
 
-    uv run --with joblib python -m mjlab.tasks.skills.experiments.parkour.jump.dataset
+    uv run --with joblib python -m mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
     uv run train Mjlab-Parkour-Jump --env.scene.num-envs 4096
     uv run play Mjlab-Parkour-Jump --checkpoint-file <path>
 """
@@ -49,9 +49,11 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
-from mjlab.tasks.skills.experiments.parkour.jump import mdp
-from mjlab.tasks.skills.experiments.parkour.jump.mdp import JumpCommandCfg
-from mjlab.tasks.skills.experiments.parkour.jump.motion_lib import discover_motion_files
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump import mdp
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump.mdp import JumpCommandCfg
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump.motion_lib import (
+  discover_motion_files,
+)
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig

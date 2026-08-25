@@ -61,7 +61,7 @@ class MotionLibrary:
       raise FileNotFoundError(
         "Missing motion files: "
         + ", ".join(missing)
-        + "\nRun: uv run --with joblib python -m mjlab.tasks.skills.experiments"
+        + "\nRun: uv run --with joblib python -m mjlab.tasks.bridging.experiments"
         ".parkour.jump.dataset"
       )
 

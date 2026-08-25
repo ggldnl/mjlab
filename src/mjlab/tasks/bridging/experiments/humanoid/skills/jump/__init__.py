@@ -1,6 +1,6 @@
 """A goal-conditioned jump for the Unitree G1, learned the ASAP way.
 
-    uv run --with joblib python -m mjlab.tasks.skills.experiments.parkour.jump.dataset
+    uv run --with joblib python -m mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
     uv run train Mjlab-Parkour-Jump --env.scene.num-envs 4096
     uv run play Mjlab-Parkour-Jump
 
@@ -24,8 +24,10 @@ from mjlab.rl import (
   RslRlOnPolicyRunnerCfg,
   RslRlPpoAlgorithmCfg,
 )
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump.jump_env_cfg import (
+  g1_jump_env_cfg,
+)
 from mjlab.tasks.registry import register_mjlab_task
-from mjlab.tasks.skills.experiments.parkour.jump.jump_env_cfg import g1_jump_env_cfg
 
 JUMP_TASK_ID = "Mjlab-Parkour-Jump"
 

@@ -6,7 +6,7 @@ machinery wants something else: per-body world poses and velocities, produced by
 replaying the motion through the actual MuJoCo model. This script downloads the few
 clips this experiment needs and does the translation.
 
-    uv run --with joblib python -m mjlab.tasks.skills.experiments.parkour.jump.dataset
+    uv run --with joblib python -m mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
 
 Raw pickles are cached in `data/asap/raw`, converted motions land in
 `data/asap/motions`, and both steps are skipped for files already there.
@@ -154,7 +154,7 @@ def _load_asap_pkl(path: Path, joint_names: list[str], device: str) -> RawMotion
     raise ModuleNotFoundError(
       "Reading ASAP's motion pickles needs joblib, which is not a project "
       "dependency. Either run this script with joblib injected:\n\n"
-      "  uv run --with joblib python -m mjlab.tasks.skills.experiments.parkour"
+      "  uv run --with joblib python -m mjlab.tasks.bridging.experiments.parkour"
       ".jump.dataset\n\n"
       "or add joblib to the project and rerun the plain command."
     ) from exc
