@@ -41,7 +41,7 @@ from mjlab.tasks.bridging.experiments.humanoid.skills.kick.kick_env_cfg import (
 from mjlab.tasks.registry import register_mjlab_task
 from mjlab.tasks.velocity.config.g1.rl_cfg import unitree_g1_ppo_runner_cfg
 
-KICK_TASK_ID = "Mjlab-Parkour-Kick"
+KICK_TASK_ID = "Mjlab-G1-Kick"
 
 
 def kick_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
@@ -59,7 +59,7 @@ def kick_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """
   return replace(
     unitree_g1_ppo_runner_cfg(),
-    experiment_name="parkour_kick",
+    experiment_name="g1_kick",
     save_interval=200,
     max_iterations=10_000,
   )

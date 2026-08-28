@@ -2,7 +2,6 @@
 
 from mjlab.utils.spec_config import CollisionCfg
 
-
 # Leg visuals, no collision
 
 COXA_GEOM_NAMES = (

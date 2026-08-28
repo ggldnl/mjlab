@@ -1,26 +1,24 @@
 """Crawler sensors."""
 
-from mjlab.sensor import (
-  ContactMatch,
-  ContactSensorCfg,
-  BuiltinSensorCfg,
-  ObjRef,
-  RayCastSensorCfg,
-  TerrainHeightSensorCfg,
-  GridPatternCfg,
-  RingPatternCfg,
-)
-
 from mjlab.asset_zoo.robots.crawler.collisions import (
   BASE_COLLISION_NAME,
+  BASE_NAME,
   COXA_COLLISION_NAMES,
   FEMUR_COLLISION_NAMES,
+  FOOT_BODY_REGEX,
+  FOOT_SITE_NAMES,
   TIBIA_COLLISION_NAMES,
 )
-from mjlab.asset_zoo.robots.crawler.collisions import FOOT_BODY_REGEX
-from mjlab.asset_zoo.robots.crawler.collisions import FOOT_SITE_NAMES
-from mjlab.asset_zoo.robots.crawler.collisions import BASE_NAME
-
+from mjlab.sensor import (
+  BuiltinSensorCfg,
+  ContactMatch,
+  ContactSensorCfg,
+  GridPatternCfg,
+  ObjRef,
+  RayCastSensorCfg,
+  RingPatternCfg,
+  TerrainHeightSensorCfg,
+)
 
 IMU_SITE_NAME = "imu"
 

@@ -5,8 +5,7 @@ from pathlib import Path
 import mujoco
 
 from mjlab import MJLAB_SRC_PATH
-from mjlab.actuator.xml_actuator import XmlActuatorCfg
-from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
+from mjlab.entity import EntityCfg
 
 ##
 # MJCF and assets.
@@ -36,6 +35,7 @@ def get_racket_object_cfg() -> EntityCfg:
 
 if __name__ == "__main__":
   import mujoco.viewer as viewer
+
   from mjlab.entity.entity import Entity
 
   object = Entity(get_racket_object_cfg())

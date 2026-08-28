@@ -40,7 +40,7 @@ and the result will end up in `data/<dataset>`.
 
 ```sh
 uv run python src/mjlab/tasks/tracking/scripts/datasets/lafan1/interactive_crop.py \
-    --data-dir data/lafan1_g1 --output-dir data/lafan1_g1/skills
+    --data-dir data/lafan1_g1 --output-dir data/lafan1_g1/bridging
 ```
 
 Open the printed `http://localhost:8080` URL. Pick a clip, scrub the timeline,

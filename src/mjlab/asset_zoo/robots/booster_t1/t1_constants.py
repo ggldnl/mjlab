@@ -6,6 +6,7 @@ guarded so deploy can import this module without mjlab installed.
 
 import mujoco
 import numpy as np
+
 from mjlab import MJLAB_SRC_PATH
 
 try:  # pragma: no cover - train-only dependency
@@ -86,8 +87,8 @@ def _set_mujoco_camera_intrinsics(
   """Set calibrated intrinsics on a MuJoCo spec camera."""
   cam.resolution[:] = (width, height)
   if hasattr(cam, "focalpixel") and hasattr(cam, "principalpixel"):
-    setattr(cam, "focalpixel", np.array([fx, fy], dtype=np.float64))
-    setattr(cam, "principalpixel", np.array([cx, cy], dtype=np.float64))
+    cam.focalpixel = np.array([fx, fy], dtype=np.float64)
+    cam.principalpixel = np.array([cx, cy], dtype=np.float64)
   else:
     cam.fovy = float(np.degrees(2.0 * np.arctan(height / (2.0 * fy))))
 

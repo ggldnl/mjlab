@@ -1,40 +1,33 @@
-"""The pushing skill: a G1 drives a one metre crate along at the commanded velocity.
+"""The pushing skill: a G1 pushes along a 1m cube with its hands; contact with other
+body parts is not allowed.
 
-    uv run train Mjlab-Parkour-Push --env.scene.num-envs 4096
-    uv run play Mjlab-Parkour-Push
+    uv run train Mjlab-G1-Push --env.scene.num-envs 4096
+    uv run play Mjlab-G1-Push
 
-The crate is the asset zoo's parametric box, given a mass so that it has a freejoint and
+The cube is the asset zoo's parametric box, given a mass so that it has a freejoint and
 physics can move it, spawned a stride or two ahead of the robot in the robot's own
-heading frame. It is a cube a metre on a side: too tall to step over, too wide to
-sidestep without a detour, and light enough that a leaning G1 can shift it.
+heading frame.
 
 This starts from locomotion rather than from scratch. The environment is mjlab's flat G1
-velocity task with the crate added and a three rung ladder layered on top, so the robot
-is still learning to walk and to track a commanded twist while it learns to push, and
-every gait term that makes a G1 walk properly is the tuned one rather than a re-guessed
-copy. See push_env_cfg.py for the ladder and mdp.py for why each rung is shaped the way
-it is.
+velocity task with the box added; the robot first learns to walk and to track a  commanded
+twist and then to push.
 
 The goal is the twist itself, not a second command. The robot is told to travel at a
-velocity, the crate in front of it has to travel at that velocity too, and the top rung
-of the ladder is the fraction of the commanded velocity the crate is actually carrying.
-That way the conditioning reaches the observation and the reward through the machinery
-that was already there, instead of through a push command whose relationship to the
-locomotion one would have to be negotiated every step.
+velocity, the box in front of it has to travel at that velocity too.
 
-Two things to check before concluding that a run has worked:
+Three things to check before concluding that a run has worked:
 
-  Episode_Metrics/push_contact_rate tells you whether the crate is being touched at all.
-  Everything else is meaningless until this is high, and a policy that has learned to walk
-  around the crate scores well on velocity tracking with this near zero.
+    Episode_Metrics/push_hands_contact_rate tells you whether the box is being touched by
+    the hands at all. Everything else is meaningless until this is high, and a policy that
+    has learned to walk around the box scores well on velocity tracking with this near
+    zero. One half is a one handed push.
 
-  Episode_Metrics/push_box_displacement tells you whether the crate is going anywhere. It
-  is the furthest the crate got in an episode, in metres, and it is the headline number.
+    Episode_Metrics/push_body_contact_rate tells you whether the hands-only constraint took.
+    It should fall toward zero. High alongside a healthy displacement means the policy is
+    paying the penalty and body checking the box anyway.
 
-This skill is not wired into the parkour arena. That corridor's bridge reads a shared
-proprioception group (see ../../../parkour/arena.py), and this observation carries crate
-state that group has no channel for. Adding it means giving the corridor a crate, which
-is a change to the corridor rather than to this task.
+    Episode_Metrics/push_box_displacement tells you whether the box is going anywhere. It
+    is the furthest the box got in an episode, in metres.
 """
 
 from __future__ import annotations
@@ -49,7 +42,7 @@ from mjlab.tasks.registry import register_mjlab_task
 from mjlab.tasks.velocity.config.g1.rl_cfg import unitree_g1_ppo_runner_cfg
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 
-PUSH_TASK_ID = "Mjlab-Parkour-Push"
+PUSH_TASK_ID = "Mjlab-G1-Push"
 
 
 def push_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
@@ -57,9 +50,8 @@ def push_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
 
   Unchanged apart from the name and the length. This is the velocity task with extra
   reward terms and a slightly wider observation, which is exactly what that config is
-  tuned for, and there is nothing to be gained from guessing at differences before a run
-  has shown one. The length is the run task's rather than the walk task's, because the
-  command curriculum has three stages to climb and the crate makes each one harder than
+  tuned for. The length is higher than the walk task's, because the command
+  curriculum has three stages to climb and the box makes each one harder than
   the bare locomotion version.
 
   If training plateaus, check Loss/learning_rate before touching the reward. The KL
@@ -68,7 +60,7 @@ def push_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """
   return replace(
     unitree_g1_ppo_runner_cfg(),
-    experiment_name="parkour_push",
+    experiment_name="g1_push",
     save_interval=200,
     max_iterations=15_000,
   )

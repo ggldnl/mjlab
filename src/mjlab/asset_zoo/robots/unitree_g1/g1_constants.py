@@ -1,8 +1,10 @@
 """Unitree G1 constants."""
 
+from functools import partial
 from pathlib import Path
 
 import mujoco
+import numpy as np
 
 from mjlab import MJLAB_SRC_PATH
 from mjlab.actuator import BuiltinPositionActuatorCfg
@@ -22,9 +24,138 @@ G1_XML: Path = (
 )
 assert G1_XML.exists()
 
+##
+# Hands.
+##
 
-def get_spec() -> mujoco.MjSpec:
-  return mujoco.MjSpec.from_file(str(G1_XML))
+# Radius of the dome that stands in for a hand, in metres.
+#
+# 0.03 is the wrist housing's own radius where the hand bolts on, measured off the
+# `*_wrist_yaw_link` mesh, so at this value the dome and the housing share a silhouette
+# and the join is seamless. Larger and the dome overhangs the housing like a knob;
+# smaller and it sinks into it. Either still meets the housing -- the flat face is what
+# is anchored, not the centre -- so the radius is free to change without the hand coming
+# adrift.
+HAND_RADIUS = 0.03
+
+# Colour of the dome's visual geom. The rubber hand it replaces is drawn in the XML's
+# `black` material, and reusing that keeps a G1 looking like a G1 from a distance.
+HAND_MATERIAL = "black"
+
+# Facets of the dome, as latitude rings and longitude segments. Visual only, so this
+# trades nothing but triangles: MuJoCo takes the convex hull of the points below and
+# the collision geom is a primitive sphere regardless.
+_HAND_DOME_RINGS = 6
+_HAND_DOME_SEGMENTS = 24
+
+
+def _dome_points(radius: float) -> np.ndarray:
+  """Points whose convex hull is a dome of ``radius``, flat face on the x = 0 plane.
+
+  Handed to MuJoCo as a mesh with vertices and no faces, which is the documented way of
+  saying "take the convex hull of this". For a point set covering a hemispherical cap
+  plus its rim, that hull is the dome and the flat disc that closes it, so there is no
+  triangulation to write and no winding order to get wrong.
+
+  The pole is on +x because that is the wrist's own axis, and the mount face the dome
+  sits on is perpendicular to it. The rubber hand cants a little off that axis further
+  out, where the fingers are, but the join does not.
+  """
+  points = [(radius, 0.0, 0.0)]
+  for i in range(1, _HAND_DOME_RINGS + 1):
+    polar = 0.5 * np.pi * i / _HAND_DOME_RINGS  # 0 at the pole, pi/2 at the rim
+    axial = radius * np.cos(polar)
+    ring = radius * np.sin(polar)
+    for j in range(_HAND_DOME_SEGMENTS):
+      azimuth = 2.0 * np.pi * j / _HAND_DOME_SEGMENTS
+      points.append((axial, ring * np.cos(azimuth), ring * np.sin(azimuth)))
+  return np.array(points, dtype=np.float64)
+
+
+def _replace_hand_with_dome(spec: mujoco.MjSpec, side: str) -> None:
+  """Swap one rubber hand for a dome, in place.
+
+  The XML is left alone deliberately, so this is surgery on the loaded spec: find the
+  hand's two geoms in the wrist yaw link, note where the hand bolts on, delete both, and
+  put a dome there instead. The mesh asset goes too, since nothing else refers to it.
+
+  Everything is anchored to the hand's own mount point, read off the rubber hand geom's
+  position. That is the plane where the housing stops and the hand began, so a dome
+  seated on it stays joined at any radius. Anchoring instead to the middle of the thing
+  being replaced -- the collision capsule's midpoint, say, which is 0.069 m further out
+  because the capsule spans the whole hand rather than its root -- leaves a stand-in that
+  floats free of the arm as soon as it is made smaller than the gap.
+
+  Visual and collision are different shapes on purpose. The visual is the dome, so what
+  you see is a hemisphere growing out of the wrist. The collision geom is a whole sphere
+  centred on the same point, because a primitive sphere is far cheaper to collide against
+  than a mesh at four thousand environments. Its back half costs nothing: it sits inside
+  the volume the forearm capsule already occupies -- that capsule's surface reaches
+  0.049 m along this body's x, well past the 0.0415 m mount -- so nothing outside the
+  robot can touch it without already being inside the arm, and MuJoCo's parent-child
+  filter keeps it from touching the arm itself.
+
+  Mass is untouched, and that is a property of the model rather than luck: the wrist yaw
+  link carries an explicit `<inertial>`, so MuJoCo takes the body's mass and inertia from
+  that and never from its geoms. Swapping geometry here changes what the robot collides
+  with and what it looks like, not what it weighs.
+  """
+  body = spec.body(f"{side}_wrist_yaw_link")
+  mesh_name = f"{side}_rubber_hand"
+  hand = next(g for g in body.geoms if g.meshname == mesh_name)
+  mount = np.array(hand.pos)
+
+  spec.delete(hand)
+  spec.delete(spec.mesh(mesh_name))
+  spec.delete(spec.geom(f"{side}_hand_collision"))
+
+  dome = spec.add_mesh()
+  dome.name = f"{side}_hand_dome"
+  dome.uservert = _dome_points(HAND_RADIUS).flatten()
+
+  # Keeping the collision geom's name is what makes this a drop-in swap: every collision
+  # policy in this file selects on `.*_collision`, and so does anything downstream that
+  # names the hand.
+  #
+  # Attributes are set here rather than by pointing the geoms at the XML's `visual` and
+  # `collision` default classes: assigning a class to a geom the spec API has already
+  # created does not apply that class's attributes, so it would look right and behave
+  # like a bare geom.
+  collision = body.add_geom()
+  collision.name = f"{side}_hand_collision"
+  collision.type = mujoco.mjtGeom.mjGEOM_SPHERE
+  collision.size[0] = HAND_RADIUS
+  collision.pos = mount
+  collision.group = 3
+  collision.rgba[:] = (0.2, 0.6, 0.2, 0.3)
+
+  visual = body.add_geom()
+  visual.name = f"{side}_hand_visual"
+  visual.type = mujoco.mjtGeom.mjGEOM_MESH
+  visual.meshname = dome.name
+  visual.pos = mount
+  visual.group = 2
+  visual.material = HAND_MATERIAL
+  visual.contype = 0
+  visual.conaffinity = 0
+  visual.density = 0.0
+
+
+def get_spec(hands: bool = False) -> mujoco.MjSpec:
+  """Load the G1 spec.
+
+  Args:
+    hands: Keep the rubber hands the XML ships with. The default replaces each of them
+      with a dome seated where the hand bolted on: a simpler thing to collide against and
+      to reason about, being one radius and one centre rather than a five-fingered mesh
+      and a capsule canted off the wrist axis. Nothing about the arm's joints, masses or
+      actuators changes either way.
+  """
+  spec = mujoco.MjSpec.from_file(str(G1_XML))
+  if not hands:
+    for side in ("left", "right"):
+      _replace_hand_with_dome(spec, side)
+  return spec
 
 
 ##
@@ -263,16 +394,21 @@ G1_ARTICULATION = EntityArticulationInfoCfg(
 )
 
 
-def get_g1_robot_cfg() -> EntityCfg:
+def get_g1_robot_cfg(hands: bool = False) -> EntityCfg:
   """Get a fresh G1 robot configuration instance.
 
   Returns a new EntityCfg instance each time to avoid mutation issues when
   the config is shared across multiple places.
+
+  Args:
+    hands: Keep the rubber hands rather than the spheres that replace them by default.
+      See :func:`get_spec`.
   """
   return EntityCfg(
     init_state=KNEES_BENT_KEYFRAME,
     collisions=(FULL_COLLISION,),
-    spec_fn=get_spec,
+    # EntityCfg.spec_fn takes no arguments, so the choice is bound here.
+    spec_fn=partial(get_spec, hands=hands),
     articulation=G1_ARTICULATION,
   )
 

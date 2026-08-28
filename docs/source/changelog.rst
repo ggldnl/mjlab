@@ -30,6 +30,10 @@ Added
 - Added a ``gui`` field to ``CommandTermCfg``, defaulting to ``True``. Set it
   to ``False`` to keep a command term from adding controls to the Viser
   viewer, for terms something else already drives.
+- Added a ``priority`` argument to ``get_box_spec`` and ``get_box_cfg``,
+  defaulting to ``0``. Raise it so the box's own ``friction`` wins against the
+  terrain's instead of losing to MuJoCo's elementwise maximum, which is what
+  lets a box be more slippery than the ground it sits on.
 
 Changed
 ^^^^^^^

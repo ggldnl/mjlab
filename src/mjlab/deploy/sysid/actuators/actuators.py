@@ -13,14 +13,13 @@ The script will:
 """
 
 import math
+
 import numpy as np
-
-from sysid.hardware.base import ActuatorInterface
-from sysid.collect import collect, CollectionConfig
-from sysid.model import build_mj_model
-from sysid.identify import identify, IdentConfig
+from sysid.collect import CollectionConfig
 from sysid.export import write_config_file
-
+from sysid.hardware.base import ActuatorInterface
+from sysid.identify import IdentConfig, identify
+from sysid.model import build_mj_model
 
 # --- Replace this stub with your real hardware interface ---------------------
 
@@ -104,7 +103,8 @@ collect_cfg = CollectionConfig(
 # data = collect(actuator, collect_cfg, save_path="sysid_coxa.npz")
 
 # Load previously collected data instead:
-import os, sys
+import os
+import sys
 
 if os.path.exists("sysid_coxa.npz"):
   data = dict(np.load("sysid_coxa.npz"))

@@ -1,11 +1,11 @@
 """Crawler actuators: all hardware parameters."""
 
-from mjlab.actuator import BuiltinPositionActuatorCfg
-from mjlab.entity import EntityArticulationInfoCfg
-from mjlab.entity import EntityCfg
-import torch
 import math
 
+import torch
+
+from mjlab.actuator import BuiltinPositionActuatorCfg
+from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
 LEG_1_JOINT_NAMES = (
   "base_leg_1_coxa",

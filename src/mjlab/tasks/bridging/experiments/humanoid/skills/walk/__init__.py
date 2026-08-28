@@ -1,21 +1,10 @@
-"""The walking skill: mjlab's G1 flat velocity task, wired under a parkour name.
+"""The walking skill: mjlab's G1 flat velocity task, wired under a different name.
 
-    uv run train Mjlab-Parkour-Walk --env.scene.num-envs 4096
-    uv run play Mjlab-Parkour-Walk
+    uv run train Mjlab-G1-Walk --env.scene.num-envs 4096
+    uv run play Mjlab-G1-Walk
 
-There is no new environment here and there should not be. Ordinary commanded-velocity
-walking is exactly what the corridor needs between obstacles, mjlab's version of it is
-tuned, and a copy would only drift from the original.
-
-What the alias buys is the experiment's ability to name its own skills. The pool is
-built from task ids, checkpoints are found through each task's experiment name, and a
-skill called `Mjlab-Velocity-Flat-Unitree-G1` would collect every G1 velocity run ever
-trained in this repo, including ones with different reward weights or terrain. Under
-`parkour_walk` the corridor's walking policy has its own log directory and its own
-checkpoint history, and the experiment can say which one it means.
-
-The registered config is the stock one, unmodified. If the corridor ever needs walking
-to differ from mjlab's (a narrower command range, say, or a taller obstacle clearance)
+The registered config is the stock one, unmodified. If we ever needs walking
+to differ from mjlab's (a narrower command range or something else)
 that change belongs here, in a wrapper around `unitree_g1_flat_env_cfg`, the way
 run/run_env_cfg.py wraps it for speed.
 """
@@ -30,12 +19,12 @@ from mjlab.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
 from mjlab.tasks.velocity.config.g1.rl_cfg import unitree_g1_ppo_runner_cfg
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 
-WALK_TASK_ID = "Mjlab-Parkour-Walk"
+WALK_TASK_ID = "Mjlab-G1-Walk"
 
 
 def walk_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """The stock G1 velocity PPO config, under this experiment's own name."""
-  return replace(unitree_g1_ppo_runner_cfg(), experiment_name="parkour_walk")
+  return replace(unitree_g1_ppo_runner_cfg(), experiment_name="g1_walk")
 
 
 register_mjlab_task(

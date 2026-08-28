@@ -1,17 +1,14 @@
 """Crawler config main entry point."""
 
-import mujoco
-from mjlab.entity import EntityCfg
-
 from pathlib import Path
 
+import mujoco
+
+from mjlab.asset_zoo.robots.crawler.actuators import ARTICULATIONS, INIT_STATE
 from mjlab.asset_zoo.robots.crawler.collisions import (
-  FEET_ONLY_COLLISION,
   FULL_COLLISION,
 )
-from mjlab.asset_zoo.robots.crawler.actuators import ARTICULATIONS
-from mjlab.asset_zoo.robots.crawler.actuators import INIT_STATE
-
+from mjlab.entity import EntityCfg
 
 LOCAL_FOLDER = Path(__file__).parent
 CRAWLER_DESCRIPTION_PATH: Path = LOCAL_FOLDER / "xmls" / "crawler" / "crawler.xml"
@@ -34,6 +31,7 @@ def get_crawler_robot_cfg() -> EntityCfg:
 
 if __name__ == "__main__":
   import mujoco.viewer as viewer
+
   from mjlab.entity.entity import Entity
 
   robot = Entity(get_crawler_robot_cfg())

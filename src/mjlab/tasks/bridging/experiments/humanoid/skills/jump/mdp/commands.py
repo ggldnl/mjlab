@@ -248,20 +248,37 @@ class JumpCommand(CommandTerm):
     once, before the bridge starts. Anchoring again at hand-over would slide the clip
     onto wherever the robot actually arrived, which erases the arrival error instead of
     leaving it for the entered skill to cope with.
+
+    `at_quat` is the direction the jump should travel, not the heading the robot should
+    hold at the entry frame. The two differ by the pelvis twist the clip carries, and
+    reading `body_quat_w` after this call is how a caller finds out what the second one
+    is. See the comment on the anchor rotation below.
     """
     frame = int(start_frame)
     self.time_steps[env_ids] = frame
     self.motion_done[env_ids] = False
 
     root_quat = self.robot_root_quat_w[env_ids] if at_quat is None else at_quat
-    # The clip's own entry frame carries a heading (its pelvis is not exactly aligned
-    # with the direction it travels), so the anchor rotation is the robot's heading
-    # relative to the clip's, not the robot's heading outright.
-    clip_quat = self.motion.body_quat_w[self.motion_ids[env_ids], frame, 0]
-    delta = quat_mul(yaw_quat(root_quat), quat_inv(yaw_quat(clip_quat)))
-    self.anchor_yaw[env_ids] = torch.atan2(
-      2.0 * (delta[:, 0] * delta[:, 3]), 1.0 - 2.0 * delta[:, 3] ** 2
-    )
+    # The clip is turned so that it *travels* the way `root_quat` faces.
+    #
+    # It used to be turned so that its pelvis at the entry frame faced that way, which is
+    # not the same thing and is measurably wrong. A clip is canonicalized to travel along
+    # its own +x, but its pelvis spends the whole run-up turned twelve to twenty degrees
+    # off that, because that is what a human's pelvis does while running. Aligning the
+    # pelvis therefore rotated the entire jump by that angle: a robot handed over while
+    # walking due east jumped off twenty degrees north of it, at every entry frame.
+    #
+    # One thing follows and whoever delivers the robot has to know it: the robot's heading
+    # at the entry frame is *not* `root_quat`. It is the clip's pelvis at that frame,
+    # turned by the same anchor. Aim at the pose the reference actually holds, which is
+    # what `body_quat_w` reports once this returns, and not at the direction of travel.
+    goal_xy = self.motion.goals[self.motion_ids[env_ids], 0:2]
+    # A clip that goes nowhere -- a jump on the spot -- has no direction of travel to
+    # align, and atan2(0, 0) falls back to the clip's own +x, which is the right default.
+    travel = torch.atan2(goal_xy[:, 1], goal_xy[:, 0])
+    yaw = yaw_quat(root_quat)
+    heading = torch.atan2(2.0 * (yaw[:, 0] * yaw[:, 3]), 1.0 - 2.0 * yaw[:, 3] ** 2)
+    self.anchor_yaw[env_ids] = heading - travel
 
     self._anchored = True
 

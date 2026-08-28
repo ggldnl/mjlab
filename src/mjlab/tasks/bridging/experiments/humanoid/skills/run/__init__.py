@@ -1,9 +1,9 @@
-"""The running skill: velocity tracking at speeds the stock task does not reach.
+"""A running skill: velocity tracking at speeds the stock task does not reach.
 
-    uv run train Mjlab-Parkour-Run --env.scene.num-envs 4096
-    uv run play Mjlab-Parkour-Run
+    uv run train Mjlab-G1-Run --env.scene.num-envs 4096
+    uv run play Mjlab-G1-Run
 
-Same machinery as `Mjlab-Velocity-Flat-Unitree-G1`, retuned for one thing: forward
+Same machinery as `Mjlab-Velocity-Flat-Unitree-G1`, tuned for increased forward
 speed. See run_env_cfg.py for what changed and why.
 
 The curriculum runs through five speed stages, so this wants a long training run;
@@ -24,7 +24,7 @@ from mjlab.tasks.registry import register_mjlab_task
 from mjlab.tasks.velocity.config.g1.rl_cfg import unitree_g1_ppo_runner_cfg
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 
-RUN_TASK_ID = "Mjlab-Parkour-Run"
+RUN_TASK_ID = "Mjlab-G1-Run"
 
 
 def run_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
@@ -36,7 +36,7 @@ def run_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """
   return replace(
     unitree_g1_ppo_runner_cfg(),
-    experiment_name="parkour_run",
+    experiment_name="g1_run",
     max_iterations=15_000,
   )
 

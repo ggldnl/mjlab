@@ -1,8 +1,8 @@
 """A goal-conditioned jump for the Unitree G1, learned the ASAP way.
 
     uv run --with joblib python -m mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
-    uv run train Mjlab-Parkour-Jump --env.scene.num-envs 4096
-    uv run play Mjlab-Parkour-Jump
+    uv run train Mjlab-Humanoid-Jump --env.scene.num-envs 4096
+    uv run play Mjlab-Humanoid-Jump
 
 ASAP (RSS 2025, https://agile.human2humanoid.com/) gets a G1 to jump by tracking a
 retargeted human jump frame by frame: reference-state initialization, a dense
@@ -29,11 +29,11 @@ from mjlab.tasks.bridging.experiments.humanoid.skills.jump.jump_env_cfg import (
 )
 from mjlab.tasks.registry import register_mjlab_task
 
-JUMP_TASK_ID = "Mjlab-Parkour-Jump"
+JUMP_TASK_ID = "Mjlab-G1-Jump"
 
 
 def jump_ppo_runner_cfg(
-  experiment_name: str = "parkour_jump",
+  experiment_name: str = "g1_jump",
 ) -> RslRlOnPolicyRunnerCfg:
   """PPO for the jump.
 
