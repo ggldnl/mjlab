@@ -1,36 +1,41 @@
 """Fetch ASAP's retargeted G1 jump clips and convert them into mjlab motions.
 
-ASAP publishes its motions already retargeted to `g1_29dof_anneal_23dof`, as joblib
-pickles holding a root trajectory plus 23 joint angles per frame. mjlab's tracking
-machinery wants something else: per-body world poses and velocities, produced by
-replaying the motion through the actual MuJoCo model. This script downloads the few
-clips this experiment needs and does the translation.
+Run:
 
-    uv run --with joblib python -m mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
+    uv run --with joblib python -m \
+      mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
 
-Raw pickles are cached in `data/asap/raw`, converted motions land in
-`data/asap/motions`, and both steps are skipped for files already there.
+    # the turning and sideways jumps too, which widen the goal space
+    uv run --with joblib python -m ...jump.dataset --clips all
+
+Raw pickles are cached in data/asap/raw, converted motions land in data/asap/motions, and
+both steps skip files already there.
+
+ASAP publishes its motions already retargeted to g1_29dof_anneal_23dof, as joblib pickles
+holding a root trajectory plus 23 joint angles per frame. mjlab's tracking machinery wants
+per-body world poses and velocities, produced by replaying the motion through the actual
+MuJoCo model. This script downloads the few clips this experiment needs and does the
+translation.
 
 What happens to each clip, in order:
 
-0. The pickle is downloaded from ASAP's repository, unless it is already cached.
-1. The 23 ASAP joints are scattered into mjlab's 29-joint G1 by name. The six wrist
-   joints ASAP does not have are left at zero.
-2. The clip is canonicalized: rotated and translated so it starts at the origin
-   facing +x. Every clip was captured with a different world heading, and without
-   this the jump direction would be a different vector in every file.
-3. The root is shifted vertically so the lowest foot over the clip sits exactly at
-   the height a foot has when the robot stands on the ground. The retargeting was
-   fitted against ASAP's own XML, and a couple of centimeters of mismatch against
-   mjlab's G1 is the difference between a jump and a stumble.
-4. The clip is resampled from 30 Hz to the control rate, velocities are finite
-   differenced, and the whole thing is replayed through MuJoCo so that every body's
-   world pose and velocity can be logged.
-5. The flight phase is detected from the foot heights, and the jump's goal
-   (displacement, turn, apex) is stored alongside the frames.
+    0. Download the pickle from ASAP's repository, unless it is already cached.
+    1. Scatter the 23 ASAP joints into mjlab's 29-joint G1 by name. The six wrist joints
+       ASAP does not have stay at zero.
+    2. Canonicalize: rotate and translate so the clip starts at the origin facing +x. Every
+       clip was captured with a different world heading, and without this the jump
+       direction is a different vector in every file.
+    3. Shift the root vertically so the lowest foot over the clip sits exactly at standing
+       foot height. The retargeting was fitted against ASAP's own XML, and a couple of
+       centimetres of mismatch against mjlab's G1 is the difference between a jump and a
+       stumble.
+    4. Resample from 30 Hz to the control rate, finite difference the velocities, and
+       replay through MuJoCo to log every body's world pose and velocity.
+    5. Detect the flight phase from the foot heights and store the jump's goal
+       (displacement, turn, apex) alongside the frames.
 
-The resulting npz is a superset of what `mjlab.scripts.csv_to_npz` writes, so the
-files also work with the stock tracking task.
+The resulting npz is a superset of what mjlab.scripts.csv_to_npz writes, so the files also
+work with the stock tracking task.
 """
 
 from __future__ import annotations
@@ -60,7 +65,7 @@ from mjlab.utils.lab_api.math import (
   yaw_quat,
 )
 
-# The 23 joints ASAP retargets to, in the order its `dof` array uses.
+# The 23 joints ASAP retargets to, in the order its dof array uses
 ASAP_JOINT_NAMES: tuple[str, ...] = (
   "left_hip_pitch_joint",
   "left_hip_roll_joint",
@@ -89,15 +94,14 @@ ASAP_JOINT_NAMES: tuple[str, ...] = (
 
 FOOT_BODY_NAMES: tuple[str, str] = ("left_ankle_roll_link", "right_ankle_roll_link")
 
-# How high a foot has to be above its standing height before we call it flight.
+# How high a foot has to be above its standing height before it counts as flight
 FLIGHT_FOOT_CLEARANCE = 0.04
 
-# How far the reference is allowed to sink below the floor at the deepest frame.
+# How far the reference may sink below the floor at the deepest frame
 MAX_GROUND_PENETRATION = 0.03
 
-# Where ASAP keeps its retargeted G1 clips, and where the raw downloads are cached.
-# Only these few files are fetched: the repository as a whole is large and none of the
-# rest of it is used here.
+# Where ASAP keeps its retargeted G1 clips, and where the raw downloads are cached. Only
+# these few files are fetched: the repository is large and none of the rest is used here
 ASAP_REPO = "LeCAR-Lab/ASAP"
 ASAP_REF = "main"
 ASAP_MOTION_PATH = (
@@ -110,17 +114,16 @@ DEFAULT_OUTPUT_DIR = DATA_ROOT / "motions"
 
 _PREFIX = "0-motions_raw_tairantestbed_smpl_video_"
 
-# The forward jumps are the goal-conditioning axis: level1 is a hop, level5 clears
-# about two metres, and everything between is reachable by stretching one of them.
+# The forward jumps are the goal-conditioning axis. level1 is a hop, level5 clears about
+# two metres, and everything between is reachable by stretching one of them
 FORWARD_CLIPS: dict[str, str] = {
   f"jump_forward_level{i}": f"{_PREFIX}jump_forward_level{i}_filter_amass.pkl"
   for i in range(1, 6)
 }
 
-# Optional extras, off by default. They widen the goal space rather than filling it
-# in: the turning jumps make the goal's yaw component mean something, and the side
-# jumps make its lateral component mean something. Convert them with
-# `--clips all` if a jump that is not straight ahead is wanted.
+# Optional extras, off by default. They widen the goal space rather than filling it in: the
+# turning jumps make the goal's yaw component mean something, the side jumps its lateral
+# component. Convert them with --clips all for a jump that is not straight ahead
 EXTRA_CLIPS: dict[str, str] = {
   f"jump_degree_level{i}": f"{_PREFIX}jump_degree_level{i}_filter_amass.pkl"
   for i in range(1, 6)
@@ -147,7 +150,7 @@ class RawMotion:
 
 def _load_asap_pkl(path: Path, joint_names: list[str], device: str) -> RawMotion:
   # joblib is only needed to read ASAP's pickles, so it stays a local import: the
-  # rest of the package must import cleanly without it.
+  # rest of the package must import cleanly without it
   try:
     import joblib  # ty: ignore[unresolved-import]
   except ModuleNotFoundError as exc:
@@ -191,17 +194,16 @@ def _load_asap_pkl(path: Path, joint_names: list[str], device: str) -> RawMotion
 def _canonicalize(motion: RawMotion, align: str = "displacement") -> RawMotion:
   """Move the clip to the origin and turn it to face +x.
 
-  Only a rotation about the vertical axis is removed; pitch and roll of the first
-  frame are part of the motion, and heights are left alone.
+  Only a rotation about the vertical axis is removed. Pitch and roll of the first frame are
+  part of the motion, and heights are left alone.
 
-  Which yaw to remove is a real choice. Removing the pelvis's initial heading is
-  the obvious one, but every clip in this set then jumps 11 to 22 degrees off its
-  own +x axis -- a systematic offset between the retargeted pelvis frame and the
-  direction the subject actually travelled. Removing the displacement direction
-  instead makes every clip a jump straight down +x, which is what "jump this far
-  forward" is supposed to mean, at the cost of the robot starting with a small
-  constant yaw offset relative to the jump. That trade is worth taking: the goal
-  becomes a distance rather than a distance plus an unexplained sideways component.
+  Which yaw to remove is a real choice. Removing the pelvis's initial heading is the obvious
+  one, and every clip in this set then jumps 11 to 22 degrees off its own +x axis, a
+  systematic offset between the retargeted pelvis frame and the direction the subject
+  actually travelled. Removing the displacement direction instead makes every clip a jump
+  straight down +x, which is what "jump this far forward" should mean, at the cost of the
+  robot starting with a small constant yaw offset relative to the jump. Worth taking: the
+  goal becomes a distance rather than a distance plus an unexplained sideways component.
   """
   if align == "displacement":
     delta = motion.root_pos[-1, :2] - motion.root_pos[0, :2]
@@ -217,7 +219,7 @@ def _canonicalize(motion: RawMotion, align: str = "displacement") -> RawMotion:
         ]
       ).unsqueeze(0)
     else:
-      # Too short to have a direction; fall back to the pelvis heading.
+      # Too short to have a direction; fall back to the pelvis heading
       correction = quat_inv(yaw_quat(motion.root_quat[0:1]))
   else:
     correction = quat_inv(yaw_quat(motion.root_quat[0:1]))
@@ -345,10 +347,10 @@ def _replay(
 def _stance_baseline(foot_height: np.ndarray, frames: int) -> float:
   """The clip's own idea of a planted foot.
 
-  Every clip opens with the subject standing still, so the median foot height over
-  the first second is the height a foot has when it is on the ground *in this
-  clip*. Retargeting error means that is not the same number for every clip, and
-  measuring it per clip is more reliable than assuming any of them is exact.
+  Every clip opens with the subject standing still, so the median foot height over the first
+  second is the height a foot has when it is on the ground in this clip. Retargeting error
+  means that is not the same number for every clip, so measuring per clip beats assuming any
+  of them is exact.
   """
   window = foot_height.min(axis=1)[: max(frames, 1)]
   return float(np.median(window))
@@ -357,10 +359,10 @@ def _stance_baseline(foot_height: np.ndarray, frames: int) -> float:
 def _flight_window(foot_height: np.ndarray, baseline: float) -> tuple[int, int] | None:
   """First and last frame of the flight phase, if there is one.
 
-  Of all the stretches where both feet are clear of the ground, the one containing
-  the highest foot is the jump. Taking the longest stretch instead is wrong:
-  retargeting drift leaves some clips standing a few centimetres too high for their
-  whole tail, and that is a longer airborne run than the real flight.
+  Of all the stretches where both feet are clear of the ground, the one containing the
+  highest foot is the jump. Taking the longest stretch is wrong: retargeting drift leaves
+  some clips standing a few centimetres too high for their whole tail, which is a longer
+  airborne run than the real flight.
   """
   clearance = foot_height.min(axis=1)
   airborne = clearance > baseline + FLIGHT_FOOT_CLEARANCE
@@ -434,7 +436,7 @@ def convert_clip(
   #
   # The bound keeps that correction from burying the landing frames in the floor. A
   # reference a couple of centimetres underground is unreachable but cheap; six
-  # centimetres of it teaches the policy to slam down.
+  # centimetres of it teaches the policy to slam down
   probe = _replay(sim, scene, robot, motion, root_lin_vel, root_ang_vel, joint_vel)
   probe_foot = probe["body_pos_w"][:, foot_ids, 2]
   stance_frames = int(round(output_fps))
@@ -445,7 +447,7 @@ def convert_clip(
   )
   motion.root_pos[:, 2] += z_shift
 
-  # Second pass: the real one.
+  # Second pass: the real one
   log = _replay(sim, scene, robot, motion, root_lin_vel, root_ang_vel, joint_vel)
   shifted_baseline = _stance_baseline(log["body_pos_w"][:, foot_ids, 2], stance_frames)
 
@@ -481,7 +483,7 @@ def convert_clip(
     "z_shift": round(z_shift, 4),
     # How far a planted foot still floats, and how far the deepest frame sinks.
     # Both are retargeting residue; watch them, they are the honest measure of how
-    # well the reference matches this robot.
+    # well the reference matches this robot
     "stance_float": round(shifted_baseline - standing_height, 4),
     "ground_penetration": round(
       standing_height - float(log["body_pos_w"][:, foot_ids, 2].min()), 4
@@ -500,9 +502,8 @@ def convert_clip(
 def download_clip(filename: str, cache_dir: Path, ref: str = ASAP_REF) -> Path:
   """Fetch one retargeted pickle from ASAP's repository, caching it on disk.
 
-  Only the handful of clips this experiment uses are downloaded. Cloning ASAP for
-  them would pull a whole framework, its meshes and every other motion, none of
-  which is used here.
+  Only the handful of clips this experiment uses. Cloning ASAP for them would pull a whole
+  framework, its meshes and every other motion, none of which is used here.
   """
   import urllib.request
 
@@ -516,8 +517,8 @@ def download_clip(filename: str, cache_dir: Path, ref: str = ASAP_REF) -> Path:
   cache_dir.mkdir(parents=True, exist_ok=True)
   print(f"  downloading {filename}")
   try:
-    # Written to a temporary name first so an interrupted download cannot leave a
-    # truncated file behind that later runs would treat as cached.
+    # Written to a temporary name first, so an interrupted download cannot leave a
+    # truncated file behind that later runs treat as cached
     partial = destination.with_suffix(destination.suffix + ".part")
     urllib.request.urlretrieve(url, partial)
     partial.replace(destination)
@@ -540,7 +541,7 @@ def main(
   Args:
     output_dir: Where the npz files and the manifest are written.
     cache_dir: Where the downloaded ASAP pickles are kept.
-    output_fps: Should match the env control rate (1 / (timestep * decimation)).
+    output_fps: Should match the env control rate, 1 / (timestep * decimation).
     clips: Which clip set to convert, "forward" or "all".
     align: Which yaw to remove, "displacement" or "heading". See `_canonicalize`.
     ref: Branch or tag of the ASAP repository to download from.

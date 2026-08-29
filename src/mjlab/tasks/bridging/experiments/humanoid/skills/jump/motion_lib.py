@@ -1,14 +1,12 @@
 """A library of jump clips, indexed per environment.
 
-mjlab's tracking task carries one motion, so a single frame index is enough to
-address it. Goal conditioning needs a set of clips and, per environment, a pointer
-into that set: which jump am I doing, how far into it am I, and how much has the
-jump been stretched.
+mjlab's tracking task carries one motion, so a single frame index addresses it. Goal
+conditioning needs a set of clips and, per environment, a pointer into that set: which jump
+am I doing, how far into it am I, how much has it been stretched.
 
-Clips have different lengths, so everything is padded to the longest one and the
-true lengths are kept alongside. Reading past the end of a clip is prevented by
-clamping the frame index, not by masking, because the environment that got there
-is about to be reset anyway.
+Clips have different lengths, so everything is padded to the longest and the true lengths
+are kept alongside. Reading past the end of a clip is prevented by clamping the frame
+index, not by masking, because the environment that got there is about to be reset.
 """
 
 from __future__ import annotations
@@ -42,8 +40,8 @@ class MotionMetadata:
 class MotionLibrary:
   """Padded tensors for a set of clips, plus their goals.
 
-  Every tensor has a leading motion axis and a padded frame axis, so a pair of
-  index tensors `(motion_ids, time_steps)` of shape [num_envs] gathers a batch.
+  Every tensor has a leading motion axis and a padded frame axis, so a pair of index
+  tensors (motion_ids, time_steps) of shape [num_envs] gathers a batch.
   """
 
   def __init__(
@@ -62,7 +60,7 @@ class MotionLibrary:
         "Missing motion files: "
         + ", ".join(missing)
         + "\nRun: uv run --with joblib python -m mjlab.tasks.bridging.experiments"
-        ".parkour.jump.dataset"
+        ".humanoid.skills.jump.dataset"
       )
 
     self.device = device
@@ -90,9 +88,9 @@ class MotionLibrary:
     self.body_lin_vel_w = all_body_lin_vel_w[:, :, body_indexes]
     self.body_ang_vel_w = stack("body_ang_vel_w")[:, :, body_indexes]
 
-    # The root, kept separately and indexed in the full body list rather than the
-    # tracked subset: stretching a jump is defined relative to where the root
-    # started, and a config is free not to track the root body at all.
+    # The root, kept separately and indexed in the full body list rather than the tracked
+    # subset. Stretching a jump is defined relative to where the root started, and a config
+    # is free not to track the root body at all
     self.root_pos_w = all_body_pos_w[:, :, 0]
     self.root_lin_vel_w = all_body_lin_vel_w[:, :, 0]
 
@@ -148,10 +146,10 @@ class MotionLibrary:
 
 
 def default_motion_dir() -> Path:
-  """Where `dataset.py` writes its converted clips.
+  """Where dataset.py writes its converted clips.
 
-  Relative to the working directory, like every other dataset in `data/`, rather
-  than to this package: motions are data, not code, and are not shipped with it.
+  Relative to the working directory, like every other dataset under data/, not to this
+  package. Motions are data, not code, and are not shipped with it.
   """
   return Path("data") / "asap" / "motions"
 
@@ -162,7 +160,7 @@ def discover_motion_files(
   """Find converted clips, ordered by jump distance when a manifest exists.
 
   Ordering matters: the goal is a continuous distance, and interpolating between
-  neighbouring clips is only meaningful if neighbouring means what it sounds like.
+  neighbouring clips only means something if neighbouring means what it sounds like.
   """
   motion_dir = motion_dir or default_motion_dir()
   files = sorted(motion_dir.glob(pattern))

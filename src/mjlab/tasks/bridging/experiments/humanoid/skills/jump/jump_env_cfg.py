@@ -1,35 +1,35 @@
 """The goal-conditioned jump environment.
 
-This is ASAP's stage-one recipe, phase-based motion tracking, put together out of
-mjlab parts. The claim ASAP makes, and the reason this is worth porting, is narrow
-and important: a humanoid learns a jump by tracking a jump, frame by frame, with
-reference-state initialization and an early termination that fires the moment
-tracking is lost. There is no style discriminator, no hand-designed jump reward, no
-standing-first curriculum. The reference supplies the shape of the motion and the
-policy only has to make it physical.
+Run:
+
+    uv run --with joblib python -m \
+      mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
+    uv run train Mjlab-G1-Jump --env.scene.num-envs 4096
+    uv run play Mjlab-G1-Jump --checkpoint-file <path>
+
+ASAP's stage-one recipe, phase-based motion tracking, assembled out of mjlab parts. The
+claim worth porting is narrow: a humanoid learns a jump by tracking a jump frame by frame,
+with reference-state initialization and an early termination that fires the moment tracking
+is lost. No style discriminator, no hand-designed jump reward, no standing-first
+curriculum. The reference supplies the shape of the motion and the policy only has to make
+it physical.
 
 What the earlier attempts in this folder got wrong, in those terms:
 
-  A style reward plus a goal reward asks the policy to discover the jump and to
-  imitate a distribution at the same time; neither signal is dense enough to get
-  off the ground. Tracking replaces both with a per-frame target.
+  A style reward plus a goal reward asks the policy to discover the jump and imitate a
+  distribution at the same time, and neither signal is dense enough to get off the ground.
+  Tracking replaces both with a per-frame target.
 
-  Curriculum from standing spends its early budget learning to stand, which is a
-  local optimum the jump has to be pushed out of. Reference-state initialization
-  sidesteps it entirely: a third of the environments start mid-flight, so the
-  policy sees the airborne part of the task from the first iteration.
+  A curriculum from standing spends its early budget learning to stand, a local optimum the
+  jump then has to be pushed out of. Reference-state initialization sidesteps it: a third
+  of the environments start mid-flight, so the policy sees the airborne part from the first
+  iteration.
 
-The goal conditioning is the one thing added on top of ASAP, which trains a policy
-per clip. Five forward jumps of different lengths share a policy here, the goal is
-in the observation and in the reward, and each episode stretches its clip a little
-so the reachable distances are continuous rather than five discrete points. See
-`mdp/commands.py` for how the stretching works.
-
-Run it:
-
-    uv run --with joblib python -m mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
-    uv run train Mjlab-Parkour-Jump --env.scene.num-envs 4096
-    uv run play Mjlab-Parkour-Jump --checkpoint-file <path>
+The goal conditioning is the one thing added on top of ASAP, which trains a policy per
+clip. Five forward jumps of different lengths share a policy here, the goal is in the
+observation and in the reward, and each episode stretches its clip a little so the
+reachable distances are continuous rather than five discrete points. See mdp/commands.py
+for the stretching.
 """
 
 from __future__ import annotations
@@ -59,8 +59,8 @@ from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
 ##
-# Body groups. The reward set weights these differently, because a jump is decided
-# by the legs and the landing is decided by the feet.
+# Body groups. The reward set weights these differently: a jump is decided by the legs and
+# the landing by the feet.
 ##
 
 TRACKED_BODIES: tuple[str, ...] = (
@@ -104,9 +104,9 @@ UPPER_BODIES: tuple[str, ...] = (
 
 ANCHOR_BODY = "torso_link"
 
-# Reference-state initialization noise. Deliberately small: the reference is a
-# ballistic trajectory, and a large perturbation at takeoff is not a harder version
-# of the same problem, it is a different and unreachable one.
+# Reference-state initialization noise. Deliberately small. The reference is a ballistic
+# trajectory, so a large perturbation at takeoff is not a harder version of the same problem,
+# it is a different and unreachable one
 POSE_RANGE = {
   "x": (-0.03, 0.03),
   "y": (-0.03, 0.03),
@@ -134,8 +134,8 @@ PUSH_VELOCITY_RANGE = {
   "yaw": (-0.4, 0.4),
 }
 
-# Curriculum thresholds are in environment steps, not iterations. With the default
-# 24 steps per environment per iteration, 24_000 steps is about 1000 iterations.
+# Curriculum thresholds are in environment steps, not iterations. At the default 24 steps
+# per env per iteration, 24_000 steps is about 1000 iterations
 _STAGE_1 = 24_000
 _STAGE_2 = 72_000
 
@@ -147,10 +147,10 @@ def g1_jump_env_cfg(
   """Build the jump environment.
 
   Args:
-    motion_files: Converted npz clips. Defaults to every `jump_forward_level*` file
-      in the task's `motions/` directory, ordered by distance.
-    play: Start every episode at the beginning of a clip, drop the observation
-      noise and the pushes, and leave the reference unperturbed.
+    motion_files: Converted npz clips. Defaults to every jump_forward_level* file in the
+      task's motions/ directory, ordered by distance.
+    play: Start every episode at the beginning of a clip, drop the observation noise and
+      the pushes, and leave the reference unperturbed.
   """
   motion_files = motion_files or discover_motion_files()
 
@@ -159,7 +159,7 @@ def g1_jump_env_cfg(
   ##
 
   actor_terms = {
-    # Reference joint targets, phase and goal descriptor, in one tensor.
+    # Reference joint targets, phase and goal descriptor, in one tensor
     "command": ObservationTermCfg(
       func=mdp.generated_commands, params={"command_name": "motion"}
     ),
@@ -265,7 +265,7 @@ def g1_jump_env_cfg(
   commands: dict[str, CommandTermCfg] = {
     "motion": JumpCommandCfg(
       entity_name="robot",
-      # The clip's own length ends the episode, so the resampling clock never fires.
+      # The clip's own length ends the episode, so the resampling clock never fires
       resampling_time_range=(1.0e9, 1.0e9),
       debug_vis=True,
       motion_files=motion_files,
@@ -274,10 +274,10 @@ def g1_jump_env_cfg(
       pose_range=POSE_RANGE,
       velocity_range=VELOCITY_RANGE,
       joint_position_range=(-0.05, 0.05),
-      # Wide enough that the five clips overlap into a nearly continuous range of
-      # distances (roughly 0.33 m to 2.56 m, with a small gap around 0.7 m where
-      # the two shortest clips do not quite meet). Wider still and the reference
-      # stops being a jump the recorded takeoff pose could produce.
+      # Wide enough that the five clips overlap into a nearly continuous range, roughly
+      # 0.33 m to 2.56 m, with a small gap around 0.7 m where the two shortest clips do not
+      # quite meet. Wider still and the reference stops being a jump the recorded takeoff
+      # pose could produce
       scale_range=(0.7, 1.3),
       goal_success_threshold=0.25,
       sampling_mode="adaptive",
@@ -328,8 +328,8 @@ def g1_jump_env_cfg(
   ##
 
   rewards: dict[str, RewardTermCfg] = {
-    # Where the robot is in the world. This is what makes the jump go somewhere:
-    # the relative body terms below are blind to global drift by construction.
+    # Where the robot is in the world. This is what makes the jump go somewhere, because
+    # the relative body terms below are blind to global drift by construction
     "motion_anchor_pos": RewardTermCfg(
       func=mdp.motion_global_anchor_position_error_exp,
       weight=1.0,
@@ -340,7 +340,7 @@ def g1_jump_env_cfg(
       weight=0.5,
       params={"command_name": "motion", "std": 0.4},
     ),
-    # Posture, split the way ASAP splits it.
+    # Posture, split the way ASAP splits it
     "motion_body_pos_lower": RewardTermCfg(
       func=mdp.motion_relative_body_position_error_exp,
       weight=1.0,
@@ -381,7 +381,7 @@ def g1_jump_env_cfg(
       weight=0.5,
       params={"command_name": "motion", "std": 5.0},
     ),
-    # The goal, which is what the user actually asked for.
+    # The goal, which is what the user actually asked for
     "jump_goal_pos": RewardTermCfg(
       func=mdp.jump_goal_position_error_exp,
       weight=2.0,
@@ -392,9 +392,9 @@ def g1_jump_env_cfg(
       weight=20.0,
       params={"command_name": "motion", "threshold": 0.25},
     ),
-    # Regularizers. Weights start low and are raised by the curriculum: applied at
-    # full strength from step zero they dominate a policy that cannot yet track,
-    # and the cheapest way to stop being penalized is to fall over early.
+    # Regularizers. Weights start low and are raised by the curriculum. At full strength
+    # from step zero they dominate a policy that cannot yet track, and the cheapest way to
+    # stop being penalized is to fall over early
     "action_rate": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.02),
     "joint_torques": RewardTermCfg(func=mdp.joint_torques_l2, weight=-2.0e-7),
     "joint_limits": RewardTermCfg(
@@ -425,8 +425,8 @@ def g1_jump_env_cfg(
       weight=-2.0e-4,
       params={"sensor_name": "feet_ground_contact", "force_threshold": 500.0},
     ),
-    # Losing tracking has to cost more than the reward left on the table, or
-    # terminating early becomes the cheapest way out of a hard clip.
+    # Losing tracking has to cost more than the reward left on the table, or terminating
+    # early becomes the cheapest way out of a hard clip
     "termination": RewardTermCfg(func=mdp.is_terminated, weight=-100.0),
   }
 
@@ -436,7 +436,7 @@ def g1_jump_env_cfg(
 
   terminations: dict[str, TerminationTermCfg] = {
     "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
-    # Finishing the jump is success, not failure. This must stay time_out=True.
+    # Finishing the jump is success, not failure. This must stay time_out=True
     "motion_ended": TerminationTermCfg(
       func=mdp.motion_ended, params={"command_name": "motion"}, time_out=True
     ),
@@ -463,8 +463,8 @@ def g1_jump_env_cfg(
   ##
 
   curriculum: dict[str, CurriculumTermCfg] = {
-    # Tighten what counts as tracking. ASAP drives this off the running episode
-    # length; a step schedule is the same idea with one less thing to tune.
+    # Tighten what counts as tracking. ASAP drives this off the running episode length; a
+    # step schedule is the same idea with one less thing to tune
     "motion_far_threshold": CurriculumTermCfg(
       func=mdp.termination_curriculum,
       params={
@@ -576,9 +576,9 @@ def g1_jump_env_cfg(
       njmax=250,
       mujoco=MujocoCfg(timestep=0.005, iterations=10, ls_iterations=20),
     ),
-    # 0.005 * 4 gives 50 Hz control, which is the rate the clips are converted at.
+    # 0.005 * 4 gives 50 Hz control, the rate the clips are converted at
     decimation=4,
-    # Long enough for the longest clip; the motion ends the episode before this.
+    # Long enough for the longest clip. The motion ends the episode before this
     episode_length_s=6.0,
   )
 

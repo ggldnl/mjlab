@@ -1,5 +1,5 @@
-"""Toy problems the bridging architectures are tested on.
+"""One package per robot the bridging work is tested on.
 
-Each sub-package documents its robot, its skills and its scripted controller in
-its own __init__.py, and registers the tasks needed to train those skills.
+Each sub-package registers its own tasks and documents its robot, its skills and its
+composition machinery in its own __init__.py.
 """

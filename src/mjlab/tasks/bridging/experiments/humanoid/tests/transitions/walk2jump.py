@@ -1,7 +1,14 @@
 """Walk, press the button, bridge, jump.
 
+Run:
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.tests.transitions.walk2jump
+
+The jump has no precondition, so the switch fires on the panel button, or on --auto N
+headless.
+
 The jump's clip opens on a stand and its crouch is about a second and a half in, so
-`--frame` is the interesting slider here: a robot delivered to the crouch skips the
+`--frame` is the interesting slider: a robot delivered to the crouch skips the
 stand-up-and-settle a naive hand-over forces on it.
 """
 

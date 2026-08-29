@@ -1,12 +1,16 @@
-"""The walking skill: mjlab's G1 flat velocity task, wired under a different name.
+"""Walking: mjlab's G1 flat velocity task, registered under our own name.
+
+Run:
 
     uv run train Mjlab-G1-Walk --env.scene.num-envs 4096
     uv run play Mjlab-G1-Walk
 
-The registered config is the stock one, unmodified. If we ever needs walking
-to differ from mjlab's (a narrower command range or something else)
-that change belongs here, in a wrapper around `unitree_g1_flat_env_cfg`, the way
-run/run_env_cfg.py wraps it for speed.
+The registered config is the stock one, unmodified. Only the experiment name changes, so
+the checkpoints land under g1_walk where the dataset collector looks for them.
+
+If walking ever has to differ from mjlab's (a narrower command range, say), that change
+belongs here, in a wrapper around `unitree_g1_flat_env_cfg`, the way run/run_env_cfg.py
+wraps it for speed.
 """
 
 from __future__ import annotations

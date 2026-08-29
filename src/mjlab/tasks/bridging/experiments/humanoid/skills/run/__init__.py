@@ -1,15 +1,19 @@
-"""A running skill: velocity tracking at speeds the stock task does not reach.
+"""Running: velocity tracking at speeds the stock task does not reach.
+
+Run:
 
     uv run train Mjlab-G1-Run --env.scene.num-envs 4096
     uv run play Mjlab-G1-Run
 
-Same machinery as `Mjlab-Velocity-Flat-Unitree-G1`, tuned for increased forward
-speed. See run_env_cfg.py for what changed and why.
+Same machinery as Mjlab-Velocity-Flat-Unitree-G1, tuned for forward speed. See
+run_env_cfg.py for what changed.
 
-The curriculum runs through five speed stages, so this wants a long training run;
-`max_iterations` is set accordingly. Watch `Curriculum/command_vel/lin_vel_x_max`
-to see which stage it is on, and the velocity tracking reward to see whether it is
-actually holding the commanded speed or merely being asked for it.
+The curriculum climbs five speed stages, so this needs a long run and `max_iterations` is
+set accordingly. Two things to watch:
+
+    Curriculum/command_vel/lin_vel_x_max   which stage it is on
+    the velocity tracking reward           whether it holds the commanded speed or is
+                                           merely being asked for it
 """
 
 from __future__ import annotations
@@ -30,9 +34,9 @@ RUN_TASK_ID = "Mjlab-G1-Run"
 def run_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """The stock G1 velocity PPO config, under its own experiment name.
 
-  Nothing about the algorithm needs changing to go faster; what needs changing is
-  how long it gets, because the speed curriculum has five stages to climb and each
-  one is a genuinely harder control problem than the last.
+  Nothing about the algorithm needs changing to go faster. What needs changing is how long
+  it gets: the speed curriculum has five stages to climb and each is a harder control
+  problem than the last.
   """
   return replace(
     unitree_g1_ppo_runner_cfg(),

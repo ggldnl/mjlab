@@ -1,33 +1,33 @@
-"""The kicking skill: a standing G1 strikes a football at a commanded launch velocity.
+"""Kicking: a standing G1 strikes a football at a commanded launch velocity.
 
-    uv run train Mjlab-Parkour-Kick --env.scene.num-envs 4096
-    uv run play Mjlab-Parkour-Kick
+Run:
 
-The ball is a size 5 football from the asset zoo, spawned within reach of the right foot,
-so there is no locomotion in this task. The robot stands, waits out a stance window, and
-then puts the ball where it was asked to: the command is a launch speed and a heading
-offset, and the reward scores the ball's own velocity against it.
+    uv run train Mjlab-G1-Kick --env.scene.num-envs 4096
+    uv run play Mjlab-G1-Kick
 
-Unlike the jump, this is reward shaped rather than reference tracked, because there is no
-clip to track. That makes exploration the whole problem, and the design answers it with a
-three rung ladder and a curriculum that holds the kick weights at zero until standing is
-solved. See kick_env_cfg.py for the ladder and mdp.py for why each rung is shaped the way
-it is.
+The ball is a size 5 football from the asset zoo, spawned in reach of the right foot, so
+there is no locomotion here. The robot stands, waits out a stance window, then puts the
+ball where it was asked: the command is a launch speed and a heading offset, and the reward
+scores the ball's own velocity against it.
 
-Two things to check before concluding that a run has worked:
+Reward shaped, not reference tracked, because there is no clip to track. That makes
+exploration the whole problem, and the answer is a three rung ladder plus a curriculum
+holding the kick weights at zero until standing is solved. See kick_env_cfg.py for the
+ladder and mdp.py for the shape of each rung.
 
-  Metrics/kick/launch_rate tells you whether the ball is being struck at all. Everything
-  else is meaningless until this is high.
+What to check before believing a run worked:
 
-  Metrics/kick/vel_error and Metrics/kick/heading_error tell you whether the policy is
-  answering the command or has memorised one kick. A policy that ignores the command
-  still launches, and still scores on kick_quality whenever the sampled command happens
-  to land near its one kick; what it cannot do is drive these two down.
+    Metrics/kick/launch_rate      is the ball struck at all. Everything else is
+                                  meaningless until this is high
+    Metrics/kick/vel_error        is the policy answering the command or repeating one
+    Metrics/kick/heading_error    memorized kick. A policy ignoring the command still
+                                  launches and still scores on kick_quality whenever the
+                                  sampled command lands near its one kick; what it cannot
+                                  do is drive these two down
 
-This skill is not wired into the parkour arena. The corridor's bridge reads a shared
-proprioception group (see ../../../parkour/arena.py), and the kick's observation carries
-ball state that group has no channel for. Adding it means giving the arena a ball, which
-is a change to the corridor rather than to this task.
+Not wired into any composed scenario. The bridge reads a shared proprioception group and
+the kick's observation carries ball state that group has no channel for. Adding it means
+giving the arena a ball, which is a change to the scenario rather than to this task.
 """
 
 from __future__ import annotations
@@ -49,13 +49,12 @@ def kick_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
 
   Unchanged apart from the name and the length. This is a reward shaped locomotion style
   problem on the same robot with a comparably sized observation, which is what that config
-  is tuned for, and there is nothing to be gained from guessing at differences before a
-  run has shown one.
+  is tuned for.
 
-  If training plateaus, check Loss/learning_rate before touching the reward. The KL
-  adaptive schedule clamps to a floor of 1e-5 and prints as 0.00000 once it gets there,
-  which looks exactly like a reward problem and is not one. Raising desired_kl to 0.02 and
-  dropping num_learning_epochs to 3 is what has worked on this repo before.
+  If training plateaus, read Loss/learning_rate before touching the reward. The KL adaptive
+  schedule clamps to a floor of 1e-5 and prints as 0.00000 once it gets there, which looks
+  exactly like a reward problem and is not one. desired_kl 0.02 with num_learning_epochs 3
+  is what has worked here before.
   """
   return replace(
     unitree_g1_ppo_runner_cfg(),

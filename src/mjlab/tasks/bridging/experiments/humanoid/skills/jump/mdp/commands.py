@@ -1,24 +1,22 @@
-"""The goal-conditioned jump command.
+"""The goal-conditioned jump command: which clip, how far into it, and how far it goes.
 
-This is ASAP's phase-based motion tracking, with two changes.
+ASAP's phase-based motion tracking with two changes.
 
-The first is that it carries a set of clips instead of one. ASAP trains a policy per
-motion; the phase scalar in the observation is enough because there is only ever one
-thing the phase could refer to. Here five forward jumps of increasing length share a
-policy, so the observation also carries the goal: where this jump ends up. The clip
-tells the policy how to jump, the goal tells it which jump this is.
+It carries a set of clips instead of one. ASAP trains a policy per motion, so the phase
+scalar in the observation is enough: there is only ever one thing the phase could refer to.
+Here five forward jumps of increasing length share a policy, so the observation also
+carries the goal. The clip says how to jump, the goal says which jump this is.
 
-The second is stretching. Five clips is five distances, and a policy asked for 1.2 m
-would have to interpolate between two points it has only ever seen exactly. So each
-episode samples a scale, and the reference is stretched horizontally by it: every
-body gets the same time-varying horizontal offset, proportional to how far the root
-has travelled since the clip began. The pose is untouched, only the translation
-changes, which keeps the reference a physically reachable trajectory. During flight
-this is exactly a different takeoff velocity; on the ground it is a longer stride.
-The result is continuous goal coverage from a handful of clips.
+It stretches. Five clips is five distances, and a policy asked for 1.2 m would have to
+interpolate between two points it has only ever seen exactly. So each episode samples a
+scale and stretches the reference horizontally by it: every body gets the same time-varying
+horizontal offset, proportional to how far the root has travelled since the clip began. The
+pose is untouched and only the translation changes, which keeps the reference physically
+reachable. During flight that is exactly a different takeoff velocity; on the ground it is a
+longer stride. Continuous goal coverage from a handful of clips.
 
-The command exposes the same property names as mjlab's `MotionCommand`, so the
-tracking task's reward and termination terms work against it unchanged.
+The command exposes the same property names as mjlab's MotionCommand, so the tracking
+task's reward and termination terms work against it unchanged.
 """
 
 from __future__ import annotations
@@ -86,9 +84,9 @@ class JumpCommand(CommandTerm):
     self.scales = torch.ones(self.num_envs, device=self.device)
     self.motion_done = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
-    # Where the clip is pinned. Zero is the trained default (clip at the env origin,
-    # facing +x); `anchor_to_robot` moves it. `_anchored` keeps the whole transform
-    # out of the hot path until something actually uses it, since training never does.
+    # Where the clip is pinned. Zero is the trained default: clip at the env origin facing
+    # +x. anchor_to_robot moves it, and _anchored keeps the whole transform out of the hot
+    # path until something uses it, since training never does
     self.anchor_pos = torch.zeros(self.num_envs, 2, device=self.device)
     self.anchor_yaw = torch.zeros(self.num_envs, device=self.device)
     self._anchored = False
@@ -101,9 +99,9 @@ class JumpCommand(CommandTerm):
     )
     self.body_quat_relative_w[:, :, 0] = 1.0
 
-    # Adaptive sampling works over a flat (motion, time bin) grid, so a clip that
-    # keeps failing gets resampled more often for the same reason a moment within
-    # a clip does: that is where the policy is losing episodes.
+    # Adaptive sampling works over a flat (motion, time bin) grid, so a clip that keeps
+    # failing is resampled more often for the same reason a moment within a clip is: that
+    # is where the policy is losing episodes
     self.bins_per_motion = max(int(cfg.adaptive_bins), 1)
     self.num_bins = self.motion.num_motions * self.bins_per_motion
     self.bin_failed_count = torch.zeros(self.num_bins, device=self.device)
@@ -114,7 +112,7 @@ class JumpCommand(CommandTerm):
     )
     self.kernel = kernel / kernel.sum()
 
-    # Set by the viewer GUI or by `request_goal`; consumed at the next resample.
+    # Set by the viewer GUI or by request_goal, consumed at the next resample
     self._requested_goal: tuple[int, float] | None = None
 
     for name in (
@@ -167,15 +165,14 @@ class JumpCommand(CommandTerm):
   ##
   # Where the clip is pinned in the world.
   #
-  # Clips are canonicalized to start at the origin facing +x, and by default that is
-  # where the reference lives: anchor at zero, and the environment's reset teleports
-  # the robot onto it. That is right for training and wrong for composition, where
-  # the jump has to happen wherever the robot has walked to. Re-anchoring pins the
-  # clip to the robot's current pose instead of moving the robot to the clip.
+  # Clips are canonicalized to start at the origin facing +x, and by default that is where
+  # the reference lives: anchor at zero, and the reset teleports the robot onto it. Right
+  # for training, wrong for composition, where the jump has to happen wherever the robot
+  # walked to. Re-anchoring pins the clip to the robot's pose instead of moving the robot.
   #
-  # The policy cannot tell the difference. Everything it observes is either in its
-  # own body frame or expressed relative to the reference anchor, and a rigid
-  # rotation-plus-translation of the whole reference leaves all of that unchanged.
+  # The policy cannot tell the difference. Everything it observes is either in its own body
+  # frame or relative to the reference anchor, and a rigid rotation plus translation of the
+  # whole reference leaves all of that unchanged.
   ##
 
   def _rotate(self, vec: torch.Tensor) -> torch.Tensor:
@@ -229,52 +226,51 @@ class JumpCommand(CommandTerm):
   ) -> None:
     """Pin the clip to where the robot is now and wind it to `start_frame`.
 
-    What a skill's `reset` does for this skill: called when the composition hands
-    control to the jump, so the reference starts from the robot's current position
-    and heading rather than from the origin. Nothing is written to the simulation --
-    the robot is not moved, the reference is.
+    What a reset does for this skill. Called when a composition hands control to the jump,
+    so the reference starts from the robot's current position and heading rather than from
+    the origin. Nothing is written to the simulation: the robot is not moved, the reference
+    is.
 
-    `start_frame` is the entry handle. A tracking policy has no privileged beginning:
-    any frame of its clip is a state it knows how to continue from, provided the robot
-    is actually in that state when it takes over. Zero is the clip's own opening, a
-    stand, which is what a naive hand-off gets. The bottom of the crouch is a second and
-    a half further in, and a robot delivered there skips the stand-up-and-settle
-    entirely. Whoever passes a frame is responsible for the robot being in it; that is
-    the bridge's job and the reason this parameter exists.
+    `start_frame` is the entry handle. A tracking policy has no privileged beginning: any
+    frame of its clip is a state it knows how to continue from, provided the robot is
+    actually in that state when it takes over. Zero is the clip's own opening, a stand,
+    which is what a naive hand-off gets. The bottom of the crouch is a second and a half
+    further in, and a robot delivered there skips the stand-up-and-settle. Whoever passes a
+    frame is responsible for the robot being in it, which is the bridge's job and the reason
+    this parameter exists.
 
-    `at_pos` and `at_quat` pin the clip to a pose that is not the robot's current one,
-    which is what a bridge needs. The robot is not at the entry frame yet -- crossing to
-    it is the bridge's job -- so the clip has to be placed where the robot *will* be,
-    once, before the bridge starts. Anchoring again at hand-over would slide the clip
-    onto wherever the robot actually arrived, which erases the arrival error instead of
-    leaving it for the entered skill to cope with.
+    `at_pos` and `at_quat` pin the clip to a pose that is not the robot's current one, which
+    is what a bridge needs. The robot is not at the entry frame yet, so the clip is placed
+    where the robot will be, once, before the bridge starts. Anchoring again at hand-over
+    would slide the clip onto wherever the robot actually arrived, erasing the arrival error
+    instead of leaving it for the entered skill to cope with.
 
-    `at_quat` is the direction the jump should travel, not the heading the robot should
-    hold at the entry frame. The two differ by the pelvis twist the clip carries, and
-    reading `body_quat_w` after this call is how a caller finds out what the second one
-    is. See the comment on the anchor rotation below.
+    `at_quat` is the direction the jump should travel, not the heading the robot should hold
+    at the entry frame. The two differ by the pelvis twist the clip carries; read
+    `body_quat_w` after this call to get the second one. See the anchor rotation comment
+    below.
     """
     frame = int(start_frame)
     self.time_steps[env_ids] = frame
     self.motion_done[env_ids] = False
 
     root_quat = self.robot_root_quat_w[env_ids] if at_quat is None else at_quat
-    # The clip is turned so that it *travels* the way `root_quat` faces.
+    # The clip is turned so that it travels the way root_quat faces.
     #
-    # It used to be turned so that its pelvis at the entry frame faced that way, which is
-    # not the same thing and is measurably wrong. A clip is canonicalized to travel along
-    # its own +x, but its pelvis spends the whole run-up turned twelve to twenty degrees
-    # off that, because that is what a human's pelvis does while running. Aligning the
-    # pelvis therefore rotated the entire jump by that angle: a robot handed over while
-    # walking due east jumped off twenty degrees north of it, at every entry frame.
+    # It used to be turned so its pelvis at the entry frame faced that way, which is not the
+    # same thing and is measurably wrong. A clip is canonicalized to travel along its own
+    # +x, but its pelvis spends the whole run-up twelve to twenty degrees off that, because
+    # that is what a human's pelvis does while running. Aligning the pelvis rotated the
+    # entire jump by that angle: a robot handed over walking due east jumped off twenty
+    # degrees north of it, at every entry frame.
     #
-    # One thing follows and whoever delivers the robot has to know it: the robot's heading
-    # at the entry frame is *not* `root_quat`. It is the clip's pelvis at that frame,
-    # turned by the same anchor. Aim at the pose the reference actually holds, which is
-    # what `body_quat_w` reports once this returns, and not at the direction of travel.
+    # One thing follows, and whoever delivers the robot has to know it. The robot's heading
+    # at the entry frame is not root_quat. It is the clip's pelvis at that frame, turned by
+    # the same anchor. Aim at the pose the reference holds, which body_quat_w reports once
+    # this returns, not at the direction of travel
     goal_xy = self.motion.goals[self.motion_ids[env_ids], 0:2]
-    # A clip that goes nowhere -- a jump on the spot -- has no direction of travel to
-    # align, and atan2(0, 0) falls back to the clip's own +x, which is the right default.
+    # A clip that goes nowhere, a jump on the spot, has no direction of travel to align,
+    # and atan2(0, 0) falls back to the clip's own +x, which is the right default
     travel = torch.atan2(goal_xy[:, 1], goal_xy[:, 0])
     yaw = yaw_quat(root_quat)
     heading = torch.atan2(2.0 * (yaw[:, 0] * yaw[:, 3]), 1.0 - 2.0 * yaw[:, 3] ** 2)
@@ -282,8 +278,8 @@ class JumpCommand(CommandTerm):
 
     self._anchored = True
 
-    # Position last: it is measured against the freshly rotated clip origin, so the
-    # robot ends up exactly on the reference's first frame rather than near it.
+    # Position last: measured against the freshly rotated clip origin, so the robot ends up
+    # exactly on the reference's first frame rather than near it
     clip_root = self.motion.body_pos_w[self.motion_ids[env_ids], frame, 0].clone()
     rotated = quat_apply(self.anchor_yaw_quat[env_ids], clip_root)
     robot_xy = (self.robot_root_pos_w[env_ids] if at_pos is None else at_pos)[
@@ -375,9 +371,8 @@ class JumpCommand(CommandTerm):
   def goal(self) -> torch.Tensor:
     """What this jump is: (dx, dy, dyaw, apex), shape [B, 4].
 
-    The translation components carry the episode's stretch, which is the whole
-    point: this is the number the policy is asked to hit, and the number a user
-    sets at inference time.
+    The translation components carry the episode's stretch. This is the number the policy
+    is asked to hit, and the number a user sets at inference time.
     """
     g = self.motion.goals[self.motion_ids].clone()
     g[:, :2] *= self.scales.unsqueeze(-1)
@@ -396,16 +391,16 @@ class JumpCommand(CommandTerm):
   def goal_pos_w(self) -> torch.Tensor:
     """Where the reference root ends up, shape [B, 3].
 
-    The clip's last frame, not its touchdown frame, so this is the same quantity
-    the goal descriptor reports. Retargeting leaves some clips drifting a little
-    after landing, and having the number the policy is shown disagree with the
-    number it is paid for would be a slow, quiet source of bias.
+    The clip's last frame, not its touchdown frame, so this is the same quantity the goal
+    descriptor reports. Retargeting leaves some clips drifting a little after landing, and
+    the number the policy is shown disagreeing with the number it is paid for is a quiet
+    source of bias.
 
-    Pinned by the anchor like every other reference quantity above. Training never
-    notices, because there the anchor is zero and the clip is at the env origin. A
-    composition does: re-anchoring moves the whole reference to the robot and the goal
-    has to move with it, or the policy is shown a target metres away from the motion it
-    is being asked to track, and lunges at it.
+    Pinned by the anchor like every other reference quantity above. Training never notices,
+    because there the anchor is zero and the clip sits at the env origin. A composition
+    does: re-anchoring moves the whole reference to the robot and the goal has to move with
+    it, or the policy is shown a target metres away from the motion it is tracking and
+    lunges at it.
     """
     mid = self.motion_ids
     last = self.motion.time_step_total_per_motion[mid] - 1
@@ -431,10 +426,9 @@ class JumpCommand(CommandTerm):
   def goal_b(self) -> torch.Tensor:
     """The goal as the policy sees it: [dx, dy, dyaw, apex, time_to_landing].
 
-    The displacement is what is *left* to cover, in the robot's own heading frame,
-    so it stays meaningful under reference-state initialization: an environment
-    dropped in mid-flight is told how much further to go, not how far the clip
-    travels in total.
+    The displacement is what is left to cover, in the robot's own heading frame, so it
+    stays meaningful under reference-state initialization: an environment dropped in
+    mid-flight is told how much further to go, not how far the clip travels in total.
     """
     remaining_w = self.goal_pos_w - self.robot_root_pos_w
     heading = yaw_quat(self.robot_root_quat_w)
@@ -467,9 +461,9 @@ class JumpCommand(CommandTerm):
   def solve_goal(self, distance: float) -> tuple[int, float]:
     """Pick the clip and stretch that jump `distance` metres.
 
-    Every clip can serve every distance in principle; the one whose own distance is
-    closest needs the least stretching, and less stretching means a reference that
-    is closer to something a human actually did.
+    Every clip can serve every distance in principle. The one whose own distance is closest
+    needs the least stretching, and less stretching means a reference closer to something a
+    human actually did.
     """
     lo, hi = self.cfg.scale_range
     best: tuple[float, float, int, float] | None = None
@@ -477,7 +471,7 @@ class JumpCommand(CommandTerm):
       if base < 1e-6:
         continue
       scale = float(np.clip(distance / base, lo, hi))
-      # Reachability first, then how little the clip had to be distorted.
+      # Reachability first, then how little the clip had to be distorted
       candidate = (abs(scale * base - distance), abs(scale - 1.0), i, scale)
       if best is None or candidate[:2] < best[:2]:
         best = candidate
@@ -489,11 +483,13 @@ class JumpCommand(CommandTerm):
   def landing_distances(self) -> torch.Tensor:
     """How far each clip has travelled by the frame it touches down on, [num_motions].
 
-    Not the same quantity as `motion.distances`, and the difference is what an
-    obstacle cares about. A clip's goal is where its last frame is, and every clip
-    here keeps walking for half a metre after it lands: level 5 travels 1.97 m in
-    total but touches down at 1.47 m. Something that has to come down past a box
-    has to be commanded on the second number.
+    Not the same quantity as `motion.distances`, and the difference is what an obstacle
+    cares about. A clip's goal is where its last frame is, and every clip here keeps walking
+    for half a metre after it lands:
+
+        level 5   travels 1.97 m in total, touches down at 1.47 m
+
+    Anything that has to come down past a box is commanded on the second number.
     """
     starts = self.motion.root_pos_w[:, 0, :2]
     lands = self.motion.root_pos_w[
@@ -529,12 +525,12 @@ class JumpCommand(CommandTerm):
   ) -> tuple[int, float]:
     """Pick the clip and stretch that touch down `distance` metres ahead.
 
-    The counterpart of `solve_goal` for a caller that has an obstacle rather than a
-    target: what has to be cleared is decided by where the reference lands, and by
-    where it leaves the ground. `takeoff_before` is the distance to whatever must be
-    airborne over, and clips whose stretched run-up would still be on the ground at
-    that point are rejected outright rather than merely penalized -- a jump that takes
-    off on top of the box is not a worse jump, it is a trip.
+    The counterpart of `solve_goal` for a caller with an obstacle rather than a target: what
+    has to be cleared is decided by where the reference lands and where it leaves the
+    ground. `takeoff_before` is the distance to whatever must be airborne over, and clips
+    whose stretched run-up would still be on the ground at that point are rejected outright
+    rather than penalized. A jump that takes off on top of the box is not a worse jump, it
+    is a trip.
     """
     lo, hi = self.cfg.scale_range
     landings = self.landing_distances.tolist()
@@ -568,10 +564,9 @@ class JumpCommand(CommandTerm):
   def apply_goals(self, env_ids: torch.Tensor, distances: torch.Tensor) -> None:
     """Give each environment its own commanded distance and restart its clip.
 
-    The scripted counterpart to the viewer's slider: assigns per-environment goals
-    and snaps the robots onto the first frame of the clip that serves them, so an
-    evaluation can sweep distances without waiting for random resampling to happen
-    to produce the ones it wants.
+    The scripted counterpart to the viewer's slider. Assigns per-environment goals and snaps
+    the robots onto the first frame of the clip serving them, so an evaluation can sweep
+    distances without waiting for random resampling to produce the ones it wants.
     """
     solved = [self.solve_goal(float(d)) for d in distances]
     self.motion_ids[env_ids] = torch.tensor(
@@ -654,8 +649,8 @@ class JumpCommand(CommandTerm):
     """Start anywhere in the run-up, never in the air.
 
     These are the frames another policy could hand this one control at. A hand-over into
-    the middle of a flight is not a hard case but an impossible one: whatever was driving
-    would have had to launch the robot on the reference's behalf, and nothing does.
+    mid-flight is impossible rather than hard: whatever was driving would have had to launch
+    the robot on the reference's behalf, and nothing does.
 
     Uniform over the run-up rather than failure-weighted like `_adaptive_sampling`. The
     run-up is a few dozen frames of one continuous descent, so there is little for an
@@ -668,9 +663,9 @@ class JumpCommand(CommandTerm):
     motion_ids = self.motion_ids[env_ids]
     lengths = self.motion.time_step_total_per_motion[motion_ids]
     takeoff = self.takeoff_steps_all[motion_ids]
-    # A clip whose flight was never detected is stored with -1 (see dataset.py). Falling
-    # back to its whole length keeps such a clip usable; collapsing it to frame zero
-    # would look like sampling working and be a silent bug.
+    # A clip whose flight was never detected is stored with -1, see dataset.py. Falling
+    # back to its whole length keeps the clip usable. Collapsing it to frame zero would look
+    # like sampling working and be a silent bug
     last = torch.where(
       takeoff > 0, takeoff - self.cfg.pretakeoff_margin, lengths - 1
     ).clamp(min=0)
@@ -724,13 +719,13 @@ class JumpCommand(CommandTerm):
 
     if not self.cfg.reset_robot_to_clip:
       # A composition owns where the robot is. The reference is re-pinned to it and the
-      # simulation is left alone; whoever hands control to this skill decides the entry
-      # frame and calls `anchor_to_robot` itself.
+      # simulation is left alone. Whoever hands control to this skill decides the entry
+      # frame and calls anchor_to_robot itself
       self.anchor_to_robot(env_ids)
       return
 
     # Otherwise the clip goes back to the origin, because the reference is about to be
-    # written into the simulation: the robot goes to the clip, not the reverse.
+    # written into the simulation: the robot goes to the clip, not the reverse
     self.anchor_pos[env_ids] = 0.0
     self.anchor_yaw[env_ids] = 0.0
 
@@ -761,7 +756,7 @@ class JumpCommand(CommandTerm):
 
     # Momentum the reference does not have. Only meaningful alongside "pretakeoff"
     # sampling, but not gated on it: the field is empty everywhere else, and gating would
-    # hide the one case where somebody wants both.
+    # hide the one case where somebody wants both
     if self.cfg.entry_velocity_range:
       entry_list = [
         self.cfg.entry_velocity_range.get(k, (0.0, 0.0)) for k in ("x", "y", "z")
@@ -791,9 +786,9 @@ class JumpCommand(CommandTerm):
   def update_relative_body_poses(self) -> None:
     """Express the reference bodies relative to where the robot actually is.
 
-    Horizontal position and heading are taken from the robot, height and everything
-    else from the reference, so the body-tracking terms measure posture rather than
-    accumulated drift. Global position is a separate term, on the anchor.
+    Horizontal position and heading come from the robot, height and everything else from
+    the reference, so the body-tracking terms measure posture rather than accumulated
+    drift. Global position is a separate term, on the anchor.
     """
     num_bodies = len(self.cfg.body_names)
     anchor_pos = self.anchor_pos_w[:, None, :].repeat(1, num_bodies, 1)
@@ -845,8 +840,8 @@ class JumpCommand(CommandTerm):
       self.joint_vel - self.robot_joint_vel, dim=-1
     )
 
-    # Only meaningful once the jump is over, so hold the last value until then
-    # rather than averaging in the distance to a landing that has not happened.
+    # Only meaningful once the jump is over, so hold the last value until then rather than
+    # averaging in the distance to a landing that has not happened
     landed = self.has_landed
     error = self.goal_pos_error
     self.metrics["error_goal_pos"] = torch.where(
@@ -971,17 +966,16 @@ class JumpCommandCfg(CommandTermCfg):
   reset_robot_to_clip: bool = True
   """Whether a reset moves the robot onto the clip, or the clip onto the robot.
 
-  True is what training this skill needs: an episode begins by placing the robot on the
-  reference's first frame, so the two start together and the tracking reward means
-  something from the first step.
+  True is what training this skill needs. An episode begins by placing the robot on the
+  reference's first frame, so the two start together and the tracking reward means something
+  from the first step.
 
-  False is what a composition needs, and the difference is not cosmetic. In a corridor
-  the robot is wherever the previous skill left it, and an episode ending -- a fall, a
-  time-out -- resets this command like any other. With the default that reset teleports
-  the robot back onto the clip at the origin, which reads as the jump inexplicably
-  restarting from the start line halfway down the corridor. It is also silent, because
-  mjlab resets terminated environments inside `step`, so nothing in the composition ever
-  sees it happen.
+  False is what a composition needs, and the difference is not cosmetic. In a composition
+  the robot is wherever the previous skill left it, and any episode ending (a fall, a
+  time-out) resets this command like any other. With the default, that reset teleports the
+  robot back onto the clip at the origin, which reads as the jump inexplicably restarting
+  from the start line. It is also silent, because mjlab resets terminated environments
+  inside `step`, so nothing in the composition sees it happen.
   """
 
   pose_range: dict[str, tuple[float, float]] = field(default_factory=dict)
@@ -989,9 +983,9 @@ class JumpCommandCfg(CommandTermCfg):
   joint_position_range: tuple[float, float] = (-0.1, 0.1)
 
   scale_range: tuple[float, float] = (0.85, 1.15)
-  """How much a clip may be stretched horizontally. Wider is more goal coverage and
-  a less human-like reference; past roughly ±20% the takeoff stops being something
-  the recorded pose can plausibly produce."""
+  """How much a clip may be stretched horizontally. Wider means more goal coverage and a
+  less human-like reference. Past roughly 20% the takeoff stops being something the recorded
+  pose can plausibly produce."""
 
   goal_success_threshold: float = 0.25
   """Landing within this many metres of the target counts as reaching the goal."""
@@ -999,26 +993,30 @@ class JumpCommandCfg(CommandTermCfg):
   sampling_mode: Literal["adaptive", "uniform", "start", "pretakeoff"] = "adaptive"
   """Where in a clip an episode begins.
 
-  "adaptive" and "uniform" draw from the whole clip, flight included, which is what
-  learning the airborne phase needs. "start" always begins at frame zero. "pretakeoff"
-  draws only from the run-up, which is the set of frames another policy could plausibly
-  hand this one control at: nothing can deliver a robot into the middle of a flight.
+      adaptive     the whole clip, weighted toward where episodes are being lost
+      uniform      the whole clip, evenly
+      start        always frame zero
+      pretakeoff   the run-up only, which is the set of frames another policy could hand
+                   this one control at. Nothing can deliver a robot into mid-flight.
+
+  Flight has to be in the draw for the airborne phase to be learned at all, so the first
+  two are what training wants.
   """
 
   pretakeoff_margin: int = 2
   """Frames before takeoff that "pretakeoff" sampling stops at.
 
-  A start one frame before the feet leave the ground has no time to correct whatever the
+  Starting one frame before the feet leave the ground gives no time to correct whatever the
   perturbation did, so it measures the perturbation rather than the policy."""
 
   entry_velocity_range: dict[str, tuple[float, float]] = field(default_factory=dict)
   """Root linear velocity written at reset on top of the clip's own, in m/s.
 
-  `velocity_range` is symmetric noise around the reference; this is momentum the
-  reference does not have. These clips are standing jumps, so their run-up frames carry
-  almost no forward travel, and this is the only way an episode begins with any. Given in
-  the clip's frame, which during training is the world's: a reset pins the reference at
-  the origin facing +x before this is applied.
+  `velocity_range` is symmetric noise around the reference. This is momentum the reference
+  does not have. These clips are standing jumps, so their run-up frames carry almost no
+  forward travel and this is the only way an episode begins with any. Given in the clip's
+  frame, which during training is the world's, since a reset pins the reference at the
+  origin facing +x before this is applied.
 
   Empty by default, which leaves every existing task's reset unchanged."""
 

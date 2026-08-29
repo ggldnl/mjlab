@@ -1,9 +1,9 @@
-"""MDP terms for the parkour jump.
+"""MDP terms for the goal-conditioned jump.
 
-The tracking task's terms come in first and the jump-specific ones are layered on
-top, so a config can reach everything through this one namespace. The jump command
-exposes the same properties as mjlab's `MotionCommand`, which is what lets the
-tracking reward and termination terms be reused verbatim.
+The tracking task's terms come in first and the jump's are layered on top, so a config
+reaches everything through this one namespace. The jump command exposes the same properties
+as mjlab's MotionCommand, which is what lets the tracking reward and termination terms be
+reused verbatim.
 """
 
 from mjlab.tasks.tracking.mdp import *  # noqa: F401, F403

@@ -1,11 +1,13 @@
 """Reward terms for the jump.
 
-The tracking terms mjlab already ships (anchor position and orientation, relative
-body position and orientation, body velocities) cover most of ASAP's reward set and
-are used directly from the env config. Three things ASAP has that mjlab's tracking
-task does not are added here -- joint-space tracking, the feet terms that decide
-whether a landing holds, and the goal term -- along with the landing-impact penalty
-that keeps the robot from arriving at the target by falling onto it.
+The tracking terms mjlab ships (anchor position and orientation, relative body position and
+orientation, body velocities) cover most of ASAP's reward set and are used directly from the
+env config. Added here:
+
+    joint-space tracking     ASAP's teleop_joint_position and teleop_joint_velocity
+    the feet terms           what decides whether a landing holds
+    the goal term            where the jump has to end up
+    landing impact           stops the robot reaching the target by falling onto it
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ def _cmd(env: ManagerBasedRlEnv, command_name: str) -> JumpCommand:
 
 
 ##
-# Joint-space tracking (ASAP's teleop_joint_position / teleop_joint_velocity).
+# Joint-space tracking. ASAP's teleop_joint_position and teleop_joint_velocity.
 ##
 
 
@@ -58,10 +60,10 @@ def motion_joint_velocity_error_exp(
 def jump_goal_position_error_exp(
   env: ManagerBasedRlEnv, command_name: str, std: float
 ) -> torch.Tensor:
-  """Reward landing where the goal said, paid out from touchdown onward.
+  """Reward landing where the goal said, paid from touchdown onward.
 
-  Before touchdown this is zero: the jump is not over, and paying for proximity to
-  the target mid-flight would reward drifting toward it rather than jumping to it.
+  Zero before touchdown. The jump is not over, and paying for proximity mid-flight would
+  reward drifting toward the target rather than jumping to it.
   """
   command = _cmd(env, command_name)
   error = torch.square(command.goal_pos_error)
@@ -73,8 +75,8 @@ def jump_goal_success(
 ) -> torch.Tensor:
   """A sparse bonus for a landing inside the tolerance, once the clip is over.
 
-  Paid on the final step only, so it is a per-episode bonus rather than something
-  the policy can farm by sitting at the target.
+  Paid on the final step only, so it is a per-episode bonus rather than something the policy
+  can farm by sitting at the target.
   """
   command = _cmd(env, command_name)
   return ((command.goal_pos_error < threshold) & command.motion_done).float()
@@ -90,8 +92,8 @@ def feet_orientation_penalty(
 ) -> torch.Tensor:
   """Penalize feet that are not level.
 
-  A humanoid that lands on the edge of a foot does not stay standing. ASAP found
-  this term necessary for exactly the phase this task is about.
+  A humanoid landing on the edge of a foot does not stay standing. ASAP found this term
+  necessary for exactly the phase this task is about.
   """
   asset: Entity = env.scene[asset_cfg.name]
   quat = asset.data.body_link_quat_w[:, asset_cfg.body_ids]
@@ -105,9 +107,9 @@ def feet_slip_penalty(
 ) -> torch.Tensor:
   """Penalize horizontal foot velocity while the foot is loaded.
 
-  Unlike the velocity task's version this is not gated on a commanded speed: the
-  reference decides when the feet should be moving, and a foot in contact should
-  never be sliding regardless of what the jump is doing.
+  Unlike the velocity task's version, not gated on a commanded speed. The reference decides
+  when the feet should move, and a foot in contact should never slide whatever the jump is
+  doing.
   """
   asset: Entity = env.scene[asset_cfg.name]
   sensor: ContactSensor = env.scene[sensor_name]
@@ -122,8 +124,8 @@ def landing_impact_penalty(
 ) -> torch.Tensor:
   """Penalize contact force above what a controlled landing needs.
 
-  Only the excess is penalized: a jump has to push off and has to absorb, and
-  charging for all contact force would teach the policy not to leave the ground.
+  Only the excess. A jump has to push off and has to absorb, and charging for all contact
+  force teaches the policy not to leave the ground.
   """
   sensor: ContactSensor = env.scene[sensor_name]
   assert sensor.data.force is not None

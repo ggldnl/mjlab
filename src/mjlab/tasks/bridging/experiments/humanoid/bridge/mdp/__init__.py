@@ -1,10 +1,10 @@
-"""The bridge's own MDP terms: the window, what it pays, and how it ends.
+"""The bridge's MDP terms: the window, what it pays, and how it ends.
 
 ROOT_STATE_DIM is re-exported from the dataset because a state's layout is part of this
-vocabulary wherever it is read, and everything that reads one reaches for it here.
+vocabulary everywhere it is read.
 """
 
-from mjlab.tasks.bridging.experiments.humanoid.bridge.dataset.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
   ROOT_STATE_DIM as ROOT_STATE_DIM,
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import (

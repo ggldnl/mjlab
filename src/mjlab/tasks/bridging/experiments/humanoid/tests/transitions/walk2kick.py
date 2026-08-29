@@ -1,8 +1,12 @@
 """Walk up to the ball, and kick it when it comes into reach.
 
-No button: the ball is put a few metres out on the kicking foot's own line, and the switch
-fires when walking has brought it into the box the kick was trained from. Steering is still
-on the Drive sliders if the walk wanders off it.
+Run:
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.tests.transitions.walk2kick
+
+No button needed. The ball is put a few metres out on the kicking foot's own line, and the
+switch fires when walking has brought it into the box the kick was trained from. Steering
+is on the Drive sliders if the walk wanders off the line.
 """
 
 from mjlab.tasks.bridging.experiments.humanoid.tests.actors import KICK, WALK

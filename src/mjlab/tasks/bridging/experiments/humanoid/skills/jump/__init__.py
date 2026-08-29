@@ -1,20 +1,31 @@
 """A goal-conditioned jump for the Unitree G1, learned the ASAP way.
 
-    uv run --with joblib python -m mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
-    uv run train Mjlab-Humanoid-Jump --env.scene.num-envs 4096
-    uv run play Mjlab-Humanoid-Jump
+Run:
+
+    1. Fetch and convert the clips. Writes to data/asap/motions.
+
+       uv run --with joblib python -m \
+         mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
+
+    2. Train.
+
+       uv run train Mjlab-G1-Jump --env.scene.num-envs 4096
+
+    3. Watch.
+
+       uv run play Mjlab-G1-Jump
 
 ASAP (RSS 2025, https://agile.human2humanoid.com/) gets a G1 to jump by tracking a
-retargeted human jump frame by frame: reference-state initialization, a dense
-per-frame tracking reward, and termination the moment tracking is lost. That is the
-whole of stage one, and it is what produced the jumps in their videos. The delta
-action model that gives ASAP its name is stage two and is about the sim-to-real gap;
-it is not needed to make the jump happen in simulation.
+retargeted human jump frame by frame: reference-state initialization, a dense per-frame
+tracking reward, and termination the moment tracking is lost. That is all of stage one, and
+it is what produced the jumps in their videos. The delta action model that gives ASAP its
+name is stage two and is about the sim-to-real gap, not needed to make the jump happen in
+simulation.
 
-The clips ship with the repo, already retargeted to a 23-DoF G1. Five of them are
-forward jumps of increasing length, which is what turns a single-skill tracker into
-a goal-conditioned one: the policy sees the target displacement, and each episode
-stretches its clip so the reachable distances are continuous.
+The clips ship with the repo, already retargeted to a 23-DoF G1. Five of them are forward
+jumps of increasing length, which is what turns a single-skill tracker into a
+goal-conditioned one: the policy sees the target displacement, and each episode stretches
+its clip so the reachable distances are continuous.
 """
 
 from __future__ import annotations
@@ -35,19 +46,16 @@ JUMP_TASK_ID = "Mjlab-G1-Jump"
 def jump_ppo_runner_cfg(
   experiment_name: str = "g1_jump",
 ) -> RslRlOnPolicyRunnerCfg:
-  """PPO for the jump.
+  """PPO for the jump. Close to mjlab's tracking config, since this is a tracking task.
 
-  Close to mjlab's tracking config, which is the right starting point because this
-  is a tracking task. Two deliberate differences.
+  Two deliberate differences:
 
-  `init_std` is 0.6 rather than 1.0. At this action scale a unit standard deviation
-  is a large amount of noise on every joint every step, and the airborne part of the
-  motion has no time to recover from it.
-
-  `num_learning_epochs` is 4 and `desired_kl` is 0.015. The KL-adaptive schedule
-  walks the learning rate down to its 1e-5 floor on tasks with wide, mixed-unit
-  observations, and a rate stuck at the floor looks exactly like a plateau. Fewer
-  epochs is fewer chances to ratchet it down within one iteration.
+    init_std 0.6            1.0 is a lot of per-joint noise every step at this action
+                            scale, and the airborne part of the motion has no time to
+                            recover from it
+    num_learning_epochs 4   fewer chances per iteration for the KL schedule to ratchet
+    desired_kl 0.015        the learning rate down to its 1e-5 floor, where a run looks
+                            plateaued but is only crawling
   """
   return RslRlOnPolicyRunnerCfg(
     actor=RslRlModelCfg(

@@ -1,63 +1,57 @@
-"""The bridge: one policy that takes the robot from where a skill left it to where the
-next one can start.
+"""The bridge: one policy that gets the robot from where skill A stopped to where skill B
+can start.
 
-A skill is interrupted. The robot is left in whatever dynamic state that interruption
-produced, carrying whatever momentum it had, and some other skill has to take over. The
-bridge is the piece in between: given the state it inherits and a state it has to reach
-within a fixed number of steps, it produces a motion that gets there without falling over.
-What it does in the middle is its own business. Nothing scores the middle.
+Input is proprioception plus a target state (root pose, root velocities, joint angles,
+joint rates) and a countdown. Output is joint targets. Only the arrival is scored; what
+the robot does in between is free.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.dataset.dataset
-    uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate
-    uv run play Mjlab-G1-Bridge
+Run:
 
-    dataset/      where a window's endpoints come from; rollouts of the skills, so far
-    mdp/          the window, what it pays, and how it ends
-    env_cfg.py    the whole thing as an ordinary mjlab task
-    evaluate.py   a trained bridge against a statue, and against its own tolerances
-    warm_start.py         the runner, and the optional warm start from a locomotion policy
+    1. Build a dataset of states the robot can actually be in.
 
-##
-# What is different from the attempts before it
-##
+       uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.skills
 
-Everything before this one was built on LAFAN1: take a clip, cut a hole in it, ask a
-policy to fill the hole. Supervised, student-teacher, MaskedMimic, PPO -- none of them
-worked, and the diagnosis in hindsight is that the objective was wrong rather than the
-optimizer. Motion in-betweening asks a model to recover *the* motion an artist recorded
-between two frames, scored against that recording. This task does not care what happens
-between two states as long as physics allows it, so a squared error against one particular
-crossing penalizes correct answers, and the average of the ways a body can cross a hole is
-a foot through the floor.
+    2. Calibrate the arrival tolerances against that dataset. Skipping this is how a
+       robot standing still ends up scoring the same as a trained policy.
 
-Two things follow, and they are the whole of the change.
+       uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate \
+         --calibrate True
 
-**The middle is not scored.** No reference, no in-between, no reconstruction term. The
-reward is the arrival, ramped so its mass sits at the deadline, plus a wide distance kernel
-so the first half of a window has something to follow.
+       Paste the printed Tolerances(...) into mdp/commands.py.
 
-**The endpoints come from the robot, not from a corpus.** A retargeted human clip is a
-description of a motion, not a state a G1 is ever in, and a pair of them is usually an
-impossible thing to ask for. Both ends of every window here are frames of a rollout of a
-trained skill, and the pair is then constructed to be feasible rather than merely drawn.
-`dataset.py` and `mdp/commands.py` argue this at length; it is the part most likely to be
-what was actually wrong.
+    3. Train.
 
-##
-# What this deliberately does not do yet
-##
+       uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
 
-There is no kinematic stage. A reference trajectory between the two endpoints -- a
-minimum-jerk interpolation to begin with, an in-betweening transformer or a diffusion
-model later -- would turn the sparse terminal reward into a dense tracking signal, and it
-is the obvious next thing to try. It is left out here so that the first measurement is of
-the task alone: if PPO solves this without a reference, the generative stage was never
-needed, and if it does not, the reason will be legible before another moving part is added.
+    4. Score it, always next to the do-nothing baseline.
 
-There is also no chaining. The bridge is trained and measured on its own, against states
-drawn from skills rather than against skills actually running. Handing it a live
-hand-over is a different piece of work and it needs this one to exist first.
+       uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate
+
+    5. Watch it. The target is drawn as a translucent robot.
+
+       uv run play Mjlab-G1-Bridge
+
+Layout:
+
+    datasets/      where the start and target states come from
+    mdp/           the window, the reward, the terminations
+    env_cfg.py     the mjlab task
+    evaluate.py    scoring and tolerance calibration
+    warm_start.py  the runner, plus an optional actor seed from a locomotion policy
+
+Two design rules, both learned from failed attempts:
+
+  Nothing scores the middle. Earlier versions asked a model to reproduce the motion a
+  human recorded between two frames. Many motions connect two states, so a squared error
+  against one of them penalizes the others, and their average puts a foot through the
+  floor.
+
+  Endpoints come from rollouts of trained policies, never from motion capture. A
+  retargeted clip is a description, not a state the G1 is ever in, and two such frames
+  are usually an impossible pair.
+
+Not built yet: a kinematic reference stage to densify the reward, and chaining against
+live skills instead of dataset states.
 """
 
 from mjlab.rl import RslRlModelCfg, RslRlPpoAlgorithmCfg
@@ -72,22 +66,19 @@ BRIDGE_TASK_ID = "Mjlab-G1-Bridge"
 
 
 def bridge_ppo_runner_cfg() -> BridgeRunnerCfg:
-  """PPO for the bridge.
+  """PPO for the bridge. Copied from the jump: same robot, same control rate, both goal
+  conditioned.
 
-  Follows the jump's config, which is the right starting point because both are goal
-  conditioned tasks on the same robot at the same control rate.
+  Three settings that are not the rsl_rl defaults:
 
-  `init_std` is 0.6 rather than 1.0: at this action scale a unit standard deviation is a
-  lot of noise on every joint every step, and the shortest window is three tenths of a
-  second, which is not enough time to recover from it.
+    init_std 0.6            1.0 is too much per-joint noise at this action scale, and the
+                            shortest window is 0.3 s, too short to recover from it
+    num_learning_epochs 4   fewer chances per iteration for the KL schedule to ratchet
+    desired_kl 0.015        the learning rate down to rsl_rl's 1e-5 floor, where a run
+                            looks plateaued but is only crawling. Read the learning rate
+                            first when a run stalls.
 
-  `warm_start` is off by default. See warm_start.py for what it copies and why an initialization
-  is a weaker lever than a reward term.
-
-  `num_learning_epochs` is 4 against `desired_kl` 0.015 because the KL-adaptive schedule
-  walks the learning rate down to rsl_rl's 1e-5 floor on tasks with wide mixed-unit
-  observations, and a rate pinned at the floor is indistinguishable from a plateau. If a
-  run stalls, read the learning rate before reading anything else.
+  warm_start is off by default. See warm_start.py.
   """
   return BridgeRunnerCfg(
     actor=RslRlModelCfg(

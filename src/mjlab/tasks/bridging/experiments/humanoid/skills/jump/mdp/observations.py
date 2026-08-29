@@ -1,8 +1,8 @@
 """Observation terms specific to the goal-conditioned jump.
 
-Everything the tracking task already exposes (anchor error, body poses, joint
-state) is reused as-is. What is added here is the goal and the clock: what the
-policy is being asked to do, and where in the jump it currently is.
+Everything the tracking task already exposes (anchor error, body poses, joint state) is
+reused as is. What is added here is the goal and the clock: what the policy is being asked
+to do, and where in the jump it is.
 """
 
 from __future__ import annotations
@@ -27,8 +27,7 @@ def jump_goal_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
   """Remaining displacement to the landing target, in the robot's heading frame.
 
   Five numbers: dx, dy, the turn the jump makes, its apex, and the time left until
-  touchdown. This is the term that makes the policy goal-conditioned rather than
-  merely clip-conditioned.
+  touchdown. This is what makes the policy goal-conditioned rather than clip-conditioned.
   """
   return _cmd(env, command_name).goal_b
 
@@ -36,9 +35,9 @@ def jump_goal_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
 def jump_phase(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
   """Progress through the clip, as a sine/cosine pair plus the raw scalar.
 
-  ASAP feeds the raw phase. The trigonometric encoding is added because a jump has
-  sharply distinct moments (crouch, extension, flight, landing) and a single
-  saturating scalar makes them hard to separate early in training.
+  ASAP feeds the raw phase. The trigonometric encoding is added because a jump has sharply
+  distinct moments (crouch, extension, flight, landing) and a single saturating scalar makes
+  them hard to separate early in training.
   """
   phase = _cmd(env, command_name).phase
   return torch.cat(
@@ -55,7 +54,7 @@ def jump_airborne(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
 def motion_body_pos_error_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
   """Per-body reference error in the robot's frame, flattened.
 
-  ASAP gives this to the critic only (its `dif_local_rigid_body_pos`), and so do we.
+  Critic only, matching ASAP's dif_local_rigid_body_pos.
   """
   command = _cmd(env, command_name)
   error_w = command.body_pos_relative_w - command.robot_body_pos_w
