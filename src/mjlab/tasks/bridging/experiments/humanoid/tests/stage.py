@@ -67,15 +67,15 @@ from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
-from mjlab.tasks.bridging.experiments.humanoid.tests.bridge_simple import BRIDGE_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.tests.bridge_simple.env_cfg import (
+from mjlab.tasks.bridging.experiments.humanoid.bridge import BRIDGE_TASK_ID
+from mjlab.tasks.bridging.experiments.humanoid.bridge.env_cfg import (
   bridge_env_cfg,
 )
-from mjlab.tasks.bridging.experiments.humanoid.tests.bridge_simple.mdp import (
+from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp import (
   BridgeCommand,
   BridgeCommandCfg,
 )
-from mjlab.tasks.bridging.experiments.humanoid.tests.bridge_simple.motions import (
+from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp import (
   ROOT_STATE_DIM,
 )
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
