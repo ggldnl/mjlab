@@ -8,22 +8,8 @@ Run:
 The ball is a size 5 football from the asset zoo, spawned in reach of the right foot, so
 there is no locomotion here. The robot stands, waits out a stance window, then puts the
 ball where it was asked: the command is a launch speed and a heading offset, and the reward
-scores the ball's own velocity against it.
-
-##
-# Why this is a pass and not a kick
-##
-
-Because that is what the trained policy does. It keeps the foot low and pushes the ball
-away with the sole, more or less shoving it along the ground, and never lifts the leg to
-load a strike. Nothing here asked it to. The reward scores the ball's velocity and nothing
-about how the foot got there, and a low shove is the cheapest way to move a 0.425 kg ball
-to a few metres a second without unbalancing a standing humanoid, so that is what it found.
-
-That is a legitimate football skill and the task is kept for it, renamed to say what it
-actually is. `skills/kick` is the same environment with the strike moved to the toe and a
-speed requirement on the contact, which is the motion this one was originally meant to
-produce.
+scores the ball's own velocity against it. This is essentially the robot passing a ball to
+someone, not a proper kick.
 
 What to check:
 
