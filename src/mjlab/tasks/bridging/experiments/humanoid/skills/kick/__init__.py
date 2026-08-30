@@ -1,4 +1,5 @@
-"""Kicking: a standing G1 strikes a football with its toe, at a commanded launch velocity.
+"""Kicking: a standing G1 passes a football with the inside of its foot, at a commanded
+launch velocity.
 
 Run:
 
@@ -7,9 +8,10 @@ Run:
 
 The same command as the pass, a launch speed and a heading offset, and the same reward for
 answering it. What differs is the motion allowed to satisfy it. The approach is measured
-from the toe, contact made with a toe that is not moving costs, and a rung of reward is
-paid for the ball reaching the speed it was asked for. See kick_env_cfg.py for the five
-changes and mdp.py for where the toe is and how fast it has to be going.
+from the arch of the striking foot, contact made with a foot that is not moving costs, and
+a rung of reward is paid for the ball reaching the speed it was asked for. See
+kick_env_cfg.py for the five changes and mdp.py for where the strike point is and how fast
+it has to be going.
 
 This exists because the pass did not turn out to be a kick. Trained on a ball inside a
 foot's reach and scored on nothing but the ball's velocity, the policy found a low shove
