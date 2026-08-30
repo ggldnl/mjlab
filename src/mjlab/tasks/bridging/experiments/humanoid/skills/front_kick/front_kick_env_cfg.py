@@ -1,16 +1,20 @@
-"""The karate strike environment.
+"""The strike environment: track one crop of a LAFAN1 fight performance from a standstill.
 
 Run:
 
     uv run python -m \
-      mjlab.tasks.bridging.experiments.humanoid.skills.karate.dataset
-    uv run train Mjlab-G1-Karate --env.scene.num-envs 4096
-    uv run play Mjlab-G1-Karate --checkpoint-file <path>
+      mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset
+    uv run train Mjlab-G1-Front-Kick --env.scene.num-envs 4096
+    uv run play Mjlab-G1-Front-Kick --checkpoint-file <path>
 
 Same recipe as the jump: track a human clip frame by frame, start episodes anywhere in it,
 and terminate the moment tracking is lost. The clip is a strike instead of a jump, and it
 begins with half a second of held stance, so what the policy learns is to stand still and
 then break out of that stance fast enough to follow the reference.
+
+This module builds the environment for both strike tasks. One strike is one clip and one
+policy, so nothing here is conditioned on which strike it is; the punch combo is the same
+environment pointed at a different motion directory.
 
 Two things are dropped from the jump's setup, both because they are about flight and this
 motion has none.
@@ -29,6 +33,8 @@ a strike, and the poses alone do not distinguish the two.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from mjlab.asset_zoo.robots import G1_ACTION_SCALE, get_g1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
@@ -44,12 +50,14 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
+from mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset import (
+  MOTION_DIR,
+)
 from mjlab.tasks.bridging.experiments.humanoid.skills.jump import mdp
 from mjlab.tasks.bridging.experiments.humanoid.skills.jump.mdp import JumpCommandCfg
 from mjlab.tasks.bridging.experiments.humanoid.skills.jump.motion_lib import (
   discover_motion_files,
 )
-from mjlab.tasks.bridging.experiments.humanoid.skills.karate.dataset import MOTION_DIR
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
@@ -76,6 +84,9 @@ TRACKED_BODIES: tuple[str, ...] = (
   "right_wrist_yaw_link",
 )
 
+# Both hands and both feet, for both strikes. Which of the four is the striking limb is
+# something the reference already says, frame by frame, so there is nothing to gain by
+# naming it here and a task specific config to maintain if it were
 STRIKE_BODIES: tuple[str, ...] = (
   "left_wrist_yaw_link",
   "right_wrist_yaw_link",
@@ -142,27 +153,29 @@ _STAGE_1 = 24_000
 _STAGE_2 = 72_000
 
 
-def g1_karate_env_cfg(
+def g1_strike_env_cfg(
+  motion_dir: Path,
   motion_files: tuple[str, ...] | None = None,
   play: bool = False,
 ) -> ManagerBasedRlEnvCfg:
-  """Build the karate environment.
+  """Build a strike environment around one converted clip.
 
   Args:
-    motion_files: Converted npz clips. Defaults to every clip in the task's motions
-      directory.
-    play: Start every episode at the beginning of a clip, which is the standstill, drop the
-      observation noise and the pushes, and leave the reference unperturbed.
+    motion_dir: Where that task's dataset script wrote its npz.
+    motion_files: Converted npz clips. Defaults to everything in motion_dir, which for
+      these tasks is the one clip.
+    play: Start every episode at the beginning of the clip, which is the standstill, drop
+      the observation noise and the pushes, and leave the reference unperturbed.
   """
-  motion_files = motion_files or discover_motion_files(MOTION_DIR)
+  motion_files = motion_files or discover_motion_files(motion_dir)
 
   ##
   # Observations
   ##
 
   actor_terms = {
-    # Reference joint targets and phase. Which strike this is never has to be said: the
-    # reference joint targets in here are already different for each of them
+    # Reference joint targets and phase. There is one clip, so there is nothing to say
+    # about which strike this is
     "command": ObservationTermCfg(
       func=mdp.generated_commands, params={"command_name": "motion"}
     ),
@@ -394,8 +407,8 @@ def g1_karate_env_cfg(
       weight=-1.0,
       params={"sensor_name": "self_collision", "force_threshold": 10.0},
     ),
-    # A tenth of the jump's weight. The support foot pivots under every one of these
-    # strikes, and that pivot is contact with a turning foot, which is what this measures
+    # A tenth of the jump's weight. The support foot pivots under both of these strikes,
+    # and that pivot is contact with a turning foot, which is what this measures
     "feet_slip": RewardTermCfg(
       func=mdp.feet_slip_penalty,
       weight=-0.02,
@@ -545,7 +558,7 @@ def g1_karate_env_cfg(
     ),
     # 0.005 * 4 gives 50 Hz control, the rate the clips are converted at
     decimation=4,
-    # Long enough for the longest clip plus its held opening. The motion ends the episode
+    # Long enough for either clip plus its held opening. The motion ends the episode
     # before this
     episode_length_s=6.0,
   )
@@ -563,3 +576,11 @@ def g1_karate_env_cfg(
     motion_cmd.sampling_mode = "start"
 
   return cfg
+
+
+def g1_front_kick_env_cfg(
+  motion_files: tuple[str, ...] | None = None,
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """The strike environment, pointed at the front kick's clip."""
+  return g1_strike_env_cfg(MOTION_DIR, motion_files, play)

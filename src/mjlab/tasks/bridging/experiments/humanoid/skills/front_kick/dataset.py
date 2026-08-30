@@ -1,37 +1,37 @@
-"""Cut single strikes out of LAFAN1's fight performances and convert them to mjlab motions.
+"""Cut a strike out of a LAFAN1 fight performance and convert it to an mjlab motion.
 
 Run:
 
     uv run python -m \
-      mjlab.tasks.bridging.experiments.humanoid.skills.karate.dataset
+      mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset
 
-    # one clip, after moving its window
-    uv run python -m ...karate.dataset --clips "('front_kick',)"
+    # after moving the window
+    uv run python -m ...front_kick.dataset --crop.start 1180 --crop.end 1300
 
-Source CSVs are cached in data/lafan1_g1, converted motions land in data/lafan1_g1/karate,
-and both steps skip files already there.
+Source CSVs are cached in data/lafan1_g1, the converted motion lands in
+data/lafan1_g1/front_kick, and both steps skip files already there.
 
 LAFAN1 (Harvey et al., SIGGRAPH 2020) has a fight category, and Unitree publishes the whole
 set retargeted to the 29 joint G1 as one CSV per performance: root position, root quaternion
 in xyzw, then the joint angles, at 30 Hz. That is the same file the tracking task's cropping
 tools read, so a strike here is a frame range into one of those performances.
 
-What happens to each clip, in order:
+What happens to the clip, in order:
 
     0. Download the performance, unless it is already cached.
     1. Slice the frame window and scatter the CSV's joint columns into the model's own
        joint order by name.
-    2. Rotate and translate so the clip starts at the origin facing +x. The
-       pelvis heading is what is removed here, not the direction of travel, because a strike
-       goes nowhere and has no direction of travel.
-    3. Resample to the control rate and hold the first frame still for half a second, so
-       every clip starts from a standstill the policy has to launch out of.
+    2. Rotate and translate so the clip starts at the origin facing +x. The pelvis heading
+       is what is removed here, not the direction of travel, because a strike goes nowhere
+       and has no direction of travel.
+    3. Resample to the control rate and hold the first frame still for half a second, so the
+       clip starts from a standstill the policy has to launch out of.
     4. Shift the root vertically so a planted foot sits at standing foot height.
     5. Replay through MuJoCo to log every body's world pose and velocity, and record where
        the clip ends up.
 
-The windows below are starting guesses into mid-performance, the same status as the ones in
-the tracking task's manual_crop.py. Check them before trusting them:
+The window below is a starting guess into mid-performance, the same status as the ones in
+the tracking task's manual_crop.py. Check it before trusting it:
 
     uv run python src/mjlab/tasks/tracking/scripts/datasets/lafan1/interactive_crop.py \
       --data-dir data/lafan1_g1 --motion fight1_subject2
@@ -108,12 +108,12 @@ SOURCE_FPS = 30.0
 # Where the retargeted performances come from. Point --source-dir at a local copy if this
 # ever moves; nothing else here depends on the download
 LAFAN1_URL = (
-  "https://huggingface.co/datasets/unitreerobotics/LAFAN1_Retargeting_Dataset"
+  "https://huggingface.co/datasets/lvhaidong/LAFAN1_Retargeting_Dataset"
   "/resolve/main/g1/{name}.csv"
 )
 
 SOURCE_DIR = Path("data") / "lafan1_g1"
-MOTION_DIR = SOURCE_DIR / "karate"
+MOTION_DIR = SOURCE_DIR / "front_kick"
 
 # How long the reference stands still before the strike begins. Long enough that the policy
 # has to hold a stance and then break out of it, short enough not to spend the episode on it
@@ -132,14 +132,9 @@ class Crop:
   end: int
 
 
-# Three strikes off two performances. Windows of 100 to 140 frames, which is three to five
-# seconds at 30 Hz: long enough to hold a stance, strike and recover, short enough that the
-# subject has not walked off to do something else
-CLIPS: dict[str, Crop] = {
-  "front_kick": Crop("fight1_subject2", start=1200, end=1320),
-  "punch_combo": Crop("fight1_subject2", start=1600, end=1730),
-  "roundhouse": Crop("fightAndSports1_subject1", start=900, end=1030),
-}
+# 121 frames, four seconds at 30 Hz: long enough to hold a stance, kick and recover, short
+# enough that the subject has not moved on to something else
+CLIP = Crop("fight1_subject2", start=1200, end=1320)
 
 
 def download_clip(name: str, source_dir: Path) -> Path:
@@ -308,32 +303,24 @@ def convert_clip(
   return summary
 
 
-def main(
-  output_dir: Path = MOTION_DIR,
-  source_dir: Path = SOURCE_DIR,
-  output_fps: float = 50.0,
-  clips: tuple[str, ...] = (),
-  hold_s: float = STILL_HOLD_S,
-  device: str = "cuda:0",
+def convert(
+  name: str,
+  crop: Crop,
+  output_dir: Path,
+  source_dir: Path,
+  output_fps: float,
+  hold_s: float,
+  device: str,
 ) -> None:
-  """Convert the LAFAN1 fight windows into mjlab motion npz files.
+  """Convert one LAFAN1 window into an mjlab motion npz, next to a manifest.
 
-  Args:
-    output_dir: Where the npz files and the manifest are written.
-    source_dir: Where the downloaded LAFAN1 CSVs are kept.
-    output_fps: Should match the env control rate, 1 / (timestep * decimation).
-    clips: Which entries of CLIPS to convert. Empty converts all of them.
-    hold_s: How long the reference stands still before the strike.
-    device: Torch device for the replay.
+  This is the whole of a strike task's dataset script: bring up a one env scene, measure the
+  model's standing foot height, convert, and write the manifest the motion library reads.
+  Both strike tasks call it with a different window.
   """
   if device.startswith("cuda") and not torch.cuda.is_available():
     print("[WARN] CUDA unavailable, falling back to CPU.")
     device = "cpu"
-
-  wanted = clips or tuple(CLIPS)
-  unknown = [name for name in wanted if name not in CLIPS]
-  if unknown:
-    raise SystemExit(f"Unknown clip(s): {', '.join(unknown)}. Have: {', '.join(CLIPS)}")
 
   sim_cfg = SimulationCfg()
   sim_cfg.mujoco.timestep = 1.0 / output_fps
@@ -354,29 +341,45 @@ def main(
   standing_height = standing_foot_height(robot, sim, scene)
   print(f"Standing foot height in mjlab's G1: {standing_height:.4f} m")
 
-  manifest = []
-  print(f"Converting {len(wanted)} clips to {output_dir}:")
-  for name in wanted:
-    crop = CLIPS[name]
-    source = download_clip(crop.source, source_dir)
-    manifest.append(
-      convert_clip(
-        sim=sim,
-        scene=scene,
-        robot=robot,
-        joint_names=joint_names,
-        input_path=source,
-        crop=crop,
-        output_path=output_dir / f"{name}.npz",
-        output_fps=output_fps,
-        standing_height=standing_height,
-        hold_s=hold_s,
-      )
-    )
+  print(f"Converting {name} to {output_dir}:")
+  source = download_clip(crop.source, source_dir)
+  summary = convert_clip(
+    sim=sim,
+    scene=scene,
+    robot=robot,
+    joint_names=joint_names,
+    input_path=source,
+    crop=crop,
+    output_path=output_dir / f"{name}.npz",
+    output_fps=output_fps,
+    standing_height=standing_height,
+    hold_s=hold_s,
+  )
 
   manifest_path = output_dir / "manifest.json"
-  manifest_path.write_text(json.dumps(manifest, indent=2))
-  print(f"\nWrote {len(manifest)} motions and {manifest_path}")
+  manifest_path.write_text(json.dumps([summary], indent=2))
+  print(f"\nWrote {output_dir / (name + '.npz')} and {manifest_path}")
+
+
+def main(
+  output_dir: Path = MOTION_DIR,
+  source_dir: Path = SOURCE_DIR,
+  crop: Crop = CLIP,
+  output_fps: float = 50.0,
+  hold_s: float = STILL_HOLD_S,
+  device: str = "cuda:0",
+) -> None:
+  """Convert the front kick window into an mjlab motion npz file.
+
+  Args:
+    output_dir: Where the npz file and the manifest are written.
+    source_dir: Where the downloaded LAFAN1 CSVs are kept.
+    crop: The frame window to cut. Move it if the default lands on the wrong strike.
+    output_fps: Should match the env control rate, 1 / (timestep * decimation).
+    hold_s: How long the reference stands still before the kick.
+    device: Torch device for the replay.
+  """
+  convert("front_kick", crop, output_dir, source_dir, output_fps, hold_s, device)
 
 
 if __name__ == "__main__":
