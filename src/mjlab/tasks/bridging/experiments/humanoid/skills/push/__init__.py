@@ -15,14 +15,11 @@ twist, then to push.
 The goal is the twist itself, not a second command. The robot is told to travel at a
 velocity, and the crate in front of it has to travel at that velocity too.
 
-What to check before believing a run worked:
+What to check:
 
     Episode_Metrics/push_hands_contact_rate   is the crate being touched by the hands at
                                               all. Everything else is meaningless until
-                                              this is high, and a policy that walks around
-                                              the crate scores well on velocity tracking
-                                              with this near zero. One half is a one
-                                              handed push.
+                                              this is high.
     Episode_Metrics/push_body_contact_rate    did the hands-only constraint take. Should
                                               fall toward zero. High alongside a healthy
                                               displacement means the policy is paying the

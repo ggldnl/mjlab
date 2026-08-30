@@ -5,7 +5,7 @@ Run:
     uv run train Mjlab-G1-Push --env.scene.num-envs 4096
     uv run play Mjlab-G1-Push
 
-What to watch, in order of how much it tells you:
+What to watch:
 
     Episode_Metrics/push_hands_contact_rate  fraction of the hands on the crate
     Episode_Metrics/push_body_contact_rate   fraction of the episode touching it illegally
@@ -17,45 +17,18 @@ What to watch, in order of how much it tells you:
 push_hands_contact_rate separates "learning to push" from "learning to walk around a
 crate". Near zero while the velocity tracking reward climbs means the policy found the
 detour, and the fix is a larger reach_box weight, not a larger push_tracking one. Climbing
-alongside push_body_contact_rate means the policy is paying the penalty and leaning in
-anyway, and the fix is a larger body_contact weight.
+alongside push_body_contact_rate means the policy is paying the penalty, and the fix is a
+larger body_contact weight.
 
-##
-# Why this wraps the locomotion task
-##
+The default pose puts the arms out front. The velocity task's posture reward holds every
+joint near its default, so the way to hold the arms forward is to make forward the
+default rather than fight that reward with a second one. It is also the reset pose and
+the zero point of the action, so the policy begins every episode already reaching.
 
-Wrapped rather than assembled from parts, which is the opposite of what the kick does and
-for the opposite reason. The kick is a standing task with no twist, no gait and no terrain,
-so nothing carried over. Pushing is locomotion: the robot still walks, tracks a commanded
-velocity, keeps its feet clear and its torso up, and all of those terms are already tuned.
-What changes is a one metre crate in the way, and only two 3 cm spheres allowed to touch it.
-
-That constraint is the whole task. Left alone a G1 walking into a metre of cube meets it
-with shins, hips and chest, and shoving with the torso is easier to find and easier to
-balance through than shoving with two palms at the end of two arms. Three things push the
-task apart from the walk it is built on:
-
-  The default pose puts the arms out front. The velocity task's posture reward holds every
-  joint near its default, so the way to hold the arms forward is to make forward the
-  default rather than fight that reward with a second one. It is also the reset pose and
-  the zero point of the action, so the policy begins every episode already reaching.
-
-  Reach and contact are measured at the hands. The approach kernel is the distance from
-  each hand sphere to the crate's surface, not from the root. A root kernel is maximized by
-  standing chest against the crate; a hand kernel is maximized by reaching.
-
-  Everything else that touches the crate is penalized, and the goal term is gated on a hand
-  being on it. A body check no longer earns the push reward, and costs more than the
-  contact rung pays.
-
-##
-# The reward ladder
-##
+Rewards:
 
     Floor        everything mjlab's flat G1 task already pays: velocity tracking, upright,
-                 posture, foot clearance and slip, the regularizers. About six per step to
-                 a robot that is simply walking, and what the push terms are measured
-                 against.
+                 posture, foot clearance and slip, the regularizers.
     Rung one     reach_box. Dense, a kernel on each hand's distance to the crate's surface,
                  averaged over the two, reaching one when a palm is against it. Ungated, so
                  it also pulls a hand back if contact is lost.

@@ -5,7 +5,7 @@ Run:
     uv run train Mjlab-G1-Kick --env.scene.num-envs 4096
     uv run play Mjlab-G1-Kick
 
-What to watch, in order of how much it tells you:
+What to watch:
 
     Metrics/kick/launch_rate     fraction of episodes where the ball was struck at all
     Metrics/kick/vel_error       commanded minus achieved launch velocity, in m/s
@@ -18,23 +18,11 @@ and heading_error together check that the conditioning is real rather than one m
 kick: a policy ignoring the command still launches, but its errors stay flat at the spread
 of the command range instead of falling.
 
-##
-# Why this is built from parts
-##
-
-Assembled from mjlab parts rather than wrapped around the velocity task, which is the
-opposite of what the push does. Almost nothing carries over: no commanded twist, no
-terrain, and the thing being tracked is the ball rather than the robot. What is borrowed is
-the velocity task's regularizers and its upright term, which are about keeping a G1 in one
-piece and are the same problem whatever it is doing.
-
-##
-# The reward ladder
-##
+Rewards:
 
     Floor        alive, upright, posture, stay_put. Paid every step from iteration one.
                  The only thing that pays during the standing stage of the curriculum, and
-                 still the largest per-step term afterwards, which is what stops a policy
+                 still the largest per-step term afterward, which is what stops a policy
                  discovering that falling over ends the penalties.
     Rung one     approach_ball. Dense, switched off once the ball has been touched, so it
                  points at the ball rather than paying for a foot resting against it.

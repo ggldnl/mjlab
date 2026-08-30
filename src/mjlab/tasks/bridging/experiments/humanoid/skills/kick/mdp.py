@@ -1,7 +1,7 @@
 """The kick: what the robot sees, what it is paid for, and how the ball is set up.
 
 A G1 stands, a size 5 football sits in reach of its right foot, and a command says how fast
-and in which direction that ball should be travelling once struck.
+and in which direction that ball should be traveling once struck.
 
 Three ideas run through everything below.
 
@@ -9,8 +9,7 @@ The command is a launch velocity, not a target point. A ground target only pays 
 the ball has finished rolling, seconds after the action that decided where it went. A
 launch velocity is measurable at the instant of contact, which is the instant the policy
 controls. It reaches the observation as a vector in the robot's heading frame and the
-reward as the thing a struck ball's velocity is compared against. Both, or it is not
-conditioning.
+reward as the thing a struck ball's velocity is compared against.
 
 Standing comes first, and is enforced. Every episode opens with a stance window during
 which the kick terms pay nothing and disturbing the ball costs. The window's progress is an
@@ -18,13 +17,13 @@ observation, so the gate is visible to the policy rather than being an unexplain
 in the reward. The training curriculum also holds the kick weights at zero for the first
 stretch, so the first thing ever learned is how to stand still. See kick_env_cfg.py.
 
-The outcome is latched and paid per step afterwards. A one-shot bonus at contact is a
+The outcome is latched and paid per step afterward. A one-shot bonus at contact is a
 rounding error against a few hundred steps of standing reward, so it cannot compete with
 simply standing. Instead, touching the ball and launching it well each raise the floor for
 the rest of the episode, which gives a ladder the policy can climb one rung at a time:
 stand, touch the ball, send it where it was asked.
 
-The latch tracks the fastest the ball has gone, not the first time it moved. Otherwise a
+The latch tracks the fastest the ball has gone, not the first time it moved. Otherwise, a
 policy that nudges the ball before it can really kick locks that nudge in as its launch
 velocity for the whole episode, with no way back.
 """

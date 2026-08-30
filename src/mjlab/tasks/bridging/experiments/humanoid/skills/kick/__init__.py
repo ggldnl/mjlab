@@ -10,12 +10,7 @@ there is no locomotion here. The robot stands, waits out a stance window, then p
 ball where it was asked: the command is a launch speed and a heading offset, and the reward
 scores the ball's own velocity against it.
 
-Reward shaped, not reference tracked, because there is no clip to track. That makes
-exploration the whole problem, and the answer is a three rung ladder plus a curriculum
-holding the kick weights at zero until standing is solved. See kick_env_cfg.py for the
-ladder and mdp.py for the shape of each rung.
-
-What to check before believing a run worked:
+What to check:
 
     Metrics/kick/launch_rate      is the ball struck at all. Everything else is
                                   meaningless until this is high
@@ -24,10 +19,6 @@ What to check before believing a run worked:
                                   launches and still scores on kick_quality whenever the
                                   sampled command lands near its one kick; what it cannot
                                   do is drive these two down
-
-Not wired into any composed scenario. The bridge reads a shared proprioception group and
-the kick's observation carries ball state that group has no channel for. Adding it means
-giving the arena a ball, which is a change to the scenario rather than to this task.
 """
 
 from __future__ import annotations

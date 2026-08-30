@@ -6,14 +6,16 @@ Run:
       mjlab.tasks.bridging.experiments.humanoid.skills.backflip.dataset
 
     # a slower flip that travels further back
-    uv run python -m ...backflip.dataset --flight-s 0.65 --travel -0.5
+    uv run python -m \
+      mjlab.tasks.bridging.experiments.humanoid.skills.backflip.dataset \
+      --flight-s 0.65 --travel -0.5
 
 The motion lands in data/backflip.
 
 Every other skill here tracks a human clip. This one cannot: there is no retargeted G1
 backflip in ASAP, in LAFAN1 or in any of the other motion sets the tracking task pulls from,
 and a backflip is not something a crop of a walk contains. So the reference is written out
-rather than recorded, from a handful of poses and one piece of physics.
+rather than recorded, from a handful of poses.
 
 What that means in practice:
 
