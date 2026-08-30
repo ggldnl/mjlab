@@ -1,557 +1,172 @@
-"""The kick environment: a standing G1, a football in reach, and a commanded launch.
+"""The kick environment: the pass, with a strike that has to be fast to count.
 
-Run:
+A wrapper around `g1_pass_env_cfg` rather than a copy of it, the way run_env_cfg wraps the
+velocity task. Everything the pass decided about standing, latching, curricula and
+regularizers is decided once, and what is written here is only what a kick disagrees with.
 
-    uv run train Mjlab-G1-Kick --env.scene.num-envs 4096
-    uv run play Mjlab-G1-Kick
+What to watch, on top of everything the pass lists:
 
-What to watch:
-
-    Metrics/kick/launch_rate     fraction of episodes where the ball was struck at all
-    Metrics/kick/vel_error       commanded minus achieved launch velocity, in m/s
-    Metrics/kick/heading_error   aim, in radians, over the episodes that launched
-    Episode/rew_kick_quality     the goal term itself
-    Curriculum/kick_quality      whether the kick weights are on yet
-
-launch_rate separates "learning to kick" from "learning to stand near a ball". vel_error
-and heading_error together check that the conditioning is real rather than one memorized
-kick: a policy ignoring the command still launches, but its errors stay flat at the spread
-of the command range instead of falling.
-
-Rewards:
-
-    Floor        alive, upright, posture, stay_put. Paid every step from iteration one.
-                 The only thing that pays during the standing stage of the curriculum, and
-                 still the largest per-step term afterward, which is what stops a policy
-                 discovering that falling over ends the penalties.
-    Rung one     approach_ball. Dense, switched off once the ball has been touched, so it
-                 points at the ball rather than paying for a foot resting against it.
-    Rung two     ball_touched. Latched: touch once and the floor rises for the rest of the
-                 episode. Contact is the discrete event between a policy that can balance
-                 and one that can score the kick.
-    Rung three   kick_quality. Latched on the fastest the ball has gone, scored against the
-                 commanded launch velocity. This is the task.
-
-The penalties are deliberately small. On a 29-joint humanoid a penalty set that outweighs
-the positive terms makes immediate termination the highest return trajectory available,
-because a failure bootstraps zero. The tell is mean episode length falling monotonically
-from the first iteration.
+    Episode/rew_shove_cost        should rise from its early trough toward zero. While it
+                                  is large and negative the policy is still pushing,
+                                  whatever the launch metrics say
+    Episode/rew_launch_progress   the new rung. Expected to move before pass_quality does,
+                                  because it asks only for speed and not for aim
+    Metrics/pass/speed_achieved   what launch_progress is paid on, in m/s, and the number
+                                  that says whether this is a kick yet
 """
 
 from __future__ import annotations
 
 import math
 
-from mjlab.asset_zoo.objects.ball import get_ball_cfg
-from mjlab.asset_zoo.robots import G1_ACTION_SCALE, get_g1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
-from mjlab.envs.mdp import dr
-from mjlab.envs.mdp.actions import JointPositionActionCfg
-from mjlab.managers.action_manager import ActionTermCfg
-from mjlab.managers.command_manager import CommandTermCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
-from mjlab.managers.event_manager import EventTermCfg
-from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
+from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
-from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.managers.termination_manager import TerminationTermCfg
-from mjlab.scene import SceneCfg
-from mjlab.sensor import ContactMatch, ContactSensorCfg
-from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.tasks.bridging.experiments.humanoid.skills.kick import mdp
-from mjlab.terrains import TerrainEntityCfg
-from mjlab.utils.noise import UniformNoiseCfg as Unoise
-from mjlab.viewer import ViewerConfig
+from mjlab.tasks.bridging.experiments.humanoid.skills.passing.pass_env_cfg import (
+  STRIKE_STAGE,
+  W_APPROACH,
+  g1_pass_env_cfg,
+)
 
 ##
 # Where the ball goes.
 ##
 
-# Forward offset of the ball's centre from the kicking foot's site, in metres. The foot's
-# collision geoms reach about 0.09 m ahead of that site and the ball's rear surface sits one
-# radius behind its centre, so under about 0.20 m spawns the ball already touching the toe.
-# The upper end is reach: a standing G1 gets its toe out to roughly 0.45 m from the pelvis
-BALL_FORWARD_RANGE = (0.24, 0.32)
+BALL_FORWARD_RANGE = (0.32, 0.40)
+"""Forward offset of the ball's centre from the striking foot's site, in metres.
 
-# Lateral scatter about the kicking foot's own line. Small on purpose. Widen it to cover
-# the other foot's y and the policy has to choose a leg, which is a much harder problem
+Exactly the pass's 0.24 to 0.32 shifted out by the eight centimetres between the site it
+measures from and the toe this task measures from, so the gap the policy has to close is
+the same one the pass already solves. That is the point. The reach problem is not what
+makes this a kick, and the version of this task that tried to make it so is what taught the
+robot to fall over.
+
+The reasoning that failed is worth writing down, because it is seductive. Put the ball out
+at the edge of a standing robot's reach and a shove becomes impossible, so the only contact
+left is a swing. What actually happens is that `approach_toe` is a dense position kernel
+with no balance qualifier, so its maximum is wherever the ball is, and if that is at the
+edge of the reach envelope then the steepest path to it is a forward topple. The policy is
+not choosing to fall. It is following the only reaching gradient on offer, and falling is
+where that gradient ends.
+
+So the ball is kept comfortably reachable and the shove is ruled out by what it costs
+instead. See `shove_cost` in mdp.py."""
+
 BALL_LATERAL_RANGE = (-0.05, 0.05)
+"""Unchanged from the pass. Widen it to cover the other foot's line and the policy has to
+choose a leg, which is a much harder problem than the one being asked."""
 
 ##
-# What the kick is asked for.
+# What the new terms are worth.
 ##
 
-# Launch speed range in m/s. The lower end is clear of a nudge. The upper end is a guess at
-# what a balanced G1 does to a 0.425 kg ball without falling, and the first thing to lower
-# if launch_rate climbs while vel_error refuses to fall
-COMMAND_SPEED_RANGE = (1.5, 4.5)
+W_SHOVE = -1.0
+"""Cost per step of holding the ball in contact with a slow toe.
 
-# Aim, in radians off the robot's heading at reset. Wide enough that a policy ignoring the
-# command is visibly wrong in heading_error, narrow enough to stay a kick and not a pivot
-COMMAND_HEADING_RANGE = (math.radians(-25.0), math.radians(25.0))
+Large next to the pass's -0.5 early_strike, and it can be, because unlike that one this
+fires only on a contact the task is trying to rule out and a clean strike pays it for a
+step or two at most."""
 
-##
-# Posture tolerances, per joint.
-##
+W_LAUNCH = 2.0
+"""Weight of the speed rung.
 
-# Lopsided by design. The kicking leg gets room to swing and everything else is held near
-# the stance, which is how the term says "kick with the leg, not the whole body" without
-# knowing which phase the episode is in. Every joint must match exactly one pattern here or
-# the term raises at construction
-POSTURE_STD = {
-  # The kicking leg. This is where the kick actually happens
-  r"right_hip_pitch.*": 1.0,
-  r"right_hip_roll.*": 0.4,
-  r"right_hip_yaw.*": 0.4,
-  r"right_knee.*": 1.2,
-  r"right_ankle_pitch.*": 0.6,
-  r"right_ankle_roll.*": 0.2,
-  # The support leg, held close: this is what the robot is standing on
-  r"left_hip_pitch.*": 0.3,
-  r"left_hip_roll.*": 0.15,
-  r"left_hip_yaw.*": 0.15,
-  r"left_knee.*": 0.35,
-  r"left_ankle_pitch.*": 0.25,
-  r"left_ankle_roll.*": 0.1,
-  # Waist, tight, because the torso leaning is how balance is lost
-  r"waist_yaw.*": 0.3,
-  r"waist_roll.*": 0.1,
-  r"waist_pitch.*": 0.2,
-  # Arms, which counterbalance the swing and matter little otherwise
-  r".*shoulder_pitch.*": 0.4,
-  r".*shoulder_roll.*": 0.3,
-  r".*shoulder_yaw.*": 0.3,
-  r".*elbow.*": 0.4,
-  r".*wrist.*": 0.5,
-}
+Between the pass's ball_touched at 1.0 and its pass_quality at 5.0, which is where it sits
+in the ladder: touch the ball, then hit it hard, then hit it hard in the right direction."""
 
 ##
-# Curriculum.
+# How far the robot may lean.
 ##
 
-# Steps per curriculum stage. common_step_counter advances once per env step, so at the
-# default 24 steps per env per iteration this is about 300 iterations a stage: standing for
-# the first 300, half strength kick terms to 600, full after. Standing a G1 that starts in
-# its own stance keyframe is close to free, so 300 is generous
-KICK_STAGE = 300 * 24
+FELL_OVER_ANGLE = math.radians(50.0)
+"""Tilt at which the episode is called a failure. The pass allows 70.
 
-# Final weights of the three kick terms. Declared here rather than inline because the
-# curriculum ramps to exactly these, and the two drifting apart would silently leave the
-# task training at a weight nobody chose
-W_APPROACH = 1.0
-W_TOUCH = 1.0
-W_QUALITY = 5.0
+Tightened because 70 degrees leaves a wide band of deep leans that are not yet a
+termination and still collect `alive`, `stay_put` and a good part of `approach_toe`, which
+is a comfortable place for a policy to sit and the last stop before falling. A kick needs
+nothing like 50 degrees of torso tilt, and neither does standing, so nothing the task wants
+is lost by refusing it."""
 
 
 def g1_kick_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Build the kick environment.
+  """The pass environment, moved onto the toe.
 
-  Args:
-    play: Drop the observation noise and the curriculum, and leave the reward weights at
-      their final values. The episode clock goes effectively infinite as it does in every
-      other task, but what actually cycles an episode here is the ball leaving, and its
-      threshold is brought in so that a struck ball reliably crosses it. A kick happens
-      once per episode, so without that the viewer shows one kick and then a robot
-      standing next to a ball it has already dealt with.
+  Five changes and nothing else:
+
+      the ball is placed further out by the toe's own offset, so the approach is unchanged
+      `approach_ball` is measured from the toe instead of the mid-foot site
+      `shove_cost` charges for a contact made with a toe that is not moving
+      `launch_progress` pays for the ball reaching the commanded speed, aim aside
+      the lean allowed before a fall is called is tightened
+
+  The observation grows by seven numbers, which makes this a task that has to be trained
+  from scratch. The pass's checkpoint will not load into it.
   """
+  cfg = g1_pass_env_cfg(play=play)
 
-  ##
-  # Observations
-  ##
+  # The ball, further out by the toe's offset. Mutating the event's params rather than
+  # rebuilding the term, because the term also carries the placement function that squares
+  # the ball up with the striking foot, and restating that here is how the two would drift
+  # apart
+  ball = cfg.events["reset_ball"]
+  ball.params["forward_range"] = BALL_FORWARD_RANGE
+  ball.params["lateral_range"] = BALL_LATERAL_RANGE
 
-  actor_terms = {
-    "base_lin_vel": ObservationTermCfg(
-      func=mdp.builtin_sensor,
-      params={"sensor_name": "robot/imu_lin_vel"},
-      noise=Unoise(n_min=-0.3, n_max=0.3),
-    ),
-    "base_ang_vel": ObservationTermCfg(
-      func=mdp.builtin_sensor,
-      params={"sensor_name": "robot/imu_ang_vel"},
-      noise=Unoise(n_min=-0.2, n_max=0.2),
-    ),
-    "projected_gravity": ObservationTermCfg(
-      func=mdp.projected_gravity,
-      noise=Unoise(n_min=-0.05, n_max=0.05),
-    ),
-    "joint_pos": ObservationTermCfg(
-      func=mdp.joint_pos_rel,
-      params={"biased": True},
-      noise=Unoise(n_min=-0.01, n_max=0.01),
-    ),
-    "joint_vel": ObservationTermCfg(
-      func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5)
-    ),
-    "actions": ObservationTermCfg(func=mdp.last_action),
-    # The goal, in the robot's own heading frame. Without this the task is conditioned on
-    # nothing and the policy can only learn one kick
-    "command": ObservationTermCfg(
-      func=mdp.generated_commands, params={"command_name": mdp.COMMAND_NAME}
-    ),
-    # The ball. Position is what the approach aims at, velocity is what tells the policy
-    # the kick has happened and how it went
-    "ball_pos": ObservationTermCfg(
-      func=mdp.ball_pos_b, noise=Unoise(n_min=-0.02, n_max=0.02)
-    ),
-    "ball_vel": ObservationTermCfg(
-      func=mdp.ball_vel_b, noise=Unoise(n_min=-0.1, n_max=0.1)
-    ),
-    "kick_foot_pos": ObservationTermCfg(func=mdp.kick_foot_pos_b),
-    # When the kick terms turn on, and whether contact has already happened. Both are gates
-    # the reward already applies. Putting them in the observation makes them a phase the
-    # policy can act on rather than a reward that changes for no visible reason
-    "stance_phase": ObservationTermCfg(func=mdp.stance_phase),
-    "ball_contact": ObservationTermCfg(func=mdp.ball_contact),
-  }
+  # The approach, measured from the toe. Same kernel width: the gap it measures is a gap to
+  # the ball's surface either way, so the scale of the problem has not changed
+  cfg.rewards["approach_ball"] = RewardTermCfg(
+    func=mdp.approach_toe, weight=W_APPROACH, params={"std": 0.15}
+  )
+  cfg.rewards["launch_progress"] = RewardTermCfg(
+    func=mdp.launch_progress, weight=W_LAUNCH, params={"command_name": mdp.COMMAND_NAME}
+  )
+  cfg.rewards["shove_cost"] = RewardTermCfg(func=mdp.shove_cost, weight=W_SHOVE)
 
-  critic_terms = {
-    **actor_terms,
-    # True joint angles rather than the encoder biased ones
-    "joint_pos": ObservationTermCfg(func=mdp.joint_pos_rel),
-    # The latched launch velocity. Every step after a kick is paid on this rather than on
-    # anything currently visible, so a critic without it values a state it cannot see
-    "launch_velocity": ObservationTermCfg(func=mdp.launch_velocity_b),
-  }
+  cfg.terminations["fell_over"].params["limit_angle"] = FELL_OVER_ANGLE
 
-  observations = {
-    "actor": ObservationGroupCfg(
-      terms=actor_terms, concatenate_terms=True, enable_corruption=True
-    ),
-    "critic": ObservationGroupCfg(
-      terms=critic_terms, concatenate_terms=True, enable_corruption=False
-    ),
-  }
+  # The pass's curriculum entry for approach_ball is inherited and still correct: it names
+  # the reward by its key and this replaced the term under that same key.
+  #
+  # Asserted rather than assumed, because the inheritance is invisible from here: nothing
+  # in this file mentions the ramp that decides when approach_ball starts paying, and a
+  # rename on the pass's side would silently leave this task training at full weight from
+  # step zero. Play mode drops the curriculum entirely, hence the guard
+  assert play or "approach_ball" in cfg.curriculum
 
-  ##
-  # Actions
-  ##
-
-  actions: dict[str, ActionTermCfg] = {
-    "joint_pos": JointPositionActionCfg(
-      entity_name="robot",
-      actuator_names=(".*",),
-      scale=G1_ACTION_SCALE,
-      use_default_offset=True,
+  if not play:
+    # Both new terms ramp on the pass's schedule, the penalty included. An earlier version
+    # held shove_cost out of the curriculum, on the argument that a penalty arriving late
+    # is one the policy has already built a motion around. True, and it produces the
+    # opposite failure: with every positive strike term zeroed for the first stage, a
+    # penalty at full weight from step zero is the entire reward signal concerning the
+    # ball, and what gets learned in three hundred iterations is to stay away from it.
+    # Ramping together holds the ratio fixed while the ladder is climbed, which is what the
+    # ramp is for
+    cfg.curriculum["launch_progress"] = CurriculumTermCfg(
+      func=mdp.reward_weight,
+      params={
+        "reward_name": "launch_progress",
+        "weight_stages": mdp.ramp(W_LAUNCH, STRIKE_STAGE),
+      },
     )
-  }
-
-  ##
-  # Commands
-  ##
-
-  commands: dict[str, CommandTermCfg] = {
-    mdp.COMMAND_NAME: mdp.KickCommandCfg(
-      # One goal per episode. There is one kick in an episode, so a command changing halfway
-      # through would ask the policy to un-kick the ball
-      resampling_time_range=(1.0e9, 1.0e9),
-      debug_vis=True,
-      ranges=mdp.KickCommandCfg.Ranges(
-        speed=COMMAND_SPEED_RANGE,
-        heading=COMMAND_HEADING_RANGE,
-      ),
+    cfg.curriculum["shove_cost"] = CurriculumTermCfg(
+      func=mdp.reward_weight,
+      params={
+        "reward_name": "shove_cost",
+        "weight_stages": mdp.ramp(W_SHOVE, STRIKE_STAGE),
+      },
     )
-  }
 
-  ##
-  # Events
-  ##
-
-  # Order matters and is load bearing. The robot is placed first, the ball relative to
-  # where its foot ended up, and the phase tracker reads its stay-put anchor off both last
-  events: dict[str, EventTermCfg] = {
-    "reset_base": EventTermCfg(
-      func=mdp.reset_root_state_uniform,
-      mode="reset",
-      params={
-        # Yaw is free: the ball is placed in the robot's own frame, so a random heading
-        # costs nothing and stops the policy learning a world direction. Position jitter is
-        # small, since the env origins already separate the worlds and the task is about a
-        # fixed relationship between a robot and a ball
-        "pose_range": {"z": (0.0, 0.02), "yaw": (-3.14, 3.14)},
-        "velocity_range": {},
-      },
-    ),
-    "reset_robot_joints": EventTermCfg(
-      func=mdp.reset_joints_by_offset,
-      mode="reset",
-      params={
-        "position_range": (-0.03, 0.03),
-        "velocity_range": (0.0, 0.0),
-        "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
-      },
-    ),
-    "reset_ball": EventTermCfg(
-      func=mdp.reset_ball_near_foot,
-      mode="reset",
-      params={
-        "forward_range": BALL_FORWARD_RANGE,
-        "lateral_range": BALL_LATERAL_RANGE,
-      },
-    ),
-    "reset_phase": EventTermCfg(func=mdp.reset_kick_phase, mode="reset", params={}),
-    "foot_friction": EventTermCfg(
-      mode="startup",
-      func=dr.geom_friction,
-      params={
-        "asset_cfg": SceneEntityCfg(
-          "robot", geom_names=r"^(left|right)_foot[1-7]_collision$"
-        ),
-        "operation": "abs",
-        "ranges": (0.4, 1.2),
-        "shared_random": True,
-      },
-    ),
-    "encoder_bias": EventTermCfg(
-      mode="startup",
-      func=dr.encoder_bias,
-      params={"asset_cfg": SceneEntityCfg("robot"), "bias_range": (-0.01, 0.01)},
-    ),
-    "base_com": EventTermCfg(
-      mode="startup",
-      func=dr.body_com_offset,
-      params={
-        "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-        "operation": "add",
-        "ranges": {0: (-0.02, 0.02), 1: (-0.02, 0.02), 2: (-0.03, 0.03)},
-      },
-    ),
-  }
-
-  ##
-  # Rewards
-  ##
-
-  rewards: dict[str, RewardTermCfg] = {
-    # The floor. Worth about four per step to a robot that is simply standing, which is
-    # what the kick terms are measured against and what keeps an early termination from
-    # being the cheapest trajectory on offer
-    "alive": RewardTermCfg(func=mdp.is_alive, weight=1.0),
-    "upright": RewardTermCfg(
-      func=mdp.upright,
-      weight=1.0,
-      params={
-        "std": math.sqrt(0.2),
-        "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-      },
-    ),
-    "posture": RewardTermCfg(
-      func=mdp.posture,
-      weight=1.0,
-      params={
-        "std": POSTURE_STD,
-        "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
-      },
-    ),
-    "stay_put": RewardTermCfg(func=mdp.stay_put, weight=1.0, params={"std": 0.3}),
-    # The ladder. All three start at zero and are raised by the curriculum
-    "approach_ball": RewardTermCfg(
-      func=mdp.approach_ball, weight=W_APPROACH, params={"std": 0.15}
-    ),
-    "ball_touched": RewardTermCfg(func=mdp.ball_touched, weight=W_TOUCH),
-    "kick_quality": RewardTermCfg(
-      func=mdp.kick_quality,
-      weight=W_QUALITY,
-      params={"std": 1.0, "command_name": mdp.COMMAND_NAME},
-    ),
-    # Kicking before the stance window closes earns nothing, and this makes it cost
-    # something too. Kept small: it fires for as long as the ball keeps rolling, and a
-    # penalty running up a large negative over the opening second is how a policy learns
-    # that falling over early is a good idea
-    "early_kick": RewardTermCfg(func=mdp.early_disturbance, weight=-0.5),
-    # Regularizers. Small, for the reason in the module docstring
-    "action_rate": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.005),
-    "joint_limits": RewardTermCfg(
-      func=mdp.joint_pos_limits,
-      weight=-1.0,
-      params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
-    ),
-    "joint_vel": RewardTermCfg(func=mdp.joint_vel_l2, weight=-1.0e-4),
-    "joint_torques": RewardTermCfg(func=mdp.joint_torques_l2, weight=-1.0e-6),
-    "foot_slip": RewardTermCfg(
-      func=mdp.planted_foot_slip,
-      weight=-0.2,
-      params={
-        "sensor_name": mdp.FEET_GROUND_SENSOR,
-        "asset_cfg": SceneEntityCfg(
-          "robot", site_names=(mdp.SUPPORT_SITE, mdp.KICK_SITE)
-        ),
-      },
-    ),
-    "self_collisions": RewardTermCfg(
-      func=mdp.self_collision_cost,
-      weight=-1.0,
-      params={"sensor_name": "self_collision", "force_threshold": 10.0},
-    ),
-  }
-
-  ##
-  # Terminations
-  ##
-
-  terminations: dict[str, TerminationTermCfg] = {
-    "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
-    "fell_over": TerminationTermCfg(
-      func=mdp.bad_orientation, params={"limit_angle": math.radians(70.0)}
-    ),
-    "collapsed": TerminationTermCfg(
-      func=mdp.root_height_below_minimum, params={"minimum_height": 0.4}
-    ),
-    # A ball that has left the scene ends the episode, and it must stay a time out. The
-    # kick is already scored and latched by then, so calling it a failure would bootstrap
-    # zero onto the end of the best rollouts the policy ever produces.
-    #
-    # The distance is further than a good kick reaches inside an episode, so in training
-    # this is a safety net and nothing else. kick_quality is latched and paid to the end of
-    # the episode, so a threshold the ball actually crosses would end the best rollouts
-    # soonest and pay them for fewer steps than the weak ones. rsl_rl bootstraps the value
-    # on a time out, which makes that neutral in principle, but it costs nothing to not rely
-    # on the value function getting it right. Play mode brings the threshold in, because
-    # there the ball leaving is what cycles the episode
-    "ball_gone": TerminationTermCfg(
-      func=mdp.ball_out_of_range, params={"distance": 10.0}, time_out=True
-    ),
-  }
-
-  ##
-  # Curriculum
-  ##
-
-  # Standing first, literally. For the opening stage the kick terms are worth nothing, so
-  # the only reward available is the floor and the only way to collect it is to stay upright.
-  # See mdp.ramp for why there is a half strength stage in the middle
-  curriculum: dict[str, CurriculumTermCfg] = {
-    "approach_ball": CurriculumTermCfg(
-      func=mdp.reward_weight,
-      params={
-        "reward_name": "approach_ball",
-        "weight_stages": mdp.ramp(W_APPROACH, KICK_STAGE),
-      },
-    ),
-    "ball_touched": CurriculumTermCfg(
-      func=mdp.reward_weight,
-      params={
-        "reward_name": "ball_touched",
-        "weight_stages": mdp.ramp(W_TOUCH, KICK_STAGE),
-      },
-    ),
-    "kick_quality": CurriculumTermCfg(
-      func=mdp.reward_weight,
-      params={
-        "reward_name": "kick_quality",
-        "weight_stages": mdp.ramp(W_QUALITY, KICK_STAGE),
-      },
-    ),
-  }
-
-  ##
-  # Scene
-  ##
-
-  # What the kick is scored through. Primary is the whole subtree below the kicking ankle,
-  # which covers all seven foot collision geoms at once. A secondary has to resolve to a
-  # single element, so it is the ball's own collision sphere
-  foot_ball_cfg = ContactSensorCfg(
-    name=mdp.FOOT_BALL_SENSOR,
-    primary=ContactMatch(
-      mode="subtree", pattern="right_ankle_roll_link", entity="robot"
-    ),
-    secondary=ContactMatch(mode="geom", pattern="ball_collision", entity="ball"),
-    fields=("found",),
-    reduce="none",
-    num_slots=1,
-  )
-  feet_ground_cfg = ContactSensorCfg(
-    name=mdp.FEET_GROUND_SENSOR,
-    primary=ContactMatch(
-      mode="subtree",
-      pattern=r"^(left_ankle_roll_link|right_ankle_roll_link)$",
-      entity="robot",
-    ),
-    secondary=ContactMatch(mode="body", pattern="terrain"),
-    fields=("found", "force"),
-    reduce="netforce",
-    num_slots=1,
-    track_air_time=True,
-  )
-  self_collision_cfg = ContactSensorCfg(
-    name="self_collision",
-    primary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
-    secondary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
-    fields=("found", "force"),
-    reduce="none",
-    num_slots=1,
-    history_length=4,
-  )
-
-  # The ball asset's defaults are already a size 5 football, so only its spawn is given
-  # here, and even that is overwritten by the reset event on the first step. It matters only
-  # to a raw viewer that never resets
-  scene = SceneCfg(
-    terrain=TerrainEntityCfg(terrain_type="plane"),
-    entities={
-      "robot": get_g1_robot_cfg(),
-      "ball": get_ball_cfg(pos=(0.3, -0.12, mdp.BALL_RADIUS)),
-    },
-    sensors=(foot_ball_cfg, feet_ground_cfg, self_collision_cfg),
-    num_envs=1,
-    env_spacing=3.0,
-  )
-
-  cfg = ManagerBasedRlEnvCfg(
-    scene=scene,
-    observations=observations,
-    actions=actions,
-    commands=commands,
-    events=events,
-    rewards=rewards,
-    terminations=terminations,
-    curriculum=curriculum,
-    viewer=ViewerConfig(
-      origin_type=ViewerConfig.OriginType.ASSET_BODY,
-      entity_name="robot",
-      body_name="torso_link",
-      distance=3.0,
-      elevation=-10.0,
-      azimuth=120.0,
-    ),
-    sim=SimulationCfg(
-      # Do not leave this on the heuristic. The G1 puts fourteen condim=3 foot capsules on
-      # the ground, adds joint limit rows as the kicking leg reaches its stops, and the ball
-      # brings its own contacts, and the heuristic allocates far too few. The failure is
-      # quiet: MuJoCo Warp prints "nefc overflow" and then drops the constraints past the
-      # limit, so the run keeps going while the physics stops being right.
-      #
-      # Measured over a 420 iteration run at 2048 envs:
-      #
-      #     constraints per world   median 74, maximum 201
-      #
-      # This is that maximum plus half again of headroom, and matches what the G1 flat
-      # velocity task allocates. A policy that strikes the ball harder may need more, so
-      # grep a training log for "nefc overflow" before trusting a result
-      njmax=300,
-      contact_sensor_maxmatch=64,
-      mujoco=MujocoCfg(
-        timestep=0.005, iterations=10, ls_iterations=20, ccd_iterations=50
-      ),
-    ),
-    # 0.005 * 4 gives 50 Hz control, matching the other humanoid skills
-    decimation=4,
-    # One second of stance, then four to get the foot to the ball, strike it and stay
-    # standing after. Long enough that falling over following a good kick is still visibly
-    # worse than not falling over
-    episode_length_s=5.0,
-  )
-
-  if play:
-    cfg.episode_length_s = int(1e9)
-    cfg.observations["actor"].enable_corruption = False
-    # The curriculum only lowers these. Without it they sit at the final weights declared
-    # above, which is what should be watched
-    cfg.curriculum = {}
-    # With the clock effectively stopped, the ball leaving is the only thing that ends an
-    # episode, so it has to be reachable. Even the slowest command in range carries the ball
-    # past three metres, while six is a distance a weak kick can fail to reach, and then the
-    # viewer sits on one episode forever
-    cfg.terminations["ball_gone"].params["distance"] = 3.0
+  # The toe in the observation, for the reason the pass gives about its stance window. Its
+  # velocity is there because that is what shove_cost gates on, and a gate the policy
+  # cannot see is a reward that changes for no visible reason. The critic's terms were
+  # copied from the actor's when the pass built them, so the two dicts are separate objects
+  # by now and each has to be told
+  for group in ("actor", "critic"):
+    terms = cfg.observations[group].terms
+    terms["toe_pos"] = ObservationTermCfg(func=mdp.toe_pos_b)
+    terms["toe_vel"] = ObservationTermCfg(func=mdp.toe_vel_b)
+    terms["toe_height"] = ObservationTermCfg(func=mdp.toe_height)
 
   return cfg
