@@ -3,10 +3,9 @@
 Run:
 
     uv run train Mjlab-G1-Walk --env.scene.num-envs 4096
-    uv run play Mjlab-G1-Walk
 
 The registered config is the stock one, unmodified. Only the experiment name changes, so
-the checkpoints land under g1_walk where the dataset collector looks for them.
+the checkpoints land under g1_walk.
 
 If walking ever has to differ from mjlab's (a narrower command range, say), that change
 belongs here, in a wrapper around `unitree_g1_flat_env_cfg`, the way run/run_env_cfg.py

@@ -14,17 +14,6 @@ is lost. No style discriminator, no hand-designed jump reward, no standing-first
 curriculum. The reference supplies the shape of the motion and the policy only has to make
 it physical.
 
-What the earlier attempts in this folder got wrong, in those terms:
-
-  A style reward plus a goal reward asks the policy to discover the jump and imitate a
-  distribution at the same time, and neither signal is dense enough to get off the ground.
-  Tracking replaces both with a per-frame target.
-
-  A curriculum from standing spends its early budget learning to stand, a local optimum the
-  jump then has to be pushed out of. Reference-state initialization sidesteps it: a third
-  of the environments start mid-flight, so the policy sees the airborne part from the first
-  iteration.
-
 The goal conditioning is the one thing added on top of ASAP, which trains a policy per
 clip. Five forward jumps of different lengths share a policy here, the goal is in the
 observation and in the reward, and each episode stretches its clip a little so the

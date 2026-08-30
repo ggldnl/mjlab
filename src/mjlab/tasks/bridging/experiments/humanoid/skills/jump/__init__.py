@@ -17,10 +17,7 @@ Run:
 
 ASAP (RSS 2025, https://agile.human2humanoid.com/) gets a G1 to jump by tracking a
 retargeted human jump frame by frame: reference-state initialization, a dense per-frame
-tracking reward, and termination the moment tracking is lost. That is all of stage one, and
-it is what produced the jumps in their videos. The delta action model that gives ASAP its
-name is stage two and is about the sim-to-real gap, not needed to make the jump happen in
-simulation.
+tracking reward, and termination the moment tracking is lost.
 
 The clips ship with the repo, already retargeted to a 23-DoF G1. Five of them are forward
 jumps of increasing length, which is what turns a single-skill tracker into a

@@ -1,4 +1,4 @@
-"""Running: velocity tracking at speeds the stock task does not reach.
+"""Running: velocity tracking at speeds the stock walk task does not reach.
 
 Run:
 
@@ -12,8 +12,7 @@ The curriculum climbs five speed stages, so this needs a long run and `max_itera
 set accordingly. Two things to watch:
 
     Curriculum/command_vel/lin_vel_x_max   which stage it is on
-    the velocity tracking reward           whether it holds the commanded speed or is
-                                           merely being asked for it
+    the velocity tracking reward           whether it holds the commanded speed or not
 """
 
 from __future__ import annotations

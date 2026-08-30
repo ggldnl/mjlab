@@ -1,11 +1,11 @@
-"""Velocity tracking, pushed past the speed the stock task is tuned for.
+"""Velocity tracking, pushed past the speed the stock walk task is tuned for.
 
-mjlab's G1 flat velocity environment with one thing changed in earnest: how fast it is
-asked to go. The stock curriculum tops out at 3.0 m/s and spends most of its command budget
+mjlab's G1 flat velocity environment with one thing changed: how fast it is asked to go.
+The stock curriculum tops out at 3.0 m/s and spends most of its command budget
 on turning and sidestepping, because it is meant to be a general locomotion policy. This
 wants the opposite: one direction, as fast as the robot can hold it.
 
-So every change is about where the training budget goes.
+Changes:
 
     forward range      widened in stages, further and for longer than stock
     sideways, turning  narrowed. Speed and agility compete for the same actuators, and a

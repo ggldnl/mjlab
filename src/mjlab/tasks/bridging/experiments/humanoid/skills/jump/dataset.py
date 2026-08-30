@@ -6,7 +6,8 @@ Run:
       mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
 
     # the turning and sideways jumps too, which widen the goal space
-    uv run --with joblib python -m ...jump.dataset --clips all
+    uv run --with joblib python -m \
+      mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset --clips all
 
 Raw pickles are cached in data/asap/raw, converted motions land in data/asap/motions, and
 both steps skip files already there.
@@ -22,7 +23,7 @@ What happens to each clip, in order:
     0. Download the pickle from ASAP's repository, unless it is already cached.
     1. Scatter the 23 ASAP joints into mjlab's 29-joint G1 by name. The six wrist joints
        ASAP does not have stay at zero.
-    2. Canonicalize: rotate and translate so the clip starts at the origin facing +x. Every
+    2. Rotate and translate so the clip starts at the origin facing +x. Every
        clip was captured with a different world heading, and without this the jump
        direction is a different vector in every file.
     3. Shift the root vertically so the lowest foot over the clip sits exactly at standing
@@ -247,7 +248,7 @@ def _slerp_sequence(
   return out
 
 
-def _resample(motion: RawMotion, output_fps: float) -> RawMotion:
+def resample(motion: RawMotion, output_fps: float) -> RawMotion:
   """Resample to the control rate, lerping positions and slerping the root."""
   input_frames = motion.root_pos.shape[0]
   duration = (input_frames - 1) / motion.fps
@@ -278,7 +279,7 @@ def _so3_derivative(rotations: torch.Tensor, dt: float) -> torch.Tensor:
   return torch.cat([omega[:1], omega, omega[-1:]], dim=0)
 
 
-def _velocities(
+def velocities(
   motion: RawMotion,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
   dt = 1.0 / motion.fps
@@ -288,7 +289,7 @@ def _velocities(
   return root_lin_vel, root_ang_vel, joint_vel
 
 
-def _standing_foot_height(robot: Entity, sim: Simulation, scene: Scene) -> float:
+def standing_foot_height(robot: Entity, sim: Simulation, scene: Scene) -> float:
   """Height of the ankle roll link when the robot stands in its default pose."""
   robot.write_root_state_to_sim(robot.data.default_root_state.clone())
   robot.write_joint_state_to_sim(
@@ -300,7 +301,7 @@ def _standing_foot_height(robot: Entity, sim: Simulation, scene: Scene) -> float
   return float(robot.data.body_link_pos_w[0, foot_ids, 2].min().item())
 
 
-def _replay(
+def replay(
   sim: Simulation,
   scene: Scene,
   robot: Entity,
@@ -344,7 +345,7 @@ def _replay(
   return {k: np.stack(v, axis=0) for k, v in log.items()}
 
 
-def _stance_baseline(foot_height: np.ndarray, frames: int) -> float:
+def stance_baseline(foot_height: np.ndarray, frames: int) -> float:
   """The clip's own idea of a planted foot.
 
   Every clip opens with the subject standing still, so the median foot height over the first
@@ -356,7 +357,7 @@ def _stance_baseline(foot_height: np.ndarray, frames: int) -> float:
   return float(np.median(window))
 
 
-def _flight_window(foot_height: np.ndarray, baseline: float) -> tuple[int, int] | None:
+def flight_window(foot_height: np.ndarray, baseline: float) -> tuple[int, int] | None:
   """First and last frame of the flight phase, if there is one.
 
   Of all the stretches where both feet are clear of the ground, the one containing the
@@ -378,24 +379,24 @@ def _flight_window(foot_height: np.ndarray, baseline: float) -> tuple[int, int] 
   return start, end
 
 
-def _yaw(quat: np.ndarray) -> float:
+def yaw_of(quat: np.ndarray) -> float:
   w, x, y, z = quat
   return float(np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
 
 
-def _describe_jump(
+def describe_clip(
   log: dict[str, np.ndarray], foot_ids: list[int], baseline: float
 ) -> dict[str, Any]:
   root_pos = log["body_pos_w"][:, 0]
   root_quat = log["body_quat_w"][:, 0]
   foot_height = log["body_pos_w"][:, foot_ids, 2]
 
-  window = _flight_window(foot_height, baseline)
+  window = flight_window(foot_height, baseline)
   takeoff = int(window[0]) if window else -1
   land = int(window[1]) if window else -1
 
   displacement = root_pos[-1, :2] - root_pos[0, :2]
-  turn = _yaw(root_quat[-1]) - _yaw(root_quat[0])
+  turn = yaw_of(root_quat[-1]) - yaw_of(root_quat[0])
   turn = float(np.arctan2(np.sin(turn), np.cos(turn)))
   apex = float(root_pos[:, 2].max() - root_pos[0, 2])
 
@@ -421,8 +422,8 @@ def convert_clip(
 ) -> dict[str, Any]:
   device = str(sim.device)
   motion = _canonicalize(_load_asap_pkl(input_path, joint_names, device), align)
-  motion = _resample(motion, output_fps)
-  root_lin_vel, root_ang_vel, joint_vel = _velocities(motion)
+  motion = resample(motion, output_fps)
+  root_lin_vel, root_ang_vel, joint_vel = velocities(motion)
 
   foot_ids = robot.find_bodies(list(FOOT_BODY_NAMES), preserve_order=True)[0]
 
@@ -437,10 +438,10 @@ def convert_clip(
   # The bound keeps that correction from burying the landing frames in the floor. A
   # reference a couple of centimetres underground is unreachable but cheap; six
   # centimetres of it teaches the policy to slam down
-  probe = _replay(sim, scene, robot, motion, root_lin_vel, root_ang_vel, joint_vel)
+  probe = replay(sim, scene, robot, motion, root_lin_vel, root_ang_vel, joint_vel)
   probe_foot = probe["body_pos_w"][:, foot_ids, 2]
   stance_frames = int(round(output_fps))
-  baseline = _stance_baseline(probe_foot, stance_frames)
+  baseline = stance_baseline(probe_foot, stance_frames)
   z_shift = max(
     standing_height - baseline,
     (standing_height - MAX_GROUND_PENETRATION) - float(probe_foot.min()),
@@ -448,8 +449,8 @@ def convert_clip(
   motion.root_pos[:, 2] += z_shift
 
   # Second pass: the real one
-  log = _replay(sim, scene, robot, motion, root_lin_vel, root_ang_vel, joint_vel)
-  shifted_baseline = _stance_baseline(log["body_pos_w"][:, foot_ids, 2], stance_frames)
+  log = replay(sim, scene, robot, motion, root_lin_vel, root_ang_vel, joint_vel)
+  shifted_baseline = stance_baseline(log["body_pos_w"][:, foot_ids, 2], stance_frames)
 
   torch.testing.assert_close(
     torch.tensor(log["body_lin_vel_w"][:, 0]),
@@ -458,7 +459,7 @@ def convert_clip(
     atol=1e-3,
   )
 
-  jump = _describe_jump(log, foot_ids, shifted_baseline)
+  jump = describe_clip(log, foot_ids, shifted_baseline)
   payload: dict[str, Any] = {
     "fps": np.array([output_fps], dtype=np.float32),
     **log,
@@ -567,7 +568,7 @@ def main(
 
   robot: Entity = scene["robot"]
   joint_names = list(robot.joint_names)
-  standing_height = _standing_foot_height(robot, sim, scene)
+  standing_height = standing_foot_height(robot, sim, scene)
   print(f"Standing foot height in mjlab's G1: {standing_height:.4f} m")
 
   manifest = []
