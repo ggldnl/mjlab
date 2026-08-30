@@ -2,19 +2,13 @@
 
 Run:
 
-    1. Calibrate the tolerances whenever the dataset changes. No checkpoint needed. Paste
-       the printed Tolerances(...) into mdp/commands.py.
-
-       uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate \
-         --calibrate True
-
-    2. Score a checkpoint against the statue baseline.
+    1. Score a checkpoint against the statue baseline.
 
        uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate
        uv run python -m ...bridge.evaluate --episodes 2048 \
          --checkpoint logs/rsl_rl/g1_bridge/<run>/model_5000.pt
 
-    3. Measure the statue on its own, before there is anything to compare it to.
+    2. Measure the statue on its own, before there is anything to compare it to.
 
        uv run python -m ...bridge.evaluate --policies "('statue',)"
 
@@ -25,9 +19,7 @@ error:
     uv run play Mjlab-G1-Bridge
     uv run play Mjlab-G1-Bridge --agent zero    # the statue, visually
 
-##
-# Why the statue is not optional
-##
+Why the statue is not optional:
 
 The score is a mean of exponential kernels. A kernel whose tolerance is wider than the gap
 that channel has to close reads near one whatever the robot does. Enough free channels and
@@ -35,14 +27,14 @@ the metric can no longer tell a trained policy from a robot standing still. That
 here: a statue scored 0.459 against a fully trained policy's 0.454, and two training runs
 went by before anyone checked.
 
-So every number prints in a pair, and `--calibrate` measures the gap each channel actually
-has to close. A tolerance belongs at about half the median gap: wide enough that the kernel
-is informative over the range that occurs, tight enough that standing still scores near
-zero.
+So every number prints in a pair. The tolerances themselves are not taken on faith either:
+the command term measures the gap each channel actually has to close and prints the ones
+its tolerance has gone wide of, on every run. A tolerance belongs at about half the median
+gap, wide enough that the kernel is informative over the range that occurs and tight enough
+that standing still scores near zero. `--calibrate` prints that measurement over every
+channel rather than only the loose ones, for when the check fires.
 
-##
-# Reading the table
-##
+Reading the table:
 
     arrived            every channel inside tolerance at the deadline, over every episode
                        including the ones that ended on the floor. The honest number.
@@ -95,8 +87,11 @@ class EvalCfg:
   seed: int = 0
 
   calibrate: bool = False
-  """Measure the gap each channel has to close and print tolerances that fit it, instead of
-  evaluating a policy. Needs no checkpoint."""
+  """Print the gap every channel has to close, and the tolerance that fits it, instead of
+  evaluating a policy. Needs no checkpoint.
+
+  A diagnostic, not a step. The command term checks its own tolerances on every run and
+  names the ones that have gone wide; this is how to see the whole table when it does."""
 
   policies: tuple[str, ...] = ("bridge", "statue")
   """Which policies to run, one column of the table each. 'bridge' is the trained
@@ -265,6 +260,9 @@ def calibrate(env: ManagerBasedRlEnv, cfg: EvalCfg) -> None:
   Nothing is stepped. The gap at the instant a window opens is what a statue would still
   have at the deadline, which makes it the right scale for a tolerance: half of it puts the
   kernel in its informative range and standing still near zero.
+
+  The same measurement `BridgeCommand._check_tolerances` makes on every run, over every
+  channel instead of only the ones that have gone wide.
   """
   from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import (
     arrival_score,

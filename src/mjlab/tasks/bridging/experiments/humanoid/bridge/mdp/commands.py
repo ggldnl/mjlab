@@ -39,7 +39,7 @@ Three things make a pair feasible:
 
   Placement is feasible by construction. Only the target's content comes from the dataset:
   height, tilt, joint angles, every velocity. Where it sits and which way it faces are
-  chosen here, inside a set the robot can reach. The centre of that set is where a body
+  chosen here, inside a set the robot can reach. The center of that set is where a body
   carrying its current momentum would arrive; the offset around it is bounded by what a
   walk covers in the time available.
 
@@ -114,14 +114,14 @@ class Tolerances:
   carries the total high enough that a robot standing still looks like it is doing the
   task. That happened here once, a statue at 0.459 against a trained policy's 0.454.
 
-  Do not take these numbers on faith. Run this whenever the dataset changes, and paste back
-  what it prints:
+  Each sits at about half the median gap its channel has to close: wide enough that the
+  kernel is informative over the range that occurs, tight enough that standing still scores
+  near zero.
 
-      uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate \
-        --calibrate True
-
-  It measures the median gap per channel and prints half of it, which is where each of
-  these belongs.
+  That gap is a property of the dataset and of how `BridgeCommand._draw_target` pairs its
+  rows, not of anything written here, so these go stale when the dataset is rebuilt. Nothing
+  has to be rerun by hand: `BridgeCommand._check_tolerances` measures the real gaps on every
+  run and prints the ones that have gone free.
   """
 
   root_pos: float = 0.29
@@ -259,6 +259,12 @@ class BridgeCommand(CommandTerm):
     self._tightened_at = -1
     """Environment step the curriculum last moved on. `errors_now` is called from a reward
     term, and a second term reading it would advance the average twice in one step."""
+
+    self._checked = False
+    self._opening_gaps: list[torch.Tensor] = []
+    """Gaps caught at the instant windows open, held until there are enough of them to take
+    a median. Only `_check_tolerances` touches either."""
+
     self.state_dim = self.dataset.states.shape[1]
 
     # The window. target is a dataset row placed in this environment's world, deadline is
@@ -391,6 +397,7 @@ class BridgeCommand(CommandTerm):
     `CommandTerm.reset` picks it up. `_update_metrics` never touches those entries.
     """
     errors = channel_errors(self.state_now(), self.target, self.num_joints)
+    self._check_tolerances(errors)
 
     at_deadline = self.step == self.deadline
     if bool(at_deadline.any()):
@@ -411,6 +418,57 @@ class BridgeCommand(CommandTerm):
         self.metrics[f"err_{name}"] = self.final[:, index].clone()
 
     return errors
+
+  def _check_tolerances(self, errors: torch.Tensor) -> None:
+    """Print, once per run, any tolerance wide enough that its channel is free.
+
+    A tolerance above the gap that channel has to close scores near one from the start,
+    carries no gradient, and lifts the total enough that a robot standing still looks like
+    it is doing the task. The gap is set by the dataset and by the pairing in
+    `_draw_target`, so rebuilding the dataset moves it out from under the numbers in
+    `Tolerances` with nothing to say so. That is how a statue at 0.459 sat next to a trained
+    policy's 0.454 for two training runs.
+
+    Measured here and not in the dataset builder, because the builder only writes rows. What
+    decides the gap is the random heading, the `transit_time` rejection over `attempts`
+    candidates and the spread disc, and all three live on this side.
+
+    Read at the step a window opens, which is the gap a statue would still have at its
+    deadline and so the scale a tolerance belongs at. Windows open a few environments at a
+    time, so gaps are collected until there are enough for a median.
+
+    Held until the curriculum has finished ramping. At spread zero every target sits where
+    the robot is already headed, and gaps measured there are small enough to flag every
+    tolerance in the file on every run. Play and evaluation configs carry no curriculum, so
+    there this runs within the first few seconds.
+    """
+    if self._checked or self.spread() < 0.99:
+      return
+
+    at_open = self.step == 1
+    if bool(at_open.any()):
+      self._opening_gaps.append(errors[at_open].clone())
+    if sum(g.shape[0] for g in self._opening_gaps) < 256:
+      return
+
+    gaps = torch.cat(self._opening_gaps).median(dim=0).values
+    self._opening_gaps = []
+    self._checked = True
+
+    loose = self.tolerances > 0.75 * gaps
+    if not bool(loose.any()):
+      return
+    print(
+      "[bridge] tolerances wide against the gap their channel has to close, which makes "
+      "the channel free. Half the measured gap is where each belongs:"
+    )
+    for index, name in enumerate(CHANNELS):
+      if bool(loose[index]):
+        gap = float(gaps[index])
+        print(
+          f"  {name:<14} tolerance {float(self.tolerances[index]):.2f}"
+          f"   median gap {gap:.2f}   belongs at {gap / 2.0:.2f}"
+        )
 
   def _tighten(self, arrived_errors: torch.Tensor) -> None:
     """Move each channel's reward tolerance toward what the policy is currently missing by.
@@ -548,7 +606,7 @@ class BridgeCommand(CommandTerm):
       stretched, (chosen * self.fps).ceil().long().clamp(min=1), deadline
     )
 
-    # Where it goes. The centre of the disc is where a body would be if it changed
+    # Where it goes. The center of the disc is where a body would be if it changed
     # velocity steadily from the one it has to the one asked for, which is the placement a
     # window produces when nothing has gone wrong. The offset around it is the curriculum:
     # at spread zero every target sits on that spot

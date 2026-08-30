@@ -9,25 +9,22 @@ Run:
 
     1. Build a dataset of states the robot can actually be in.
 
-       uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.skills
+      # The skills dataset is built from rollouts of the actual skills
+      uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.skills
 
-    2. Calibrate the arrival tolerances against that dataset. Skipping this is how a
-       robot standing still ends up scoring the same as a trained policy.
+      # The tracker dataset is built from motion captured data: more consistent
+      # (we know if a motion is feasible) and more general (independent of skill pool)
+      uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker
 
-       uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate \
-         --calibrate True
-
-       Paste the printed Tolerances(...) into mdp/commands.py.
-
-    3. Train.
+    2. Train.
 
        uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
 
-    4. Score it, always next to the do-nothing baseline.
+    3. Score it, always next to the do-nothing baseline.
 
        uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate
 
-    5. Watch it. The target is drawn as a translucent robot.
+    4. Watch it. The target is drawn as a translucent robot.
 
        uv run play Mjlab-G1-Bridge
 
@@ -36,7 +33,7 @@ Layout:
     datasets/      where the start and target states come from
     mdp/           the window, the reward, the terminations
     env_cfg.py     the mjlab task
-    evaluate.py    scoring and tolerance calibration
+    evaluate.py    scoring against the do-nothing baseline
     warm_start.py  the runner, plus an optional actor seed from a locomotion policy
 
 Two design rules, both learned from failed attempts:
