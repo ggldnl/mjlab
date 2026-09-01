@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -188,6 +189,8 @@ def run_sim(
   input_fps,
   output_fps,
   output_name,
+  output_dir,
+  upload_to_wandb,
   render,
   line_range,
   renderer: OffscreenRenderer | None = None,
@@ -305,60 +308,72 @@ def run_sim(
         ):
           log[k] = np.stack(log[k], axis=0)
 
-        print("Saving to /tmp/motion.npz...")
-        np.savez("/tmp/motion.npz", **log)
-
-        print("Uploading to Weights & Biases...")
-        import wandb
-
-        COLLECTION = output_name
-        run = wandb.init(project="csv_to_npz", name=COLLECTION)
-        print(f"[INFO]: Logging motion to wandb: {COLLECTION}")
-        REGISTRY = "motions"
-        logged_artifact = run.log_artifact(
-          artifact_or_path="/tmp/motion.npz", name=COLLECTION, type=REGISTRY
-        )
-        run.link_artifact(
-          artifact=logged_artifact,
-          target_path=f"wandb-registry-{REGISTRY}/{COLLECTION}",
-        )
-        print(f"[INFO]: Motion saved to wandb registry: {REGISTRY}/{COLLECTION}")
+        output_file = output_dir / f"{output_name}.npz"
+        print(f"Saving to {output_file}...")
+        np.savez(output_file, **log)
 
         if render:
           import mediapy as media
 
+          video_file = output_dir / f"{output_name}.mp4"
           print("Creating video...")
-          media.write_video("./motion.mp4", frames, fps=output_fps)
+          media.write_video(video_file, frames, fps=output_fps)
 
-          print("Logging video to wandb...")
-          wandb.log({"motion_video": wandb.Video("./motion.mp4", format="mp4")})
+        if upload_to_wandb:
+          print("Uploading to Weights & Biases...")
+          import wandb
 
-        wandb.finish()
+          collection = output_name
+          run = wandb.init(project="csv_to_npz", name=collection)
+          print(f"[INFO]: Logging motion to wandb: {collection}")
+          registry = "motions"
+          logged_artifact = run.log_artifact(
+            artifact_or_path=output_file, name=collection, type=registry
+          )
+          run.link_artifact(
+            artifact=logged_artifact,
+            target_path=f"wandb-registry-{registry}/{collection}",
+          )
+          print(f"[INFO]: Motion saved to wandb registry: {registry}/{collection}")
+
+          if render:
+            print("Logging video to wandb...")
+            wandb.log({"motion_video": wandb.Video(video_file, format="mp4")})
+
+          wandb.finish()
 
 
 def main(
   input_file: str,
   output_name: str,
+  output_dir: Path | None = None,
   input_fps: float = 30.0,
   output_fps: float = 50.0,
   device: str = "cuda:0",
   render: bool = False,
+  upload_to_wandb: bool = False,
   line_range: tuple[int, int] | None = None,
 ):
   """Replay motion from CSV file and output to npz file.
 
   Args:
     input_file: Path to the input CSV file.
-    output_name: Path to the output npz file.
+    output_name: Name of the output npz file, without the extension.
+    output_dir: Directory for the output npz file. Defaults to the CSV's directory.
     input_fps: Frame rate of the CSV file.
     output_fps: Desired output frame rate.
     device: Device to use.
     render: Whether to render the simulation and save a video.
+    upload_to_wandb: Whether to upload the output to Weights & Biases.
     line_range: Range of lines to process from the CSV file.
   """
   if device.startswith("cuda") and not torch.cuda.is_available():
     print("[WARNING]: CUDA is not available. Falling back to CPU. This may be slow.")
     device = "cpu"
+
+  if output_dir is None:
+    output_dir = Path(input_file).parent
+  output_dir.mkdir(parents=True, exist_ok=True)
 
   sim_cfg = SimulationCfg()
   sim_cfg.mujoco.timestep = 1.0 / output_fps
@@ -426,6 +441,8 @@ def main(
     input_file=input_file,
     output_fps=output_fps,
     output_name=output_name,
+    output_dir=output_dir,
+    upload_to_wandb=upload_to_wandb,
     render=render,
     line_range=line_range,
     renderer=renderer,
