@@ -1,28 +1,37 @@
-"""The bridging task, as an ordinary mjlab RL environment.
+"""The bridge as an ordinary mjlab RL environment.
 
-Run:
+    observations   actor and critic, same terms, differing only in noise
+    actions        29 joint position targets, G1 per-joint action scale
+    rewards        mdp/rewards.py
+    terminations   mdp/terminations.py
+    command        mdp/commands.py, one window per episode
+    events         none. The command term places the robot; two writers would race
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.skills
+Run
+---
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker
     uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
     uv run play Mjlab-G1-Bridge
 
-Being ordinary is the point. A bridge is a policy driving a robot through a simulator, so
-the failures that killed the kinematic attempts (a foot through the floor, a body hovering
-where the recording jumped, a pose averaged out of two incompatible crossings) cannot be
-expressed here at all.
+Being an ordinary RL task is the point. A bridge is a policy driving a robot through a
+simulator, so the failures that killed the kinematic attempts cannot be expressed here at
+all: a foot through the floor, a body hovering where the recording jumped, a pose averaged
+out of two incompatible crossings.
 
-Two observation groups, actor and critic, differing only in noise. One thing about them is
-not standard for this repository:
+Observations
+------------
 
-  base_lin_vel is in the actor group, not just the critic's. The locomotion tasks privilege
-  it because hardware cannot measure it. Here the bridge is asked to arrive carrying a
-  particular momentum, so a policy told the target velocity but not its own is closing a
-  gap it cannot see. The previous version came out at 0.41 root velocity error against a
-  standing robot's 0.56. Estimating velocity from an acceleration history is a separate
-  problem, for a student distilled from this teacher later.
+`base_lin_vel` is in the actor group, not only the critic's. That is not this repo's
+convention: the locomotion tasks keep it privileged because hardware cannot measure it. Here
+the bridge has to arrive carrying a particular momentum, so a policy told the target
+velocity but not its own is closing a gap it cannot see. Measured 0.41 root velocity error
+against a standing robot's 0.56. Estimating velocity from an acceleration history is a
+separate problem, for a student distilled from this teacher later.
 
 Neither group carries anything about the middle of the window. There is no reference to
-observe, which is what makes this a bridge and not a tracker.
+observe, which is what makes this a bridge and not a tracker. `mdp.guidance` reads the
+recorded crossing, but it is a reward, not an input.
 """
 
 from __future__ import annotations
@@ -47,7 +56,6 @@ from mjlab.tasks.bridging.experiments.humanoid.bridge import mdp
 from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
   DEFAULT_DATASET,
 )
-from mjlab.tasks.velocity import mdp as velocity_mdp
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
@@ -57,38 +65,37 @@ FOOT_BODIES = ("left_ankle_roll_link", "right_ankle_roll_link")
 FOOT_SITES = ("left_foot", "right_foot")
 FEET_CONTACT = "feet_ground_contact"
 
-MAX_DEADLINE_S = 4.0
-"""Longest window the episode has to fit, in seconds.
+MAX_DEADLINE_S = 2.0
+"""Longest window the episode has to fit, in seconds. A backstop that never fires.
 
-Longer than `deadline_range` allows, because a pair that does not fit the deadline it drew
-gets the deadline stretched rather than being thrown away, and a stretched window runs to
-about three seconds. Only a backstop; `deadline_reached` is what ends a window."""
+`deadline_reached` is what ends a window, and no window outlives
+`BridgeCommandCfg.duration_s_range`, so this sits above that range with room to spare."""
 
 
 def bridge_env_cfg(
   play: bool = False,
   split: str = "train",
   dataset_path: Path = DEFAULT_DATASET,
-  leaving: tuple[str, ...] | None = None,
-  entering: tuple[str, ...] | None = None,
+  sources: tuple[str, ...] | None = None,
 ) -> ManagerBasedRlEnvCfg:
-  """The bridging environment.
+  """Build the bridging environment.
 
-  `leaving` and `entering` restrict which skills the start and the target may come from.
-  None means any skill in the dataset, which is the default: the goal is one bridge for the
-  whole pool. Set them to study a single pair.
+  Args:
+    play: no observation noise, no start perturbation, no episode length cap.
+    split: "train" or "eval". The split is by recording environment, not by frame.
+    dataset_path: which corpus to draw windows from.
+    sources: restrict windows to these skills or clips. None means any, which is the
+      default: the goal is one bridge for the whole pool. Set it to study one skill.
   """
   command = mdp.BridgeCommandCfg(
     entity_name="robot",
     dataset_path=dataset_path,
     split=split,
-    leaving=leaving,
-    entering=entering,
+    sources=sources,
     # A window is drawn on reset, never mid-episode. One that changed halfway through
     # would be two questions scored as one
     resampling_time_range=(1.0e9, 1.0e9),
     start_noise=0.0 if play else 1.0,
-    curriculum_steps=0 if play else 60_000,
     debug_vis=True,
   )
 
@@ -141,9 +148,8 @@ def bridge_env_cfg(
     )
   }
 
-  # Air time and slip both need to know when a foot is on the floor. Copied from the
-  # jump's config so the two tasks agree on what a foot contact is. track_air_time is what
-  # makes feet_air_time readable at all
+  # Slip needs to know when a foot is on the floor. Copied from the jump's config so the two
+  # tasks agree on what a foot contact is.
   feet_ground_cfg = ContactSensorCfg(
     name=FEET_CONTACT,
     primary=ContactMatch(
@@ -165,12 +171,24 @@ def bridge_env_cfg(
     "arrival": RewardTermCfg(
       func=mdp.arrival, weight=8.0, params={"command_name": COMMAND, "sharpness": 3.0}
     ),
-    # The gradient for the first half of a window, nothing more. Well below arrival on
-    # purpose: loitering near the target must never pay better than matching it
+    # A broad full-state gradient for the first half of a window. It uses the same channels
+    # as arrival, so crouching and arm posture are never opposed by a locomotion prior.
     "approach": RewardTermCfg(
-      func=mdp.approach,
-      weight=1.0,
-      params={"command_name": COMMAND, "pos_std": 1.5, "ori_std": 1.0},
+      func=mdp.approach, weight=1.0, params={"command_name": COMMAND}
+    ),
+    # The shaping, and the only thing this task has that the plain bridge does not. Dense,
+    # on every step, and gone by `BridgeCommandCfg.guide_steps`, after which the two tasks
+    # are the same.
+    #
+    # Two is a per-step rate against a per-step arrival that is near zero for most of a
+    # window, so while it is at full weight this is the largest thing in the reward over the
+    # stretch that has no other signal. That is what a term meant to lead a search has to
+    # be worth, and it is also why it has to go away: at full weight for the whole run it
+    # would be the objective
+    "guidance": RewardTermCfg(
+      func=mdp.guidance,
+      weight=2.0,
+      params={"command_name": COMMAND, "tolerance_scale": 4.0},
     ),
     # Small and positive, so no step of any episode is worth nothing at all. See
     # mdp/rewards.py on why every arrival term here is positive
@@ -188,39 +206,6 @@ def bridge_env_cfg(
     # a huge acceleration. Weighted well under action_rate because the quantity it squares
     # is several times larger for the same motion
     "action_acc": RewardTermCfg(func=base_mdp.action_acc_l2, weight=-2e-3),
-    # Pays for a foot spending a normal step's worth of time off the ground. A hop is many
-    # contacts of a few tens of milliseconds, under threshold_min, so it scores nothing: a
-    # walking gait can collect this and a hopping one cannot. command_name is None because
-    # the velocity tasks gate this on being told to move and a bridge is always going
-    # somewhere.
-    #
-    # The only term here with no precedent in this repository, since every robot's velocity
-    # config zeroes it. It carries the smallest weight of the three and is the first thing
-    # to turn off if the robot marches on the spot to farm it. It is also the only positive
-    # one, which is what makes that failure available
-    "air_time": RewardTermCfg(
-      func=velocity_mdp.feet_air_time,
-      weight=0.1,
-      params={
-        "sensor_name": FEET_CONTACT,
-        "threshold_min": 0.05,
-        "threshold_max": 0.5,
-        "command_name": None,
-      },
-    ),
-    # The legs counter-rotating until the knees face each other. Threshold measured against
-    # the dataset, not guessed: see mdp/rewards.py. Zero inside everything walk and run do,
-    # and inside all but the top fraction of a percent of the jump
-    "knees_inward": RewardTermCfg(
-      func=mdp.knees_inward,
-      weight=-5.0,
-      params={
-        "asset_cfg": SceneEntityCfg("robot"),
-        "left_joint": "left_hip_yaw_joint",
-        "right_joint": "right_hip_yaw_joint",
-        "threshold": 0.4,
-      },
-    ),
     # A foot on the ground moving sideways. Skating covers ground without paying to pick a
     # foot up, and is the other half of what an unphysical gait looks like
     "foot_slip": RewardTermCfg(
@@ -236,6 +221,15 @@ def bridge_env_cfg(
     # and the smaller one survived more windows. 150 iterations is long before a gait
     # artifact appears, and this is the term that prices one. The runs that followed hopped
     "action_rate": RewardTermCfg(func=base_mdp.action_rate_l2, weight=-1e-1),
+    # What replaced the positive air_time reward. That one kept the feet from chattering by
+    # paying for a gait, which is the wrong thing to want from a policy whose target is
+    # often a crouch or a planted stance. This charges only for a flight or a stance too
+    # short to be a step, so a planted foot and a real step both cost nothing
+    "feet_chatter": RewardTermCfg(
+      func=mdp.feet_chatter,
+      weight=-1.0,
+      params={"sensor_name": FEET_CONTACT, "min_time": 0.2},
+    ),
     "joint_limits": RewardTermCfg(
       func=base_mdp.joint_pos_limits,
       weight=-10.0,

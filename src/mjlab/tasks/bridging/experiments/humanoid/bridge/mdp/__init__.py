@@ -1,7 +1,8 @@
-"""The bridge's MDP terms: the window, what it pays, and how it ends.
+"""The bridge's MDP terms: the window (commands), what it pays (rewards), how it ends
+(terminations).
 
-ROOT_STATE_DIM is re-exported from the dataset because a state's layout is part of this
-vocabulary everywhere it is read.
+ROOT_STATE_DIM is re-exported from the dataset: a state's layout is part of this vocabulary
+everywhere it is read.
 """
 
 from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
@@ -18,6 +19,9 @@ from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import (
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import (
   Tolerances as Tolerances,
+)
+from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import (
+  arm_mask as arm_mask,
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import (
   arrival_score as arrival_score,
@@ -38,7 +42,13 @@ from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.rewards import (
   feet_below_ground as feet_below_ground,
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.rewards import (
+  feet_chatter as feet_chatter,
+)
+from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.rewards import (
   feet_slip as feet_slip,
+)
+from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.rewards import (
+  guidance as guidance,
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.rewards import (
   knees_inward as knees_inward,

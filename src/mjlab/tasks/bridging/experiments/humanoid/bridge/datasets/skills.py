@@ -1,6 +1,25 @@
-"""A dataset built from the trained skills' own rollouts.
+"""DEPRECATED. A corpus built from the trained skills' own rollouts.
 
-Run:
+Superseded by datasets/tracker.py, which is the default. This module still runs and the
+datasets it wrote still load; it is kept so an older run can be reproduced and so a posture
+family the human motion corpus is missing can be filled in deliberately. Nothing here is
+maintained against new work on the bridge.
+
+Why it was set aside:
+
+  It cannot answer the question the bridge exists to answer. Every state here comes from a
+  policy the bridge will be asked to serve, so training and service states come from the
+  same five distributions and memorising the pool looks exactly like generalising. A bridge
+  that only ever worked on this corpus would be evidence of nothing.
+
+  It offers weaker feasibility guarantees per posture family. A skill rollout covers the
+  states that skill occupies and no others, so coverage is whatever the pool happens to be,
+  and it moves every time a skill is retrained.
+
+  It made the bridge a function of the skill pool, which defeats the point. The whole
+  premise is a policy independent of the skills it connects.
+
+Run, if you still need it:
 
     1. Train the skills. Any subset works; `skills` below selects which to record.
 
@@ -11,27 +30,20 @@ Run:
     2. Collect. Checkpoints are found under each skill's own log directory.
 
        uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.skills
-       uv run python -m ...datasets.skills --skills "('walk','run')" --steps 800
 
-    3. Calibrate the tolerances against it.
+    3. Train the bridge against it, which now takes an explicit path.
 
-       uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate \
-         --calibrate True --dataset data/bridge/rollouts.npz
+       uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096 \
+         --env.commands.bridge.dataset-path data/bridge/rollouts.npz
 
-    4. Train the bridge on it. This is the default dataset, so no flag is needed.
-
-       uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
-
-Every state here came out of a skill the bridge will be asked to serve, under the physics
-that has to reproduce it. Both ends of a window are reachable by construction.
-
-What it cannot answer: whether the bridge learned bridging or learned these five skills.
-Training states and service states come from the same policies, so memorizing the pool
-and generalizing look identical. tracker.py is the other half of that experiment.
+Every state here did come out of a skill under the physics that has to reproduce it, so
+both ends of a window are reachable by construction. That was always true and was never the
+problem.
 """
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,11 +53,14 @@ import tyro
 import mjlab
 from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets import dataset
 from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
-  DEFAULT_DATASET,
+  SKILLS_DATASET,
   RolloutCfg,
 )
 from mjlab.tasks.bridging.experiments.humanoid.skills.jump import JUMP_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.skills.kick import KICK_TASK_ID
+from mjlab.tasks.bridging.experiments.humanoid.skills.passing import PASS_TASK_ID
+from mjlab.tasks.bridging.experiments.humanoid.skills.punch_combo import (
+  PUNCH_COMBO_TASK_ID,
+)
 from mjlab.tasks.bridging.experiments.humanoid.skills.push import PUSH_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.run import RUN_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.walk import WALK_TASK_ID
@@ -66,11 +81,13 @@ class SkillSpec:
 
 
 SKILLS: dict[str, SkillSpec] = {
-  "walk": SkillSpec(WALK_TASK_ID, ("g1_walk", "parkour_walk")),
-  "run": SkillSpec(RUN_TASK_ID, ("g1_run", "parkour_run")),
-  "jump": SkillSpec(JUMP_TASK_ID, ("g1_jump", "parkour_jump_rsi", "humanoid_jump")),
-  "kick": SkillSpec(KICK_TASK_ID, ("g1_kick", "parkour_kick")),
-  "push": SkillSpec(PUSH_TASK_ID, ("g1_push", "parkour_push")),
+  "walk": SkillSpec(WALK_TASK_ID, ("g1_walk",)),
+  "run": SkillSpec(RUN_TASK_ID, ("g1_run",)),
+  "jump": SkillSpec(JUMP_TASK_ID, ("g1_jump",)),
+  "pass": SkillSpec(PASS_TASK_ID, ("g1_pass",)),
+  # "kick": SkillSpec(PASS_TASK_ID, ("g1_kick",)),
+  "push": SkillSpec(PUSH_TASK_ID, ("g1_push",)),
+  "punch_combo": SkillSpec(PUNCH_COMBO_TASK_ID, ("g1_punch_combo",)),
 }
 
 
@@ -83,7 +100,7 @@ class SkillsCfg(RolloutCfg):
   work too, and are left out because a state whose meaning depends on where a crate was is
   not a useful thing for the bridge to aim at."""
 
-  path: Path = DEFAULT_DATASET
+  path: Path = SKILLS_DATASET
   checkpoints: tuple[str, ...] = ()
   """Explicit checkpoint paths, one per entry of `skills`, for when the automatic search
   picks the wrong run. Empty means search."""
@@ -91,8 +108,16 @@ class SkillsCfg(RolloutCfg):
 
 def collect(cfg: SkillsCfg) -> Path:
   """Record every configured skill and write one npz."""
+  warnings.warn(
+    "The skills corpus is deprecated. It cannot show whether a bridge learned bridging or "
+    "learned these skills, since both its training and its service states come from the "
+    "same policies. Prefer datasets/tracker.py, which is the default.",
+    DeprecationWarning,
+    stacklevel=2,
+  )
   states: list[np.ndarray] = []
   env_ids: list[np.ndarray] = []
+  trajectory_ids: list[np.ndarray] = []
   frames: list[np.ndarray] = []
   sources: list[np.ndarray] = []
   goals: list[np.ndarray] = []
@@ -118,18 +143,19 @@ def collect(cfg: SkillsCfg) -> Path:
       explicit,
       hint=f" Train it with `uv run train {spec.task}`, or name one in `checkpoints`.",
     )
-    rows, envs, ages, commands = dataset.record(
+    rows, envs, trajectories, ages, commands = dataset.record(
       spec.task, env_cfg, checkpoint, cfg, name
     )
     states.append(rows)
     env_ids.append(envs)
+    trajectory_ids.append(trajectories)
     frames.append(ages)
     sources.append(np.full(len(rows), index, dtype=np.int16))
     goals.append(commands)
     print(f"[dataset] {name}: {len(rows)} states, {commands.shape[1]} command numbers")
 
   return dataset.write(
-    cfg.path, states, env_ids, frames, sources, cfg.skills, fps, goals
+    cfg.path, states, env_ids, trajectory_ids, frames, sources, cfg.skills, fps, goals
   )
 
 

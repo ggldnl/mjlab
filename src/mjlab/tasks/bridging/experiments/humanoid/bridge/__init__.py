@@ -1,83 +1,100 @@
-"""The bridge: one policy that gets the robot from where skill A stopped to where skill B
-can start.
+"""One policy that drives the robot from where a skill stopped to where the next can start.
 
-Input is proprioception plus a target state (root pose, root velocities, joint angles,
-joint rates) and a countdown. Output is joint targets. Only the arrival is scored; what
-the robot does in between is free.
+Task id `Mjlab-G1-Bridge`, checkpoints under `logs/rsl_rl/g1_bridge`.
 
-Run:
+    in     own state (root velocities, gravity, joint angles and rates, last action)
+           + gap to the target state
+           + seconds left, and how long the window was
+    out    joint position targets, 29 of them
 
-    1. Build a dataset of states the robot can actually be in.
+One episode is one window: teleport onto a start state, cross to a target state, deadline
+in between. Only the arrival is scored. What the robot does in the middle is free.
 
-      # The skills dataset is built from rollouts of the actual skills
-      uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.skills
+Run
+---
 
-      # The tracker dataset is built from motion captured data: more consistent
-      # (we know if a motion is feasible) and more general (independent of skill pool)
-      uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker
+    1. Build the corpus. See datasets/tracker.py, which has the full recipe.
 
-    2. Train.
+        uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker
 
-       uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
+    2. Check what came out before training on it. Per-source counts, then a window drawn
+       as a ghost.
 
-    3. Score it, always next to the do-nothing baseline.
+        uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view
 
-       uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate
+    3. Train.
 
-    4. Watch it. The target is drawn as a translucent robot.
+        uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
 
-       uv run play Mjlab-G1-Bridge
+    4. Score it against a robot that does nothing. A bridge that cannot beat the statue
+       has not learned anything.
 
-Layout:
+        uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate
 
-    datasets/      where the start and target states come from
-    mdp/           the window, the reward, the terminations
+    5. Watch it. Amber ghost is the target, blue ghost walks the recorded crossing.
+
+        uv run play Mjlab-G1-Bridge
+
+Layout
+------
+
+    datasets/      where start and target states come from
+    mdp/           the window (commands), what it pays (rewards), how it ends (terminations)
     env_cfg.py     the mjlab task
     evaluate.py    scoring against the do-nothing baseline
-    warm_start.py  the runner, plus an optional actor seed from a locomotion policy
 
-Two design rules, both learned from failed attempts:
+Interface
+---------
 
-  Nothing scores the middle. Earlier versions asked a model to reproduce the motion a
-  human recorded between two frames. Many motions connect two states, so a squared error
-  against one of them penalizes the others, and their average puts a foot through the
-  floor.
+Aim the bridge from outside with two calls on the command term:
 
-  Endpoints come from rollouts of trained policies, never from motion capture. A
-  retargeted clip is a description, not a state the G1 is ever in, and two such frames
-  are usually an impossible pair.
+    place(env_ids, start, target, duration_s)    teleport onto a start, then cross
+    open_window(env_ids, duration_s)             cross from wherever the robot already is
 
-Not built yet: a kinematic reference stage to densify the reward, and chaining against
-live skills instead of dataset states.
+Durations are seconds, not control ticks. A tick count changes with the decimation and
+means nothing to a caller choosing between a 1.0 s target and a 0.5 s one.
+`BridgeCommand.steps_for` is the only conversion in the task.
+
+Design rules
+------------
+
+Nothing scores the middle. Many motions connect two states, so scoring one of them
+penalizes the rest. Earlier versions regressed the recorded in-between and put a foot
+through the floor in 2 windows out of 5.
+
+Endpoints come from tracker rollouts, never from motion capture. A retargeted human clip
+is a description, not a state a G1 is ever in.
+
+Both endpoints come from one rollout, a fixed time apart. Two individually reachable states
+can be an unreachable pair. A contiguous segment needs no feasibility model: the
+displacement, velocity change, joint travel and time available were demonstrated together.
+
+The recorded crossing is a training signal, never an input. `mdp.guidance` pays for staying
+near it and anneals to zero, so the policy reads only its own state and the gap to the
+target, at training time and at inference alike.
 """
 
-from mjlab.rl import RslRlModelCfg, RslRlPpoAlgorithmCfg
+from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 from mjlab.tasks.bridging.experiments.humanoid.bridge.env_cfg import bridge_env_cfg
-from mjlab.tasks.bridging.experiments.humanoid.bridge.warm_start import (
-  BridgeOnPolicyRunner,
-  BridgeRunnerCfg,
-)
 from mjlab.tasks.registry import register_mjlab_task
 
 BRIDGE_TASK_ID = "Mjlab-G1-Bridge"
 
 
-def bridge_ppo_runner_cfg() -> BridgeRunnerCfg:
-  """PPO for the bridge. Copied from the jump: same robot, same control rate, both goal
-  conditioned.
+def bridge_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """PPO for the bridge. Copied from the jump: same robot, same rate, both goal conditioned.
 
-  Three settings that are not the rsl_rl defaults:
+  Three settings differ from the rsl_rl defaults:
 
-    init_std 0.6            1.0 is too much per-joint noise at this action scale, and the
-                            shortest window is 0.3 s, too short to recover from it
-    num_learning_epochs 4   fewer chances per iteration for the KL schedule to ratchet
-    desired_kl 0.015        the learning rate down to rsl_rl's 1e-5 floor, where a run
-                            looks plateaued but is only crawling. Read the learning rate
-                            first when a run stalls.
+      init_std 0.6            1.0 is too much per-joint noise at this action scale, and the
+                              shortest window is 0.3 s, too short to recover from it
+      num_learning_epochs 4   fewer chances per iteration for the KL schedule to ratchet
+      desired_kl 0.015        the learning rate down to rsl_rl's 1e-5 floor, where a run
+                              looks plateaued but is only crawling
 
-  warm_start is off by default. See warm_start.py.
+  Read the learning rate first when a run stalls.
   """
-  return BridgeRunnerCfg(
+  return RslRlOnPolicyRunnerCfg(
     actor=RslRlModelCfg(
       hidden_dims=(512, 256, 128),
       activation="elu",
@@ -117,5 +134,4 @@ register_mjlab_task(
   env_cfg=bridge_env_cfg(),
   play_env_cfg=bridge_env_cfg(play=True, split="eval"),
   rl_cfg=bridge_ppo_runner_cfg(),
-  runner_cls=BridgeOnPolicyRunner,
 )

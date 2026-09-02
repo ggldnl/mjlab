@@ -1,4 +1,7 @@
-"""A dataset built from a motion tracker following LAFAN1, rather than from the skill pool.
+"""The bridge's corpus: human motion, replayed by trajectory trackers under physics.
+
+This is the default. datasets/skills.py, which draws states from the skill pool's own
+rollouts, is deprecated and kept only for reproducing older runs.
 
     1. Train a trajectory tracking policy on LAFAN1 clips. Each is ~4 minutes of continuous
         motion, so one clip is a lot of material, but it covers only some kind of motions:
@@ -17,7 +20,7 @@
           --checkpoint-file logs/rsl_rl/g1_tracking/<run>/model_3000.pt
           --motion-file data/lafan1/motions/walk1_subject1.npz
 
-    2. Collect the dataset. Pass nothing, however many trackers you trained. Every run
+    2. Collect the dataset. Pass nothing or however many trackers you trained. Every run
         wrote down the clip it was pointed at, so this reads them back and asks each
         tracker only for the motion it learned.
 
@@ -31,16 +34,25 @@
           --motions "('data/lafan1/motions/walk2_subject1.npz','data/lafan1/motions/walk3_subject1.npz')" \
           --checkpoints "('logs/rsl_rl/g1_tracking/<walk-run>/model_3000.pt',)"
 
-    3. Calibrate the tolerances against the new dataset. The gaps differ from the skills one,
-        and stale tolerances are how the statue-vs-policy trap happens.
+    3. Look at what came out, before training anything on it. It prints how many windows
+        each clip admits, and a clip with states and no windows is one that contributed
+        nothing, then serves a window as a ghost: green either side of it, red across the
+        stretch the bridge has to invent.
+
+        uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view
+        uv run python -m ...datasets.view --source walk1_subject1
+
+    4. See how the corpus sits against what a hand-over requires. Nothing to edit
+        afterwards: the requirements are physical and do not follow the corpus. This says
+        which channels a robot standing still already satisfies and which none will reach
+        soon, both of which are worth knowing before reading a training curve.
 
         uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate
-          --calibrate True --dataset data/bridge/tracker.npz
+          --diagnose True
 
-    4. Train the bridge on it.
+    5. Train the bridge on it. This is the default dataset, so no flag is needed.
 
         uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
-          --env.commands.bridge.dataset-path data/bridge/tracker.npz
 
 ##
 # Why this dataset exists
@@ -91,10 +103,18 @@ Naming `motions` explicitly overrides it, which is what to do when testing gener
 # What this dataset makes possible
 ##
 
-Two rows of one episode are a start and target one robot actually got between, and the
-frames between them are a deadline it met. dataset.py records the frame index so the
-option is there. Nothing reads it yet; using it would mean teaching the command term to
-draw both ends of a pair from one episode.
+Two rows of one episode are a start and a target one robot actually got between, and the
+frames between them are a deadline it met. That is the only kind of window the bridge
+trains on: `Dataset.segments` turns the trajectory and frame columns into an index of them,
+and no window is ever assembled out of two separate rollouts.
+
+Which makes coverage this file's problem rather than the command term's. A bridge cannot be
+asked to arrive in a posture no rollout in its corpus ever passed through: if nothing here
+crouches, the deep crouch a jump wants to start from is not something a segment index can
+manufacture, and no amount of training will find it. So build the corpus around the posture
+families the selector is going to ask for, one clip family at a time, and check the coverage
+before blaming the policy. Skill rollouts are the fallback when a family is missing, at the
+cost of the independence this file exists to buy.
 """
 
 from __future__ import annotations
@@ -257,6 +277,7 @@ def collect(cfg: TrackerCfg) -> Path:
 
   states: list[np.ndarray] = []
   env_ids: list[np.ndarray] = []
+  trajectory_ids: list[np.ndarray] = []
   frames: list[np.ndarray] = []
   sources: list[np.ndarray] = []
   goals: list[np.ndarray] = []
@@ -280,7 +301,7 @@ def collect(cfg: TrackerCfg) -> Path:
       )
     fps = rate
 
-    rows, envs, ages, commands = dataset.record(
+    rows, envs, trajectories, ages, commands = dataset.record(
       cfg.task, env_cfg, checkpoint, cfg, clip.stem
     )
 
@@ -297,6 +318,7 @@ def collect(cfg: TrackerCfg) -> Path:
 
     states.append(rows)
     env_ids.append(envs)
+    trajectory_ids.append(trajectories)
     frames.append(ages)
     sources.append(np.full(len(rows), len(names), dtype=np.int16))
     goals.append(commands)
@@ -310,7 +332,15 @@ def collect(cfg: TrackerCfg) -> Path:
       f"the one it was trained on."
     )
   return dataset.write(
-    cfg.path, states, env_ids, frames, sources, tuple(names), fps, goals
+    cfg.path,
+    states,
+    env_ids,
+    trajectory_ids,
+    frames,
+    sources,
+    tuple(names),
+    fps,
+    goals,
   )
 
 

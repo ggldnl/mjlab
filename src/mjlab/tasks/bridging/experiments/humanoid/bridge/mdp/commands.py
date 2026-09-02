@@ -1,63 +1,76 @@
-"""The window: where the bridge starts, where it has to be, and how long it has.
+"""The window: where the bridge starts, where it has to be, how long it has.
 
-One episode is one window. A start state from one skill's rollout, a target state from
-another's, a deadline in control steps, nothing in between. The robot is teleported onto
-the start and the clock runs. The middle is never scored.
+One episode is one window. Start state and target state come from one rollout, a fixed
+number of control ticks apart, and the deadline is exactly that many ticks. The robot is
+teleported onto the start and the clock runs. The middle is never scored.
 
-##
-# What the policy reads
-##
+Command layout
+--------------
 
-    d_pos    3   where the target is, from here, in the heading frame
-    d_rot    6   which way it faces, relative to this heading
-    t_lin    3   how fast it is going, in the heading frame
-    t_ang    3   and turning
-    t_q      J   the joint angles it holds, relative to the default pose
-    t_qd     J   and their rates
-    clock    2   seconds left, and the fraction of the window left
+What the policy reads, 17 + 2J numbers:
 
-Position and orientation are differences, since a difference is what remains to be closed.
-Velocities and joint angles are absolute, since proprioception already carries the robot's
-own in the same units and the policy can subtract them itself.
+    d_pos    3   where the target is from here, in the heading frame
+    d_rot    6   rotation from this orientation to the target's
+    d_lin    3   how much faster the target is going, in the body frame
+    d_ang    3   and how much more it is turning
+    d_q      J   how far each joint still has to travel
+    d_qd     J   and how much its rate has to change
+    left     1   seconds to the deadline
+    span     1   seconds the whole window was given
 
-The clock is not optional. Without time-to-go the task is not Markov: the same state a
+Every channel is a difference. Proprioception carries the robot's own state in the same
+units, so a network handed absolute targets could subtract them itself, but it has to learn
+to first. What it learned instead was to close the channels that arrived as differences and
+ignore the rest. Subtracting here costs nothing and removes the choice.
+
+The target is fixed in the world for the whole window. Only the observation is relative. A
+goal recomputed from the current state every tick is one the robot satisfies by standing
+still.
+
+Both clock numbers are needed. Without time-to-go the task is not Markov: the same state a
 quarter of the way through a window and a step from its end call for opposite actions.
+Without the span, a policy one tick from its deadline cannot tell a long window it has
+nearly finished from a short one it has barely started.
 
-##
-# Why a pair is built rather than drawn
-##
+Arrival channels
+----------------
 
-Both endpoints come out of the dataset individually valid, and that is not enough. Two
-reachable states can be an unreachable pair, and an unsolvable episode is worse than none:
-it contributes a gradient pointing nowhere, and enough of them teach the policy to hedge.
+`CHANNELS` names the 8 ways an arrival can be wrong. They stay separate because the units
+differ, and because a single channel at zero is what the bottleneck in `arrival_score` uses
+to hold the whole score down.
 
-Example of an impossible pair, and the acceleration it implies:
+Arms are split from legs for that reason. Scored on 6 channels with all 29 joints in one of
+them, the policy found the hole: park the arms wherever balance wants them, take the loss on
+one joint channel, collect the four root channels in full. Split, and scoring each group on
+its worst joint, an abandoned arm is a channel at zero.
 
-    3 m/s -> standing still in 0.2 s   =   15 m/s^2
+Why both ends come from one rollout
+-----------------------------------
 
-Three things make a pair feasible:
+Two individually reachable states can be an unreachable pair, and an unsolvable episode is
+worse than none: the gradient points nowhere, and enough of them teach the policy to hedge.
+An impossible pair implies an impossible acceleration:
 
-  Placement is feasible by construction. Only the target's content comes from the dataset:
-  height, tilt, joint angles, every velocity. Where it sits and which way it faces are
-  chosen here, inside a set the robot can reach. The center of that set is where a body
-  carrying its current momentum would arrive; the offset around it is bounded by what a
-  walk covers in the time available.
+    3 m/s -> stopped in 0.2 s   =   15 m/s^2
 
-  The velocity change is checked, against `max_accel`. This is the one thing drawn from the
-  dataset that placement cannot fix.
+An earlier version drew the two ends independently, then argued the pair was feasible:
+place the target where the start's momentum would carry it, reject on an acceleration bound,
+reject on a joint travel bound, stretch the deadline when nothing fit. Each of those is a
+model of what a humanoid can do, and the bridge ended up trained against the model rather
+than against the robot.
 
-  The joint travel is checked, against `joint_speed`. A sustained rate, not the actuator
-  limit, which is far above anything a loaded leg reaches and would never bind.
-
-A candidate failing either check is redrawn a few times. If nothing admissible turns up,
-the deadline is stretched to what the best candidate needs rather than the pair being
-thrown away.
+A contiguous segment needs no model. Displacement, velocity change, joint travel, contact
+mode and time available were demonstrated together by this robot under this physics.
+`Dataset.segments` is the whole feasibility argument. All this term adds is a yaw applied to
+both ends at once, which changes no question that is ever asked, and a perturbation on the
+start.
 """
 
 from __future__ import annotations
 
 import copy
 import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -72,6 +85,7 @@ from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
   DEFAULT_DATASET,
   ROOT_STATE_DIM,
   Dataset,
+  Segments,
   load_dataset,
 )
 from mjlab.utils.lab_api.math import (
@@ -90,14 +104,28 @@ CHANNELS = (
   "root_ori",
   "root_lin_vel",
   "root_ang_vel",
-  "joint_pos",
-  "joint_vel",
+  "leg_joint_pos",
+  "leg_joint_vel",
+  "arm_joint_pos",
+  "arm_joint_vel",
 )
-"""The six ways an arrival can be wrong. Kept apart because the units differ: a tenth of a
-radian and a tenth of a metre per second are not the same mistake."""
+"""The 8 ways an arrival can be wrong. See this module's header for why they stay apart."""
+
+ARM_JOINT = re.compile(r"(shoulder|elbow|wrist)")
+"""What counts as an arm. Everything else, legs and waist alike, is the supporting chain."""
 
 TARGET_COLOR = (1.0, 0.72, 0.2, 0.45)
-"""The target ghost."""
+"""The target ghost: amber, standing still where the window ends."""
+
+REFERENCE_COLOR = (0.35, 0.6, 1.0, 0.35)
+"""The reference ghost: blue, walking through the crossing as the clock runs.
+
+Fainter than the target on purpose. The target is what the robot is scored on and the
+reference is only what it is being shaped toward, and by the end of training the shaping is
+switched off and the blue ghost is a demonstration nobody is being paid for. It is drawn so
+the two can be watched coming apart, which is the whole diagnosis of whether the shaping
+helps or leads somewhere else.
+"""
 
 
 ##
@@ -105,38 +133,76 @@ TARGET_COLOR = (1.0, 0.72, 0.2, 0.45)
 ##
 
 
+def arm_mask(joint_names: tuple[str, ...], device: str | torch.device) -> torch.Tensor:
+  """Which joints belong to an arm. (J,) bool.
+
+  By name, because the joint order is the model's and nothing guarantees the arms are
+  contiguous. A robot whose names do not match leaves one group empty, which `_worst` scores
+  as perfect rather than raising: a quadruped has no arms to abandon.
+  """
+  return torch.tensor(
+    [bool(ARM_JOINT.search(name)) for name in joint_names],
+    device=device,
+    dtype=torch.bool,
+  )
+
+
 @dataclass(kw_only=True)
 class Tolerances:
-  """How wrong each channel may be and still count as arrived.
+  """How close a hand-over has to be to count. Physical units, fixed for the whole run.
 
-  These are the whole metric. A tolerance wider than the gap that channel has to close
-  makes the channel free: it scores near one from the start, contributes no gradient, and
-  carries the total high enough that a robot standing still looks like it is doing the
-  task. That happened here once, a statue at 0.459 against a trained policy's 0.454.
+  Answers one question: how far off can the bridge leave the robot and still have the next
+  skill start properly? That is a property of the next skill and of the robot, so every
+  number below is a length, an angle, a speed or a rate with a stated physical reason.
 
-  Each sits at about half the median gap its channel has to close: wide enough that the
-  kernel is informative over the range that occurs, tight enough that standing still scores
-  near zero.
+  Do not calibrate these from the corpus. They used to be half the median gap per channel,
+  which broke three ways: the number moved whenever the corpus was rebuilt; half the median
+  gap is where an exponential kernel is informative, which is a fact about the reward and
+  not about whether a hand-over worked; and a threshold defined as a fraction of current
+  difficulty gets easier exactly when the task does.
 
-  That gap is a property of the dataset and of how `BridgeCommand._draw_target` pairs its
-  rows, not of anything written here, so these go stale when the dataset is rebuilt. Nothing
-  has to be rerun by hand: `BridgeCommand._check_tolerances` measures the real gaps on every
-  run and prints the ones that have gone free.
+  The reward does not need them anyway. `_retune` sets the kernel width from the policy's
+  own running error. These are the fixed instrument: `arrived` and every reported number.
+
+  `_check_tolerances` still measures the gap, demoted to a printed check. It says which
+  channels a motionless robot already satisfies, and which are so far out that `arrived`
+  will read zero for a long time. Both are worth knowing before reading a training curve.
+  Neither is a reason to edit this file.
+
+  What should replace these eventually: the selector measures how far each skill can be
+  displaced from an entry state and still succeed. That is this requirement, per skill, per
+  channel. Until it exists, one conservative set for the G1.
   """
 
-  root_pos: float = 0.29
-  """Metres."""
-  root_ori: float = 0.27
-  """Radians."""
-  root_lin_vel: float = 0.38
-  """Metres per second. The channel that matters most for a hand-over: a body in the right
-  pose carrying the wrong momentum is about to be somewhere else."""
-  root_ang_vel: float = 0.29
-  """Radians per second."""
-  joint_pos: float = 0.10
-  """Radians, as a root mean square over the joints."""
-  joint_vel: float = 0.87
-  """Radians per second, likewise."""
+  root_pos: float = 0.05
+  """Metres. About a fifth of the G1's foot length, so the support polygon the next skill
+  inherits is the one it expects. Tighter is not measurable: a state estimator on hardware
+  does not know the pelvis to a centimetre."""
+  root_ori: float = 0.05
+  """Radians, about 3 degrees of torso tilt or yaw. Small enough that the next skill's own
+  balance controller sees a disturbance rather than a different task."""
+  root_lin_vel: float = 0.15
+  """Metres per second. Over the half second a skill takes to establish itself, this is 7 cm
+  of drift. The channel that matters most for a hand-over: a body in the right pose carrying
+  the wrong momentum is about to be somewhere else."""
+  root_ang_vel: float = 0.30
+  """Radians per second, about 9 degrees of unwanted turn over that same half second."""
+  leg_joint_pos: float = 0.10
+  """Radians on the worst leg or waist joint, about 6 degrees. At the G1's thigh length that
+  is roughly 3 cm of foot placement, which is the scale the root position bound is set at."""
+  leg_joint_vel: float = 1.50
+  """Radians per second on the worst leg or waist joint."""
+  arm_joint_pos: float = 0.05
+  """Radians on the worst arm joint, about 3 degrees.
+
+  Tighter than the legs, which is the opposite of what the dynamics would suggest, and
+  deliberate. An arm has little say in whether the next skill can stand up, so a requirement
+  argued from balance alone would be loose, and loose here is exactly the hole that let a
+  bridge park its arms wherever it liked. Three degrees is the bar for "the same posture",
+  and holding the arms to it is what the arm channels exist for.
+  """
+  arm_joint_vel: float = 0.75
+  """Radians per second on the worst arm joint."""
 
   def as_tensor(self, device: str | torch.device) -> torch.Tensor:
     return torch.tensor(
@@ -144,77 +210,86 @@ class Tolerances:
     )
 
 
-def channel_errors(
-  actual: torch.Tensor, target: torch.Tensor, num_joints: int
-) -> torch.Tensor:
-  """How wrong one state is against another, per channel. (N, 6), in natural units.
+def _worst(errors: torch.Tensor, group: torch.Tensor) -> torch.Tensor:
+  """Largest error over a group of joints. (N, J), (J,) -> (N,).
 
-  Both arguments are dataset rows, (N, 13 + 2J). A free function and not a method, because
-  the reward, the metrics and an evaluation with no live environment all have to get the
-  same number out of it. Two implementations of "did it arrive" would drift apart.
+  Worst joint, not mean or RMS. A humanoid has 29, and an average over that many hides a
+  handful consistently missed by a lot, which is the failure this channel exists to catch.
   """
+  if not bool(group.any()):
+    return torch.zeros(errors.shape[0], device=errors.device)
+  return errors[:, group].amax(dim=-1)
+
+
+def channel_errors(
+  actual: torch.Tensor, target: torch.Tensor, arms: torch.Tensor
+) -> torch.Tensor:
+  """How wrong one state is against another, per channel. (N, 8), in natural units.
+
+  Both states are dataset rows, (N, 13 + 2J). `arms` is the mask from `arm_mask` and its
+  length is where J comes from.
+
+  A free function, not a method: the reward, the metrics and an offline evaluation with no
+  live environment all have to get the same number. Two implementations of "did it arrive"
+  would drift apart.
+  """
+  num_joints = int(arms.numel())
   q = slice(ROOT_STATE_DIM, ROOT_STATE_DIM + num_joints)
   qd = slice(ROOT_STATE_DIM + num_joints, ROOT_STATE_DIM + 2 * num_joints)
+  joint_pos = (actual[:, q] - target[:, q]).abs()
+  joint_vel = (actual[:, qd] - target[:, qd]).abs()
+  legs = ~arms
   return torch.stack(
     [
       (actual[:, 0:3] - target[:, 0:3]).norm(dim=-1),
       quat_error_magnitude(actual[:, 3:7], target[:, 3:7]),
       (actual[:, 7:10] - target[:, 7:10]).norm(dim=-1),
       (actual[:, 10:ROOT_STATE_DIM] - target[:, 10:ROOT_STATE_DIM]).norm(dim=-1),
-      (actual[:, q] - target[:, q]).square().mean(dim=-1).sqrt(),
-      (actual[:, qd] - target[:, qd]).square().mean(dim=-1).sqrt(),
+      _worst(joint_pos, legs),
+      _worst(joint_vel, legs),
+      _worst(joint_pos, arms),
+      _worst(joint_vel, arms),
     ],
     dim=-1,
   )
 
 
-def arrival_score(errors: torch.Tensor, tolerances: torch.Tensor) -> torch.Tensor:
-  """One kernel per channel, then the mean. (N, 6) -> (N,), in (0, 1].
+def arrival_score(
+  errors: torch.Tensor, tolerances: torch.Tensor, bottleneck_weight: float = 0.7
+) -> torch.Tensor:
+  """One kernel per channel, blended into one number. (N, 8) -> (N,), in (0, 1].
 
-  The mean of exponentials, not the exponential of a mean. The two agree when every channel
-  is equally wrong. When they are not, a product is dominated by the worst channel and
-  kills every other channel's gradient with it, while this is dominated by the best. The
-  tracking tasks here already use the mean. What stops a policy farming the easy channels
-  is tight tolerances and the strayed termination, not the shape of the kernel.
+  Two parts:
+
+      average      gradient on every channel at once, so a policy that is bad everywhere
+                   still knows which way to move
+      bottleneck   the worst channel's kernel alone. Makes "arrive on all of them" the
+                   objective rather than "arrive on the cheap ones"
+
+  At `bottleneck_weight` 0.7 the bottleneck dominates: one channel at zero caps the whole
+  score at 0.3 whatever the other seven do.
+
+  The four joint channels outweigh the four root ones in the average. One root state can be
+  reached by many postures, so the root channels are the easy half, and left equal they are
+  where the policy spends its capacity.
   """
-  return torch.exp(-(errors / tolerances).square()).mean(dim=-1)
+  kernel = torch.exp(-(errors / tolerances).square())
+  weights = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0, 1.5, 2.0, 1.5], device=errors.device)
+  average = (kernel * weights).sum(dim=-1) / weights.sum()
+  return (1.0 - bottleneck_weight) * average + bottleneck_weight * kernel.min(
+    dim=-1
+  ).values
 
 
 def arrived(errors: torch.Tensor, tolerances: torch.Tensor) -> torch.Tensor:
-  """Whether every channel is inside tolerance. (N,) bool.
+  """Every channel inside tolerance. (N,) bool. The success metric, never the reward.
 
-  The success metric, deliberately not the reward. A reward has to be smooth to be
-  learnable; this has to be honest to be reportable. Inside tolerance on five channels out
-  of six is not an arrival.
+  A reward has to be smooth to be learnable; this has to be honest to be reportable. Seven
+  channels out of eight is not an arrival, and with the arms split out that is not a
+  technicality: seven out of eight is what a robot that never brought its arms back looks
+  like.
   """
   return (errors <= tolerances).all(dim=-1)
-
-
-def transit_time(
-  start: torch.Tensor,
-  target: torch.Tensor,
-  num_joints: int,
-  max_accel: float,
-  joint_speed: float,
-) -> torch.Tensor:
-  """Seconds a body needs to get from one state to another, on the two things placement
-  cannot fix. Broadcasts over any leading shape.
-
-  Ground distance is free: a target is put wherever the start's velocity would carry a
-  body, so it is never what makes a pair hard. What cannot be arranged away is the velocity
-  the target moves at and the pose it holds. Each takes time at a rate a humanoid sustains,
-  and they happen at once, so the estimate is the larger of the two:
-
-      max(speed_change / max_accel, joint_travel / joint_speed)
-
-  A free function, next to `channel_errors`, for the same reason: this number decides which
-  pairs the bridge trains on, and a second way of measuring a pair would be asking for
-  something other than what the policy learned.
-  """
-  q = slice(ROOT_STATE_DIM, ROOT_STATE_DIM + num_joints)
-  speed_up = (target[..., 7:10] - start[..., 7:10]).norm(dim=-1)
-  reach = (target[..., q] - start[..., q]).abs().amax(dim=-1)
-  return torch.maximum(speed_up / max_accel, reach / joint_speed)
 
 
 ##
@@ -233,30 +308,50 @@ class BridgeCommand(CommandTerm):
     self.robot: Entity = env.scene[cfg.entity_name]
     self.num_joints = self.robot.data.joint_pos.shape[1]
 
-    self.dataset: Dataset = load_dataset(cfg.dataset_path, str(self.device), cfg.split)
-    if self.dataset.num_joints != self.num_joints:
-      raise ValueError(
-        f"The dataset holds {self.dataset.num_joints}-joint states and this robot has "
-        f"{self.num_joints}. Rebuild the dataset against this robot."
+    self.arms = arm_mask(tuple(self.robot.joint_names), self.device)
+    """Which joints the two arm channels are measured over."""
+
+    self.dataset: Dataset | None = None
+    self.windows: Segments | None = None
+    self._span = 0
+    """Longest window in control ticks, and so the width of the reference table."""
+    if cfg.dataset_path is None:
+      # No corpus. A window then has to come from outside through `open_window`, which is
+      # what the transition arena does: it never draws one, so making it load and index the
+      # bridge's whole training corpus was sixty megabytes read to learn a frame rate
+      self.fps = 1.0 / (env.cfg.sim.mujoco.timestep * env.cfg.decimation)
+    else:
+      self.dataset = load_dataset(cfg.dataset_path, str(self.device), cfg.split)
+      if self.dataset.num_joints != self.num_joints:
+        raise ValueError(
+          f"The dataset holds {self.dataset.num_joints}-joint states and this robot has "
+          f"{self.num_joints}. Rebuild the dataset against this robot."
+        )
+      self.fps = self.dataset.fps
+      # The duration range is configured in seconds and only becomes control ticks here, at
+      # the simulator boundary. Everything above this line, and the whole external
+      # interface, is in seconds
+      min_steps = max(1, math.ceil(cfg.duration_s_range[0] * self.fps))
+      max_steps = max(min_steps, math.floor(cfg.duration_s_range[1] * self.fps))
+      self.windows = self.dataset.segments(
+        min_steps, max_steps, self.dataset.of(cfg.sources)
       )
-    self.fps = self.dataset.fps
-    self.leaving = self.dataset.of(cfg.leaving)
-    self.entering = self.dataset.of(cfg.entering)
+      self._span = max_steps
 
     self.tolerances = cfg.tolerances.as_tensor(self.device)
-    """The calibrated tolerances. Fixed for the whole run. This is what `arrived` means and
-    what every reported number is measured against, so it must not move."""
+    """The requirements. Fixed for the whole run. This is what `arrived` means and what
+    every reported number is measured against, so it must not move."""
 
     self.reward_tolerances = self.tolerances * cfg.tolerance_ceiling
-    """What the reward actually uses. Starts wide and ratchets down toward the fixed ones.
-    See `_tighten` for why, and why the two have to be different objects."""
+    """What the reward actually uses. Starts wide and descends toward the fixed ones. See
+    `_retune` for why, and why the two have to be different objects."""
 
     self._running_error = self.reward_tolerances / max(cfg.tolerance_slack, 1e-6)
     """Slow average of what each channel misses by at the deadline. Initialized so the
     first tightening asks for exactly the ceiling and measurements pull it down from
     there."""
 
-    self._tightened_at = -1
+    self._retuned_at = -1
     """Environment step the curriculum last moved on. `errors_now` is called from a reward
     term, and a second term reading it would advance the average twice in one step."""
 
@@ -265,16 +360,44 @@ class BridgeCommand(CommandTerm):
     """Gaps caught at the instant windows open, held until there are enough of them to take
     a median. Only `_check_tolerances` touches either."""
 
-    self.state_dim = self.dataset.states.shape[1]
+    self.state_dim = ROOT_STATE_DIM + 2 * self.num_joints
+
+    ##
+    # The demonstrated crossing. Read by the guidance reward and by the viewer, and by
+    # nothing else: it is in neither observation group and no metric is measured against it.
+    ##
+
+    self.has_reference = torch.zeros(self.num_envs, device=self.device)
+    """1 where this window carries a demonstrated crossing. Zero for a window aimed from
+    outside through `open_window`, which is what a live hand-over is: the robot is already
+    somewhere, and nothing recorded the motion from there."""
+
+    self._ref_rows = torch.zeros(
+      self.num_envs, self._span + 1, dtype=torch.long, device=self.device
+    )
+    """Dataset row per control tick. Column k is the state k ticks after the window opened.
+
+    Rows and not states. The states are (13 + 2J) wide and a table of them would be tens of
+    megabytes at 4096 environments, for something only one column of which is read per step.
+    """
+    self._ref_rotation = torch.zeros(self.num_envs, 4, device=self.device)
+    self._ref_rotation[:, 0] = 1.0
+    self._ref_from = torch.zeros(self.num_envs, 3, device=self.device)
+    self._ref_to = torch.zeros(self.num_envs, 3, device=self.device)
+    """The yaw and the translation `place` applied to this window, kept so a reference row
+    can be moved into the environment the same way its endpoints were. Storing the recipe
+    rather than the moved states is what keeps the table to one row index per tick."""
 
     # The window. target is a dataset row placed in this environment's world, deadline is
     # how many control steps the policy has to reach it
     self.target = torch.zeros(self.num_envs, self.state_dim, device=self.device)
     self.deadline = torch.full(
-      (self.num_envs,), cfg.deadline_range[1], dtype=torch.long, device=self.device
+      (self.num_envs,),
+      self.steps_for(torch.tensor(cfg.duration_s_range[1])).item(),
+      dtype=torch.long,
+      device=self.device,
     )
     self.start_distance = torch.zeros(self.num_envs, device=self.device)
-    self.stretched = torch.zeros(self.num_envs, device=self.device)
 
     # Latched at the deadline and held until the next window is drawn. The metrics read
     # these rather than the live state, because by then the env has already been reset and
@@ -283,19 +406,25 @@ class BridgeCommand(CommandTerm):
     self.score = torch.zeros(self.num_envs, device=self.device)
     self.arrived = torch.zeros(self.num_envs, device=self.device)
     self.final = torch.zeros(self.num_envs, len(CHANNELS), device=self.device)
+    self.final_joint_pos = torch.zeros(
+      self.num_envs, self.num_joints, device=self.device
+    )
+    self.final_joint_vel = torch.zeros(
+      self.num_envs, self.num_joints, device=self.device
+    )
 
     self.metrics["arrived"] = torch.zeros(self.num_envs, device=self.device)
     self.metrics["score"] = torch.zeros(self.num_envs, device=self.device)
     self.metrics["reached_deadline"] = torch.zeros(self.num_envs, device=self.device)
     self.metrics["deadline_s"] = torch.zeros(self.num_envs, device=self.device)
-    self.metrics["spread"] = torch.zeros(self.num_envs, device=self.device)
-    self.metrics["stretched"] = torch.zeros(self.num_envs, device=self.device)
+    self.metrics["start_noise"] = torch.zeros(self.num_envs, device=self.device)
     for name in CHANNELS:
       self.metrics[f"err_{name}"] = torch.zeros(self.num_envs, device=self.device)
     for name in CHANNELS:
       self.metrics[f"tol_{name}"] = torch.zeros(self.num_envs, device=self.device)
 
     self._ghost: mujoco.MjModel | None = None
+    self._reference_ghost: mujoco.MjModel | None = None
 
   ##
   # Where the episode is.
@@ -303,13 +432,13 @@ class BridgeCommand(CommandTerm):
 
   @property
   def step(self) -> torch.Tensor:
-    """How many control steps this episode has taken. (num_envs,).
+    """Control steps this episode has taken. (num_envs,).
 
     The environment's own counter, not one kept here. It is zeroed on reset and incremented
-    at the top of every step, before terminations and rewards run, so during those it names
-    the step that just happened, which is what a deadline wants. A counter maintained by
-    this term would have to advance in `_update_command`, which runs after the auto-reset,
-    and would be a step out for every environment that just finished.
+    at the top of every step, before terminations and rewards, so during those it names the
+    step that just happened. A counter maintained by this term would have to advance in
+    `_update_command`, which runs after the auto-reset, and would be a step out for every
+    environment that just finished.
     """
     return self._env.episode_length_buf
 
@@ -323,21 +452,10 @@ class BridgeCommand(CommandTerm):
     """How far through the window, in [0, 1]."""
     return (self.step.float() / self.deadline.float()).clamp(max=1.0)
 
-  def spread(self) -> float:
-    """How far off the natural spot a target may be put, as a share of the budget.
-
-    Ramps from zero over `curriculum_steps`, then holds. At zero every target sits exactly
-    where the robot's current momentum would take it, which is what a skill running on
-    undisturbed would produce and the easiest thing to ask for. At one it is anywhere in
-    the disc a walk could reach in the time available.
-
-    A curriculum on distance rather than on the deadline. They are the same dial from two
-    ends and one is enough.
-    """
-    if self.cfg.curriculum_steps <= 0:
-      return self.cfg.spread
-    alpha = min(self._env.common_step_counter / self.cfg.curriculum_steps, 1.0)
-    return self.cfg.spread * alpha
+  @property
+  def duration_s(self) -> torch.Tensor:
+    """The fixed duration of this window in physical seconds."""
+    return self.deadline.float() / self.fps
 
   ##
   # What the policy reads.
@@ -354,13 +472,18 @@ class BridgeCommand(CommandTerm):
     return torch.cat(
       [
         quat_apply_inverse(yaw, self.target[:, 0:3] - data.root_link_pos_w),
-        _rot6d(quat_mul(quat_conjugate(yaw), self.target[:, 3:7])),
-        quat_apply_inverse(yaw, self.target[:, 7:10]),
-        quat_apply_inverse(yaw, self.target[:, 10:ROOT_STATE_DIM]),
-        self.target[:, q] - data.default_joint_pos,
-        self.target[:, qd],
+        _rot6d(quat_mul(quat_conjugate(data.root_link_quat_w), self.target[:, 3:7])),
+        quat_apply_inverse(
+          data.root_link_quat_w, self.target[:, 7:10] - data.root_link_lin_vel_w
+        ),
+        quat_apply_inverse(
+          data.root_link_quat_w,
+          self.target[:, 10:ROOT_STATE_DIM] - data.root_link_ang_vel_w,
+        ),
+        self.target[:, q] - data.joint_pos,
+        self.target[:, qd] - data.joint_vel,
         (self.remaining.float() / self.fps).unsqueeze(-1),
-        (self.remaining.float() / self.deadline.float()).unsqueeze(-1),
+        self.duration_s.unsqueeze(-1),
       ],
       dim=-1,
     )
@@ -384,19 +507,58 @@ class BridgeCommand(CommandTerm):
       dim=-1,
     )
 
+  def reference_now(self) -> torch.Tensor:
+    """The demonstrated state for this control tick. (num_envs, 13 + 2J).
+
+    One column of the row table, moved into the environment by the same yaw and translation
+    `place` applied to the window's endpoints. Undefined where `has_reference` is zero, and
+    the guidance reward multiplies by that rather than branching.
+
+    A yaw and a horizontal slide are the whole transform, which is why this is cheap: the
+    crossing is a demonstrated motion and nothing about it is stretched, retimed or bent to
+    fit. It is either the motion that happened, moved, or it is not used.
+    """
+    tick = self.step.clamp(min=0, max=self._span)
+    rows = self._ref_rows.gather(1, tick.unsqueeze(-1)).squeeze(-1)
+    state = self.dataset.states[rows] if self.dataset is not None else self.target
+    moved = reyaw(state, self._ref_rotation)
+    moved[:, 0:3] = self._ref_to + quat_apply(
+      self._ref_rotation, state[:, 0:3] - self._ref_from
+    )
+    return moved
+
+  @property
+  def guide_scale(self) -> float:
+    """How much the demonstrated crossing is worth right now, from one down to zero.
+
+    Linear, reaching zero at `guide_steps`. After that this task is the ordinary bridge
+    exactly, which is the point of shaping rather than of adding an objective: the policy
+    finally optimized is the one that was always wanted, and the demonstration only said
+    where to look first.
+
+    It runs down while `noise_scale` runs up, and that is not a coincidence. The recorded
+    crossing starts from the recorded start, and the further the perturbation moves the
+    robot off it, the less that particular motion answers the question being asked. The two
+    ramps are the same statement made twice.
+    """
+    if self.cfg.guide_steps <= 0:
+      return 0.0
+    alpha = min(self._env.common_step_counter / self.cfg.guide_steps, 1.0)
+    return 1.0 - alpha
+
   def errors_now(self) -> torch.Tensor:
-    """The six channel errors against the target, this step, latching at the deadline.
+    """The 8 channel errors against the target this step, latching them at the deadline.
 
     Called from the reward, which is the only place an arrival can be read at all. The
     reward manager runs before the auto-reset; the metrics run after it, by which point an
-    environment that just finished holds a fresh robot at its default pose, and every
-    number taken from it describes a different episode. This project once shipped a success
-    metric that read 100% for exactly that reason.
+    environment that just finished holds a fresh robot at its default pose, so every number
+    taken from it describes a different episode. This project once shipped a success metric
+    that read 100% for exactly that reason.
 
     So the deadline snapshot is taken here and written straight into `metrics`, where
     `CommandTerm.reset` picks it up. `_update_metrics` never touches those entries.
     """
-    errors = channel_errors(self.state_now(), self.target, self.num_joints)
+    errors = channel_errors(self.state_now(), self.target, self.arms)
     self._check_tolerances(errors)
 
     at_deadline = self.step == self.deadline
@@ -404,12 +566,25 @@ class BridgeCommand(CommandTerm):
       score = arrival_score(errors, self.tolerances)
       hit = arrived(errors, self.tolerances).float()
       self.final = torch.where(at_deadline.unsqueeze(-1), errors, self.final)
+      now = self.state_now()
+      q = slice(ROOT_STATE_DIM, ROOT_STATE_DIM + self.num_joints)
+      qd = slice(ROOT_STATE_DIM + self.num_joints, ROOT_STATE_DIM + 2 * self.num_joints)
+      self.final_joint_pos = torch.where(
+        at_deadline.unsqueeze(-1),
+        (now[:, q] - self.target[:, q]).abs(),
+        self.final_joint_pos,
+      )
+      self.final_joint_vel = torch.where(
+        at_deadline.unsqueeze(-1),
+        (now[:, qd] - self.target[:, qd]).abs(),
+        self.final_joint_vel,
+      )
       self.score = torch.where(at_deadline, score, self.score)
       self.arrived = torch.where(at_deadline, hit, self.arrived)
       self.reached = torch.where(
         at_deadline, torch.ones_like(self.reached), self.reached
       )
-      self._tighten(errors[at_deadline])
+      self._retune(errors[at_deadline])
 
       self.metrics["score"] = self.score.clone()
       self.metrics["arrived"] = self.arrived.clone()
@@ -420,29 +595,27 @@ class BridgeCommand(CommandTerm):
     return errors
 
   def _check_tolerances(self, errors: torch.Tensor) -> None:
-    """Print, once per run, any tolerance wide enough that its channel is free.
+    """Print once per run: which requirements a motionless robot already meets, and which
+    none will reach soon.
 
-    A tolerance above the gap that channel has to close scores near one from the start,
-    carries no gradient, and lifts the total enough that a robot standing still looks like
-    it is doing the task. The gap is set by the dataset and by the pairing in
-    `_draw_target`, so rebuilding the dataset moves it out from under the numbers in
-    `Tolerances` with nothing to say so. That is how a statue at 0.459 sat next to a trained
-    policy's 0.454 for two training runs.
+    Measures the gap a robot that does nothing still has, and compares each requirement
+    against it:
 
-    Measured here and not in the dataset builder, because the builder only writes rows. What
-    decides the gap is the random heading, the `transit_time` rejection over `attempts`
-    candidates and the spread disc, and all three live on this side.
+        satisfied by doing nothing   requirement is above the gap, so this channel is not
+                                     what makes the task hard. Usually means the quantity
+                                     barely changes over a window this long
+        out of reach                 requirement is more than 10x below the gap, so
+                                     `arrived` reads zero on it for a long time
 
-    Read at the step a window opens, which is the gap a statue would still have at its
-    deadline and so the scale a tolerance belongs at. Windows open a few environments at a
-    time, so gaps are collected until there are enough for a median.
+    Neither is a reason to edit `Tolerances`. The requirement is what a hand-over needs; this
+    only reports how the task sits against it. An earlier version printed a value to paste
+    in, which made the definition of success a function of current difficulty.
 
-    Held until the curriculum has finished ramping. At spread zero every target sits where
-    the robot is already headed, and gaps measured there are small enough to flag every
-    tolerance in the file on every run. Play and evaluation configs carry no curriculum, so
-    there this runs within the first few seconds.
+    Read at the step a window opens, which is the error a statue would still have at its
+    deadline. Windows open a few environments at a time, so gaps are collected until there
+    are enough for a median. The gap does not move during a run, so one measurement is it.
     """
-    if self._checked or self.spread() < 0.99:
+    if self._checked:
       return
 
     at_open = self.step == 1
@@ -455,68 +628,81 @@ class BridgeCommand(CommandTerm):
     self._opening_gaps = []
     self._checked = True
 
-    loose = self.tolerances > 0.75 * gaps
-    if not bool(loose.any()):
+    free = self.tolerances >= gaps
+    unreachable = self.tolerances * 10.0 < gaps
+    if not bool((free | unreachable).any()):
       return
-    print(
-      "[bridge] tolerances wide against the gap their channel has to close, which makes "
-      "the channel free. Half the measured gap is where each belongs:"
-    )
+    print("[bridge] how the requirements sit against a robot that does nothing:")
     for index, name in enumerate(CHANNELS):
-      if bool(loose[index]):
-        gap = float(gaps[index])
-        print(
-          f"  {name:<14} tolerance {float(self.tolerances[index]):.2f}"
-          f"   median gap {gap:.2f}   belongs at {gap / 2.0:.2f}"
-        )
+      if not bool(free[index] or unreachable[index]):
+        continue
+      verdict = "satisfied by doing nothing" if free[index] else "out of reach for now"
+      print(
+        f"  {name:<14} requires {float(self.tolerances[index]):.2f}"
+        f"   statue misses by {float(gaps[index]):.2f}   {verdict}"
+      )
 
-  def _tighten(self, arrived_errors: torch.Tensor) -> None:
-    """Move each channel's reward tolerance toward what the policy is currently missing by.
+  def _retune(self, arrived_errors: torch.Tensor) -> None:
+    """Set each channel's reward tolerance so its kernel keeps teaching.
 
-    An exponential kernel only teaches over a narrow band. Past about three tolerances the
-    kernel and its gradient are numerically zero, the channel drops out of the objective,
-    and since it then costs nothing the policy spends it on the channels that still pay.
+    An exponential kernel only teaches over a narrow band. Past about 3 tolerances the kernel
+    and its gradient are numerically zero, the channel drops out of the objective, and since
+    it then costs nothing the policy spends it on the channels that still pay.
 
-    Measured on an 8400-iteration run:
+    Two things propose a tolerance and the wider one wins:
 
-        joint_pos error     1.075          tolerance 0.10   ->   exp(-115)
-        statue on the same channel  0.159
+        schedule    walks from `tolerance_ceiling` x requirement down to the requirement
+                    over `tolerance_steps`. The pressure to improve
+        brake       `tolerance_slack` x the running error, holding the tolerance near what
+                    the policy is missing by, about 1.4 tolerances out, the steepest part
+                    of the kernel
 
-    The bridge was not neglecting the joints, it was flailing them to drive the root,
-    because the root was the only thing it could feel.
+    So the schedule only binds while the policy keeps up with it.
 
-    So the tolerance is kept near the error instead of near the goal. `tolerance_slack`
-    times the running error puts the policy about 1.4 tolerances out, the steepest part of
-    the kernel, and keeps it there as the error falls. The floor is the calibrated
-    tolerance, so this makes the task reachable and never easier than what is asked for.
+    Do not make this ratchet down only. It used to, on the argument that a tolerance free to
+    widen would let a regressing policy score the same. It cannot: `score` and `arrived` are
+    computed against `self.tolerances`, which never moves. What the ratchet did instead, over
+    a 1713-iteration run:
 
-    Ratchets down only. A tolerance that could widen again would meet a policy that got
-    worse with a wider kernel and the same score, which is the original disease in a new
-    hat. Descending only means a regression costs reward.
+        iteration   err joint_pos   reward tolerance   kernel
+        0           0.161           0.990              0.97
+        240         0.213           0.155              0.15
+        480         0.243           0.150              0.07
+        1440        0.469           0.150              0.00005
+        1713        0.569           0.150              0.0000006
 
-    The average covers errors latched at a deadline and nothing else: an episode that ended
-    on the floor has no arrival to be wrong about.
+    An untrained bridge stands near its default pose, which scores well on joints for the
+    same reason a person standing still is good at not tripping. The ratchet read that as
+    capability and locked to it. Then the policy learned to move the root, moving the root
+    moves the joints, the error rose past a tolerance that could not follow, and the channel
+    was dead from iteration 1440 on. `arrived` was 0.000 all run.
 
-    Expect one side effect. The arrival reward falls as the tolerances tighten, even while
-    the policy improves, so the reward curve is not a progress bar. Read
-    Metrics/bridge/err_*, which are raw and carry no tolerance at all.
+    The running average covers errors latched at a deadline only. An episode that ended on
+    the floor has no arrival to be wrong about.
+
+    Side effect: the arrival reward falls as tolerances descend, even while the policy
+    improves, so the reward curve is not a progress bar. Read Metrics/bridge/err_*, which
+    are raw, alongside Metrics/bridge/tol_*.
     """
     if arrived_errors.numel() == 0:
       return
-    if self._env.common_step_counter == self._tightened_at:
+    if self._env.common_step_counter == self._retuned_at:
       return
-    self._tightened_at = self._env.common_step_counter
+    self._retuned_at = self._env.common_step_counter
 
     rate = self.cfg.tolerance_rate
     self._running_error = (
       1.0 - rate
     ) * self._running_error + rate * arrived_errors.mean(dim=0)
-    wanted = torch.clamp(
-      self.cfg.tolerance_slack * self._running_error,
+
+    alpha = min(self._env.common_step_counter / max(self.cfg.tolerance_steps, 1), 1.0)
+    schedule = self.tolerances * self.cfg.tolerance_ceiling ** (1.0 - alpha)
+
+    self.reward_tolerances = torch.clamp(
+      torch.maximum(schedule, self.cfg.tolerance_slack * self._running_error),
       min=self.tolerances,
       max=self.tolerances * self.cfg.tolerance_ceiling,
     )
-    self.reward_tolerances = torch.minimum(self.reward_tolerances, wanted)
 
   ##
   # Drawing a window.
@@ -525,127 +711,103 @@ class BridgeCommand(CommandTerm):
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     if env_ids.numel() == 0:
       return
+    if self.windows is None or self.dataset is None:
+      raise RuntimeError(
+        "This command has no corpus to draw a window from. Either give it a dataset_path "
+        "or drive it from outside with `open_window`, which is what the transition arena "
+        "does."
+      )
     count = env_ids.numel()
-    low, high = self.cfg.deadline_range
-
-    start = self.dataset.states[
-      self.leaving[torch.randint(0, self.leaving.numel(), (count,), device=self.device)]
-    ].clone()
-    deadline = torch.randint(low, high + 1, (count,), device=self.device)
+    start_rows, target_rows, steps, position = self.windows.draw(count)
+    start = self.dataset.states[start_rows].clone()
+    target = self.dataset.states[target_rows].clone()
 
     # A random heading for the start. Everything the policy reads is in its own heading
-    # frame and every target is placed relative to it, so this changes no question that is
+    # frame and the target is carried around with it, so this changes no question that is
     # ever asked. It is here so nothing can come to depend on the world frame by accident
     facing = quat_from_angle_axis(
       torch.rand(count, device=self.device) * (2.0 * math.pi), _up(count, self.device)
     )
-    start = reyaw(start, quat_mul(facing, quat_conjugate(yaw_quat(start[:, 3:7]))))
+    rotation = quat_mul(facing, quat_conjugate(yaw_quat(start[:, 3:7])))
+    origin = start[:, 0:3].clone()
+    start, target = reframe_pair(start, target, rotation)
+    self.place(env_ids, start, target, steps.float() / self.fps)
 
-    target, deadline, stretched = self._draw_target(start, deadline)
-    self.place(env_ids, start, target, deadline, stretched)
+    # After `place`, which clears the reference along with every other latch. `origin` is
+    # the start position before the reframe, which is also after it: a yaw turns a state
+    # without moving it. `landed` is where the nominal start went, recomputed rather than
+    # read back off the robot, because the robot is perturbed after being put there and the
+    # crossing is anchored to the window, not to the noise
+    landed = start[:, 0:3].clone()
+    landed[:, 0:2] = self._env.scene.env_origins[env_ids][:, :2]
+    self._ref_rows[env_ids] = self.windows.path(position, steps, self._span)
+    self._ref_rotation[env_ids] = rotation
+    self._ref_from[env_ids] = origin
+    self._ref_to[env_ids] = landed
+    self.has_reference[env_ids] = 1.0
 
-  def _draw_target(
-    self, start: torch.Tensor, deadline: torch.Tensor
-  ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """A target the robot can reach from `start` in `deadline` steps.
+  ##
+  # The interface: a state to leave from, a state to arrive in, and a duration in seconds.
+  ##
 
-    Candidates are drawn all at once and the first admissible one per environment is kept,
-    rather than looping until something fits. Where nothing fits, the least demanding
-    candidate is kept and the deadline is stretched to what it needs.
+  def steps_for(self, duration_s: torch.Tensor) -> torch.Tensor:
+    """Seconds to control ticks. The only place the conversion happens.
+
+    A tick count is an implementation detail: it changes with the decimation and means
+    nothing to a caller choosing between a 1.0 s target and a 0.5 s one. Seconds are the
+    currency everywhere above this line.
     """
-    count = start.shape[0]
-    attempts = self.cfg.attempts
+    return (duration_s * self.fps).round().long().clamp(min=1)
 
-    rows = self.entering[
-      torch.randint(0, self.entering.numel(), (count, attempts), device=self.device)
-    ]
-    candidates = self.dataset.states[rows]
+  def open_window(self, env_ids: torch.Tensor, duration_s: torch.Tensor) -> None:
+    """Start the clock on the target currently held, for this many seconds. Teleports nobody.
 
-    # Turned to face the way this window asks for, before anything is measured. The turn
-    # moves the velocity vector, and it is the turned velocity the robot has to arrive with
-    heading = yaw_quat(start[:, 3:7]).unsqueeze(1).expand(count, attempts, 4)
-    budget = self.cfg.turn_speed * deadline.float() / self.fps * self.spread()
-    turn = (
-      2.0 * torch.rand(count, attempts, device=self.device) - 1.0
-    ) * budget.unsqueeze(1)
-    facing = quat_mul(
-      heading,
-      quat_from_angle_axis(
-        turn.reshape(-1), _up(count * attempts, self.device)
-      ).reshape(count, attempts, 4),
-    )
-    candidates = reyaw(
-      candidates.reshape(-1, self.state_dim),
-      quat_mul(
-        facing.reshape(-1, 4),
-        quat_conjugate(yaw_quat(candidates.reshape(-1, self.state_dim)[:, 3:7])),
-      ),
-    ).reshape(count, attempts, self.state_dim)
+    `place` is this plus a start state to teleport onto. A live hand-over already has the
+    robot where it wants it, so it calls this instead.
+    """
+    self._open(env_ids, duration_s, self.robot.data.root_link_pos_w[env_ids])
 
-    # What each candidate costs, in seconds, on the two things placement cannot fix
-    horizon = (deadline.float() / self.fps).unsqueeze(1)
-    need = transit_time(
-      start[:, None],
-      candidates,
-      self.num_joints,
-      self.cfg.max_accel,
-      self.cfg.joint_speed,
-    )
+  def _open(
+    self, env_ids: torch.Tensor, duration_s: torch.Tensor, root_pos: torch.Tensor
+  ) -> None:
+    """Set the deadline and clear every latch from the window before.
 
-    fits = need <= horizon
-    # First admissible candidate, or the cheapest when there is none. argmax on a bool picks
-    # the first True, and on an all-False row picks index zero, so the fallback is selected
-    # explicitly rather than relied on
-    pick = torch.where(fits.any(dim=1), fits.float().argmax(dim=1), need.argmin(dim=1))
-    index = pick.view(-1, 1, 1).expand(-1, 1, self.state_dim)
-    target = candidates.gather(1, index).squeeze(1)
-    chosen = need.gather(1, pick.view(-1, 1)).squeeze(1)
-
-    stretched = chosen > horizon.squeeze(1)
-    deadline = torch.where(
-      stretched, (chosen * self.fps).ceil().long().clamp(min=1), deadline
-    )
-
-    # Where it goes. The center of the disc is where a body would be if it changed
-    # velocity steadily from the one it has to the one asked for, which is the placement a
-    # window produces when nothing has gone wrong. The offset around it is the curriculum:
-    # at spread zero every target sits on that spot
-    horizon = deadline.float() / self.fps
-    bearing = torch.rand(target.shape[0], device=self.device) * (2.0 * math.pi)
-    radius = (
-      torch.rand(target.shape[0], device=self.device)
-      * self.cfg.travel_speed
-      * horizon
-      * self.spread()
-    )
-    drift = torch.stack([radius * bearing.cos(), radius * bearing.sin()], dim=-1)
-    target[:, 0:2] = (
-      start[:, 0:2]
-      + 0.5 * (start[:, 7:9] + target[:, 7:9]) * horizon.unsqueeze(-1)
-      + quat_apply(
-        yaw_quat(start[:, 3:7]),
-        torch.cat([drift, torch.zeros_like(radius).unsqueeze(-1)], dim=-1),
-      )[:, 0:2]
-    )
-    return target, deadline, stretched.float()
+    `root_pos` is where the robot starts, passed in rather than read, because `place` calls
+    this before it has written the teleport to the simulator and the live buffers still hold
+    the previous episode.
+    """
+    self.deadline[env_ids] = self.steps_for(duration_s)
+    self.start_distance[env_ids] = (root_pos - self.target[env_ids, 0:3]).norm(dim=-1)
+    # Cleared here rather than in `place`, so a window aimed from outside cannot inherit
+    # the crossing of the window before it
+    self.has_reference[env_ids] = 0.0
+    self.reached[env_ids] = 0.0
+    self.score[env_ids] = 0.0
+    self.arrived[env_ids] = 0.0
+    self.final[env_ids] = 0.0
+    self.final_joint_pos[env_ids] = 0.0
+    self.final_joint_vel[env_ids] = 0.0
 
   def place(
     self,
     env_ids: torch.Tensor,
     start: torch.Tensor,
     target: torch.Tensor,
-    deadline: torch.Tensor,
-    stretched: torch.Tensor | None = None,
+    duration_s: torch.Tensor,
   ) -> None:
-    """Open a window on these environments and put the robot on its start.
+    """Open a window on these environments and teleport the robot onto its start.
 
-    `start` and `target` are (N, 13 + 2J) in one shared frame. Both slide horizontally so
-    the start lands on the environment's origin, which keeps them in one coordinate system
-    without the caller knowing where that is. Heights, headings and velocities are
-    untouched by the slide.
+    Args:
+      env_ids: which environments.
+      start, target: (N, 13 + 2J) dataset rows in one shared frame.
+      duration_s: how long the bridge gets.
 
-    Public because a window does not have to come from the dataset. Nothing else calls it
-    today.
+    Both states slide horizontally so the start lands on the environment origin, which keeps
+    them in one coordinate system without the caller knowing where that is. Heights, headings
+    and velocities are untouched by the slide.
+
+    The target is written once, here, in world coordinates, and nothing moves it until the
+    next window. That is the difference between a goal and a carrot.
     """
     if env_ids.numel() == 0:
       return
@@ -659,23 +821,26 @@ class BridgeCommand(CommandTerm):
     root_pos[:, 0:2] = origin[:, :2]
 
     self.target[env_ids] = target
-    self.deadline[env_ids] = deadline
-    self.start_distance[env_ids] = (root_pos - target[:, 0:3]).norm(dim=-1)
-    self.stretched[env_ids] = (
-      torch.zeros_like(deadline, dtype=torch.float32)
-      if stretched is None
-      else stretched
-    )
-    self.reached[env_ids] = 0.0
-    self.score[env_ids] = 0.0
-    self.arrived[env_ids] = 0.0
-    self.final[env_ids] = 0.0
+    self._open(env_ids, duration_s, root_pos)
 
+    root_quat = start[:, 3:7].clone()
+    root_lin_vel = start[:, 7:10].clone()
+    root_ang_vel = start[:, 10:ROOT_STATE_DIM].clone()
     joint_pos = start[:, ROOT_STATE_DIM : ROOT_STATE_DIM + self.num_joints]
     joint_vel = start[:, ROOT_STATE_DIM + self.num_joints :]
-    if self.cfg.start_noise > 0.0:
-      scale = self.cfg.start_noise
+    scale = self.noise_scale
+    if scale > 0.0:
       root_pos = root_pos + torch.randn_like(root_pos) * scale * 0.02
+      axis = torch.randn_like(root_pos)
+      axis = axis / axis.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+      root_quat = quat_mul(
+        quat_from_angle_axis(
+          torch.randn(env_ids.numel(), device=self.device) * scale * 0.05, axis
+        ),
+        root_quat,
+      )
+      root_lin_vel = root_lin_vel + torch.randn_like(root_lin_vel) * scale * 0.15
+      root_ang_vel = root_ang_vel + torch.randn_like(root_ang_vel) * scale * 0.15
       joint_pos = joint_pos + torch.randn_like(joint_pos) * scale * 0.03
       joint_vel = joint_vel + torch.randn_like(joint_vel) * scale * 0.3
 
@@ -683,9 +848,7 @@ class BridgeCommand(CommandTerm):
     joint_pos = joint_pos.clamp(limits[:, :, 0], limits[:, :, 1])
     self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
     self.robot.write_root_state_to_sim(
-      torch.cat(
-        [root_pos, start[:, 3:7], start[:, 7:10], start[:, 10:ROOT_STATE_DIM]], dim=-1
-      ),
+      torch.cat([root_pos, root_quat, root_lin_vel, root_ang_vel], dim=-1),
       env_ids=env_ids,
     )
     # Not optional. qpos and qvel are not the whole state: the action term holds the last
@@ -693,19 +856,36 @@ class BridgeCommand(CommandTerm):
     # without clearing them starts its window carrying a step of somebody else's episode
     self.robot.reset(env_ids=env_ids)
 
+  @property
+  def noise_scale(self) -> float:
+    """How hard the start state is perturbed right now. Ramps from 0 to `start_noise`.
+
+    At inference the bridge takes over from whatever the outgoing skill left behind, never
+    from a dataset row, so a policy that has only ever started exactly on one has never had
+    to steer.
+
+    The perturbation is also the one thing here that can make a window unreachable: the
+    endpoints are demonstrated, and pushing the start off its demonstrated value breaks that.
+    Ramping means the task is solvable while the policy is learning what it is.
+    """
+    if self.cfg.start_noise <= 0.0:
+      return 0.0
+    alpha = min(self._env.common_step_counter / max(self.cfg.start_noise_steps, 1), 1.0)
+    return self.cfg.start_noise * alpha
+
   def _update_command(self) -> None:
     pass
 
   def _update_metrics(self) -> None:
     """Only the live numbers.
 
-    `errors_now` writes the latched ones, before the reset that destroys the state they are
-    read from. Writing them again here would overwrite them with whatever the freshly reset
-    robot happens to look like.
+    `errors_now` writes the latched ones before the reset that destroys the state they are
+    read from. Writing them again here would overwrite them with a freshly reset robot.
     """
-    self.metrics["deadline_s"] = self.deadline.float() / self.fps
-    self.metrics["spread"] = torch.full_like(self.metrics["spread"], self.spread())
-    self.metrics["stretched"] = self.stretched.clone()
+    self.metrics["deadline_s"] = self.duration_s
+    self.metrics["start_noise"] = torch.full_like(
+      self.metrics["start_noise"], self.noise_scale
+    )
     for index, name in enumerate(CHANNELS):
       self.metrics[f"tol_{name}"] = torch.full_like(
         self.metrics[f"tol_{name}"], float(self.reward_tolerances[index])
@@ -716,30 +896,59 @@ class BridgeCommand(CommandTerm):
   ##
 
   def _debug_vis_impl(self, visualizer) -> None:
-    """A translucent robot standing in the target.
+    """Two translucent robots: the target, and the crossing that leads to it.
 
-    A pose and nothing else, because a pose is all that can be drawn: half of a target is
-    velocity and a still body says nothing about that. It does show where the window is
-    sending the robot, and after the deadline it stays where it was put, so the gap to the
-    real robot is the arrival error left standing to be looked at.
+    The amber one stands in the target. A pose and nothing else, because a pose is all that
+    can be drawn: half of a target is velocity and a still body says nothing about that. It
+    does show where the window is sending the robot, and after the deadline it stays where
+    it was put, so the gap to the real robot is the arrival error left standing to be looked
+    at.
+
+    The blue one walks the demonstrated crossing, a frame per control tick, and arrives
+    inside the amber one at the deadline because the last frame of the crossing is the
+    target. It is what `guidance` is paying for, so watching the robot fall behind it is
+    watching the shaping fail to take; watching the robot follow it and still miss the
+    target would mean the crossing is being tracked and the arrival is not.
+
+    Drawn only where there is a crossing to draw. A window aimed from outside through
+    `open_window` has none, and a blue robot standing at the last window's pose would be a
+    picture of something that is not happening.
     """
     if self._ghost is None:
       self._ghost = self._tinted(TARGET_COLOR)
+    if self._reference_ghost is None:
+      self._reference_ghost = self._tinted(REFERENCE_COLOR)
 
     indexing = self.robot.indexing
     free = indexing.free_joint_q_adr.cpu().numpy()
     joints = indexing.joint_q_adr.cpu().numpy()
-    for batch in visualizer.get_env_indices(self.num_envs):
+    reference = self.reference_now().detach().cpu().numpy()
+    has_reference = self.has_reference.detach().cpu().numpy()
+    target = self.target.detach().cpu().numpy()
+
+    def pose(row: np.ndarray) -> np.ndarray:
       # From qpos0 rather than zeros: a zero quaternion is not a rotation, and anything
       # else in the scene keeps its own default
       qpos = np.array(self._env.sim.mj_model.qpos0, dtype=np.float64)
-      row = self.target[batch].detach().cpu().numpy()
       qpos[free[0:3]] = row[0:3]
       qpos[free[3:7]] = row[3:7]
       qpos[joints] = row[ROOT_STATE_DIM : ROOT_STATE_DIM + self.num_joints]
+      return qpos
+
+    for batch in visualizer.get_env_indices(self.num_envs):
       visualizer.add_ghost_mesh(
-        qpos, model=self._ghost, alpha=TARGET_COLOR[3], label=f"target_{batch}"
+        pose(target[batch]),
+        model=self._ghost,
+        alpha=TARGET_COLOR[3],
+        label=f"target_{batch}",
       )
+      if has_reference[batch] > 0.0:
+        visualizer.add_ghost_mesh(
+          pose(reference[batch]),
+          model=self._reference_ghost,
+          alpha=REFERENCE_COLOR[3],
+          label=f"reference_{batch}",
+        )
 
   def _tinted(self, color: tuple[float, float, float, float]) -> mujoco.MjModel:
     """This scene's model with the robot painted `color` and everything else hidden."""
@@ -769,10 +978,9 @@ def _up(count: int, device: torch.device | str) -> torch.Tensor:
 
 
 def reyaw(states: torch.Tensor, rotation: torch.Tensor) -> torch.Tensor:
-  """The same state facing a different way. (N, 13 + 2J). Position is the caller's.
+  """The same state facing a different way. (N, 13 + 2J). Position is left to the caller.
 
-  Every skill here is egocentric: it reads its own body frame, and a tracker reads poses
-  relative to an anchor it carries. So a state a skill produced facing one way is a state it
+  Every policy here is egocentric, so a state produced facing one way is a state the robot
   can be in facing another. The rotation has to reach the orientation and both velocity
   vectors, or the pose and the momentum disagree about which way the body is going.
   """
@@ -783,8 +991,19 @@ def reyaw(states: torch.Tensor, rotation: torch.Tensor) -> torch.Tensor:
   return out
 
 
+def reframe_pair(
+  start: torch.Tensor, target: torch.Tensor, rotation: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+  """Apply one yaw change to a demonstrated transition without changing its displacement."""
+  displacement = target[:, 0:3] - start[:, 0:3]
+  start = reyaw(start, rotation)
+  target = reyaw(target, rotation)
+  target[:, 0:3] = start[:, 0:3] + quat_apply(rotation, displacement)
+  return start, target
+
+
 def _rot6d(quat: torch.Tensor) -> torch.Tensor:
-  """The first two columns of a rotation matrix, flattened. (..., 4) -> (..., 6).
+  """First two columns of a rotation matrix, flattened. (..., 4) -> (..., 6).
 
   Six numbers rather than a quaternion's four: a quaternion has two representations for
   every rotation, and this form is unique and continuous.
@@ -797,30 +1016,42 @@ def _rot6d(quat: torch.Tensor) -> torch.Tensor:
 class BridgeCommandCfg(CommandTermCfg):
   entity_name: str = "robot"
 
-  dataset_path: Path = DEFAULT_DATASET
-  split: str = "train"
-  leaving: tuple[str, ...] | None = None
-  """Which skills a start state may come from. None means any in the dataset."""
-  entering: tuple[str, ...] | None = None
-  """Which skills a target state may come from. None means any in the dataset."""
+  dataset_path: Path | None = DEFAULT_DATASET
+  """The corpus windows are drawn from, or None for a command aimed entirely from outside.
 
-  deadline_range: tuple[int, int] = (15, 60)
-  """Control steps the bridge gets, before any stretching. At 50 Hz that is 0.3 to 1.2 s:
-  long enough to take a step or two, short enough that momentum still decides the answer."""
+  None is what the transition arena wants: it never draws a window, so loading a corpus there
+  reads a large file to learn a frame rate the environment already knows."""
+  split: str = "train"
+  sources: tuple[str, ...] | None = None
+  """Which skills or clips a window may come from. None means any in the dataset.
+
+  One filter and not a separate one per end. A window is a contiguous stretch of a single
+  rollout, so both ends are always the same source, and asking for a start from one skill
+  and a target from another describes nothing this dataset contains. Covering a posture
+  family is a matter of what went into the corpus, which is `datasets/tracker.py`'s job.
+  """
+
+  duration_s_range: tuple[float, float] = (0.3, 1.2)
+  """How long a window may be, in seconds.
+
+  The simulator still advances in discrete control ticks, but the dataset, this config and
+  the external bridge interface are all in seconds. `BridgeCommand.steps_for` is the only
+  conversion.
+  """
 
   tolerances: Tolerances = field(default_factory=Tolerances)
   """What arriving means. Fixed, and the floor the curriculum below descends to."""
 
   ##
-  # The tolerance curriculum. See `BridgeCommand._tighten`.
+  # The tolerance curriculum. See `BridgeCommand._retune`.
   ##
 
   tolerance_ceiling: float = 10.0
-  """How many times the calibrated tolerance a channel may start at.
+  """How many times its requirement a channel's reward kernel may start at.
 
-  Ten is what the worst channel needs. joint_pos is calibrated at 0.10 and an untrained
-  bridge misses by about 1.0, so anything tighter starts it on the flat part of its own
-  kernel, which is the situation this exists to prevent."""
+  Ten is what the worst channel needs. arm_joint_pos requires 0.05 and an untrained bridge
+  misses by several times that, so anything tighter starts the channel on the flat part of
+  its own kernel, which is the situation this exists to prevent."""
 
   tolerance_slack: float = 0.7
   """Where the tolerance sits relative to the error being made, as a fraction.
@@ -832,44 +1063,44 @@ class BridgeCommandCfg(CommandTermCfg):
   tolerance_rate: float = 1.0e-3
   """How fast the running error follows the measured one, per environment step.
 
-  Slow on purpose. The tolerance only descends, so a rate that reacts to a lucky batch
-  writes that batch into the task permanently."""
+  Slow on purpose. The tolerance is read off this average every step, so a rate that reacts
+  to a single lucky batch makes the task jitter under the policy."""
 
-  ##
-  # What makes a pair feasible.
-  ##
+  tolerance_steps: int = 120_000
+  """Environment steps to walk a reward kernel from the ceiling down to the requirement.
 
-  max_accel: float = 3.0
-  """What a humanoid root sustains, in m/s^2. A candidate needing more than this to match
-  the target's velocity in the time available is redrawn."""
-
-  joint_speed: float = 4.0
-  """Sustained joint rate, in rad/s. Same use, for the joints.
-
-  Far below the actuator velocity limit on purpose. That limit is what a joint reaches
-  unloaded, high enough that a check against it never binds, which is how the previous
-  bridge came to be trained on pairs whose joints could not get there."""
-
-  attempts: int = 8
-  """Candidate targets drawn per environment before the deadline is stretched instead."""
-
-  spread: float = 1.0
-  """How far off the natural spot a target may be put, as a share of the reachable disc."""
-
-  travel_speed: float = 1.2
-  """Ground a body is assumed able to cover, in m/s, when sizing that disc."""
-
-  turn_speed: float = 1.5
-  """Turn a body is assumed able to make, in rad/s, when sizing the heading offset."""
-
-  curriculum_steps: int = 60_000
-  """Environment steps over which `spread` ramps from zero. Zero starts at full spread,
-  which is what a run resuming from a checkpoint that already crosses easy windows wants."""
+  A third of a 15000-iteration run at 24 steps per iteration, leaving two thirds of training
+  at the tolerance actually being asked for. A bound, not a demand: the running error holds
+  the tolerance above the schedule for as long as the policy needs it there, so a shorter
+  setting stops the schedule binding rather than making the task harder."""
 
   start_noise: float = 1.0
-  """Scale on the perturbation applied to the start state. At inference the robot arrives
-  from whatever the outgoing skill left behind, never from a dataset row, and a policy that
-  has only started exactly on one has never had to steer."""
+  """Full scale of the perturbation applied to the start state.
+
+  Every component of the state is perturbed, not just position and joint angles: an
+  interruption or a state estimator can be wrong about a root orientation or a velocity too,
+  and those are the ones a bridge has to steer out of.
+  """
+
+  guide_steps: int = 60_000
+  """Environment steps the `guidance` shaping takes to fade from full weight to nothing.
+
+  Zero switches it off, which turns this task into the bridge without shaping.
+
+  Matched to `start_noise_steps`. The crossing starts from the recorded start, so the further
+  the perturbation moves the robot off it, the less that motion answers the question. One
+  ramp up and one down is the same statement twice.
+
+  Must finish well before `tolerance_steps`, or the arrival kernel reaches the accuracy it is
+  actually asking for while the policy is still being paid to imitate.
+  """
+
+  start_noise_steps: int = 60_000
+  """Environment steps the perturbation takes to widen from nothing to `start_noise`.
+
+  See `BridgeCommand.noise_scale`. Shorter than the tolerance schedule on purpose: this one
+  makes the task harder and should be finished well before the tolerances arrive at what
+  they are actually asking for."""
 
   def build(self, env: ManagerBasedRlEnv) -> BridgeCommand:
     return BridgeCommand(self, env)
