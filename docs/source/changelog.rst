@@ -16,6 +16,52 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Added the ``selector`` package, which finds where each skill can be entered
+  instead of asking someone to write it down. ``selector.record`` drives every
+  trained skill and writes what it does, ``selector.build`` clusters those
+  states and keeps the spots most rollouts pass through, and ``selector.view``
+  draws one skill's entries side by side in viser. Nothing in it is per-skill:
+  no contacts, no gait, no clip landmarks, so the same code covers a jump, a
+  kick or a backflip. A candidate is then measured against the floor and
+  dropped if the robot is airborne in it, since a mid-flight state is a real
+  part of a jump and no controller can put a body on a chosen ballistic arc.
+  Grounded states read within a millimetre of the floor and airborne ones 13 cm
+  or more, so that bound is a gap rather than a tuned number. The result is a
+  small table at
+  ``data/selector/entries.npz`` holding, per entry, the pose to aim at, the
+  control step to enter the skill's phase at, and how reliably rollouts pass
+  through it. This replaces the hand-written posture table it shipped with. It
+  says where a skill can be joined, not whether it survives being restarted
+  there, which still needs a rollout sweep.
+- Added an ``entry`` sampling mode to ``JumpCommandCfg``, which starts an
+  episode where the jump loads instead of at the clip's first frame, and made
+  it the default for ``uv run play Mjlab-G1-Jump``. The ASAP clips open with
+  one to two seconds of standing still before anything happens, and playing
+  that back was faithful to the recording rather than anything the skill
+  needed. The entry frame is found per clip from the root height, so it
+  carries the goal: crouch depth runs from 8 cm on the shortest jump to 26 cm
+  on the longest, and one fixed frame could not serve every distance.
+  ``entry_landmark`` chooses between the frame the root first drops out of
+  standing (``load``, the default) and the bottom of the crouch (``crouch``),
+  and ``entry_offset`` backs either one off. No retraining is involved: the
+  skill is trained with reference-state initialization over the whole clip, so
+  these are frames it has always been reset into.
+- ``entry_landmark`` defaults to ``load`` rather than the bottom of the crouch,
+  because of where the retargeted clips sit relative to the floor. The clips
+  are shifted vertically to stand on the ground, and ``dataset.py`` caps that
+  shift with ``MAX_GROUND_PENETRATION`` measured on the ankle body origin. That
+  proxy holds while the foot is flat and breaks when it pitches: standing, the
+  ankle origin sits 3.6 cm above the sole; in the crouch the heel lifts and it
+  grows to 7.7 cm. The clips therefore pass their own check while the sole is
+  4.3 to 7.5 cm underground, and the crouch is the worst frame in every one of
+  them. That is free while the clip is only a tracking target, and costs
+  something at a reset, which writes the robot into the pose. ``load`` is the
+  last frame before the sink begins.
+- Added ``...skills.jump.entry``, which measures what each entry mode costs a
+  checkpoint. On ``g1_jump`` the entry landmarks rank by how deep the reset
+  pose sits: ``load`` enters with the sole 7 mm under and survives 100% of
+  episodes, matching a standing start, while the bottom of the crouch enters
+  64 mm under and survives 99.6%.
 - Added ``GeomCfg``, exposed as the ``geoms`` field on ``EntityCfg``, a spec
   editor that matches geoms by name and patches their attributes. Supports
   ``group`` (so a geom can collide without being drawn) and all collision
@@ -30,6 +76,28 @@ Added
 - Added a ``gui`` field to ``CommandTermCfg``, defaulting to ``True``. Set it
   to ``False`` to keep a command term from adding controls to the Viser
   viewer, for terms something else already drives.
+- Added a ``guidance`` reward to ``Mjlab-G1-Bridge``. Every window is a
+  contiguous slice of one tracker rollout, so the frames between its endpoints
+  are a crossing this robot performed under this physics; the term pays for
+  staying near that crossing, and its weight anneals to zero over
+  ``BridgeCommandCfg.guide_steps``, after which the reward is what it was
+  before. It is shaping, never an objective: there is no reference at inference
+  and the start is perturbed off the recorded one during training, so scoring
+  the crossing would pay for imitating one answer instead of for arriving. Both
+  observation groups are untouched, so the policy reads only its own state and
+  the gap to the target. ``Segments.draw`` also returns the position a window
+  opened at, and ``Segments.path`` reads the rows between a window's endpoints.
+- ``uv run play Mjlab-G1-Bridge`` now draws two ghosts: the target in amber
+  standing where the window ends, and the recorded crossing in blue walking
+  through it as the clock runs.
+- Added ``...bridge.datasets.view``, a Viser viewer for the windows a bridge is
+  trained on. It draws a start/target pair the way the command term does and
+  replays the recording it was cut from as a ghost: green through the context
+  either side, red across the masked stretch between the two states. It also
+  lists what the corpus holds per source (states, rollouts, and how many windows
+  each admits); a source with states but no windows contributed nothing to
+  training and was previously visible nowhere. Previous/Next step through the
+  windows drawn so far, and Play/Stop/Reset drive the playback.
 - Added a ``priority`` argument to ``get_box_spec`` and ``get_box_cfg``,
   defaulting to ``0``. Raise it so the box's own ``friction`` wins against the
   terrain's instead of losing to MuJoCo's elementwise maximum, which is what
@@ -38,16 +106,125 @@ Added
 Changed
 ^^^^^^^
 
+- Removed the bridge's warm-start machinery: ``warm_start.py``,
+  ``BridgeRunnerCfg``, ``BridgeOnPolicyRunner`` and the ``--agent.warm-start``
+  flag. It was measured to hurt (0.064 score against a cold start's 0.142 at a
+  matched 60 iterations) and was off by default. ``Mjlab-G1-Bridge`` now
+  registers a plain ``RslRlOnPolicyRunnerCfg`` with no custom runner class.
+- Rewrote the bridge's docstrings and comments: shorter, tables instead of
+  prose, and a "Run" section with the commands to type in the modules that have
+  an entry point.
 - Bumped ``rsl-rl-lib`` from 5.4.0 to 5.4.2.
 - ``CollisionCfg`` and ``GeomCfg`` now share one write path, and mjlab warns
   when a ``GeomCfg`` collision patch is overwritten by a ``CollisionCfg``.
 - Changed the default MuJoCo Warp render background to solid black
   (``0, 0, 0, 1``), matching MuJoCo's native renderer. Contribution by
   @bd-pmorais.
+- ``Mjlab-G1-Bridge`` now draws every window as a contiguous segment of a
+  single rollout instead of pairing two independently sampled states, so the
+  displacement, velocity change, joint travel and time available of each window
+  were demonstrated together under physics. Datasets must be rebuilt: the
+  segment index needs the ``trajectory`` column, and the task refuses to load a
+  file without it.
+- ``BridgeCommandCfg`` takes a single ``sources`` filter in place of
+  ``leaving`` and ``entering``, which described a pairing the task no longer
+  builds, and ``BridgeCommand.place`` and ``open_window`` take a duration in
+  seconds instead of a count of control ticks. ``BridgeCommand.steps_for`` is
+  the only conversion.
+- The bridge's arrival metric splits its joint channel into legs/torso and
+  arms, giving eight channels instead of six, and scores each group on its
+  worst joint. An arm left behind used to be a fraction of one channel out of
+  six and is now a channel at zero, which the bottleneck term prices at most of
+  the episode. Tolerances were recalibrated against the new windows.
+- The bridge's positive ``air_time`` reward is replaced by a one-sided
+  ``feet_chatter`` penalty. The old term paid for a gait whatever the target
+  was, which fought every commanded crouch or planted stance; the new one
+  charges only for a flight or a stance too short to be a step, so a planted
+  foot and a real step both cost nothing.
+- The bridge's start-state perturbation now widens over
+  ``start_noise_steps`` rather than being applied at full scale from the first
+  window.
+- The bridge's arrival tolerances are now a requirement in physical units
+  (metres, radians, and rates) chosen for what the next skill needs, instead of
+  being derived from the corpus at half each channel's median gap. The derived
+  values moved whenever the dataset was rebuilt, so no two runs shared a
+  definition of success, and the two corpora produced different gaps and could
+  not share one set at all. The gap measurement survives as a read-only report:
+  ``evaluate --calibrate`` becomes ``evaluate --diagnose``, which says which
+  channels a robot standing still already satisfies and which are far enough out
+  that ``arrived`` will read zero, and no longer prints a block to paste back
+  into the config.
+- The transition arena builds its control panel from what each skill declares
+  it can be told, as ``Actor.controls`` and ``Actor.condition``: walking gets a
+  forward speed, a sideways speed and a heading, the strike skills get a ball
+  speed and an aim over the range they were trained on, and the punch
+  combination gets nothing because it is one clip with no goal. A skill's
+  conditioning is applied only while that skill owns the world, which replaces
+  the ``entering_speed`` special case that existed because walk and run share
+  one velocity term and whichever wrote it last won.
+- The hand-over trigger now chooses the bridge's window as well as the moment.
+  It asks, of every duration the bridge was trained on, where the robot would
+  end up, and fires as soon as one of them satisfies the entering skill's
+  precondition. A fixed window could only wait for the world to drift into
+  agreement with it, so a skill needing the robot further on had to be walked
+  towards until the arithmetic worked out, and one already too close never
+  fired at all. On walk to kick the switch picks 1.20 s from a metre out, where
+  the entry's own 0.70 s would have had to wait another third of a metre.
+- ``Actor.robot`` lets a skill patch the robot the arena builds. The kick reads
+  its observation off two sites it adds to the striking foot, and the arena kept
+  the bridge's plain robot, so that transition could not be staged at all.
+- Added ``tests/handoff.py``, which measures what a hand-over is worth before
+  a bridge exists. It interrupts the leaving skill mid-stride and runs the same
+  hand-over twice: cold, with the entering skill taking over from wherever the
+  robot was left, and into a teleport onto the entry state, which is an oracle
+  bridge. The gap between them is the headroom a real bridge is competing for.
+  On walk to punch_combo: cold falls after 17 steps for a discounted return of
+  0.013, the oracle runs the full window for 0.152.
+- Entry states for skills trained by imitation are read from the skill's own
+  reference clip instead of being written by hand, resolved through the task's
+  registered config so the selector and the policy cannot point at different
+  files. ``punch_combo`` now opens from its clip's frame zero, a fighting guard
+  68 degrees from the default pose at the worst joint, rather than from a stand.
+- ``BridgeCommandCfg.dataset_path`` accepts ``None``, for a command aimed
+  entirely from outside. The transition arena was loading the bridge's whole
+  training corpus to learn a frame rate the environment already knew, which also
+  meant a transition could not be staged before the corpus was built.
+- Fixed ``front_kick`` and ``punch_combo`` pointing at clip directories the
+  converted motions are no longer in, which left both tasks registered with an
+  empty motion list.
+- The selector is a hand-written lookup table again. ``selector/table.py``
+  holds a short list of postures per skill in degrees and metres,
+  ``selector/check.py`` reports whether each stands on the floor, stays inside
+  its joint limits and keeps its mass over its feet, and ``selector.build`` and
+  the fitted scorer are gone. Discovering an initiation set is a research
+  problem of its own, and while it is open a bad selector and a bad bridge fail
+  identically, so the bridge cannot be developed against it. The measured
+  version, which scored each candidate by the discounted return the skill opened
+  with, is in git history.
+- The bridge now defaults to the human motion corpus
+  (``data/bridge/tracker.npz``). ``datasets/skills.py``, which draws states from
+  the skill pool's own rollouts, is deprecated and warns when run: a bridge
+  trained and evaluated on the same five policies cannot show whether it learned
+  bridging or learned the pool. It still loads, and ``SKILLS_DATASET`` names its
+  path for reproducing older runs.
 
 Fixed
 ^^^^^
 
+- ``csv_to_npz`` now saves to a configurable local directory and only uploads
+  outputs to Weights & Biases when ``--upload-to-wandb`` is supplied.
+- Fixed bridge datasets built from more than one source silently losing almost
+  every training window. Each source is recorded on its own, so its trajectory
+  identifiers restart at zero and collide with the previous source's;
+  ``Dataset.segments`` sorts rows by ``(trajectory, frame)``, and the collision
+  interleaved rows of different sources at equal frames so no adjacent pair
+  stepped by one. On a four-clip corpus this left 1123 of 58217 windows on the
+  train split, one clip contributing none at all, and raised ``No contiguous
+  rollout segment matches the requested sources and duration range`` on the
+  eval split, which is what ``uv run play Mjlab-G1-Bridge`` and
+  ``...bridge.evaluate`` read. ``load_dataset`` now pairs each identifier with
+  its source. Datasets already on disk are repaired on load and need no
+  rebuild.
 - ``RayCastSensorCfg.include_geom_groups`` now raises on values outside
   ``[0, mjNGROUP)`` instead of silently excluding every geom.
 - Geoms with a negative group no longer pick up group 5's visibility toggle in
