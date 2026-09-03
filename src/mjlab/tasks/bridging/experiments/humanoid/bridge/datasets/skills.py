@@ -1,44 +1,41 @@
 """DEPRECATED. A corpus built from the trained skills' own rollouts.
 
-Superseded by datasets/tracker.py, which is the default. This module still runs and the
-datasets it wrote still load; it is kept so an older run can be reproduced and so a posture
-family the human motion corpus is missing can be filled in deliberately. Nothing here is
-maintained against new work on the bridge.
+One window was assembled out of two unrelated rollouts:
 
-Why it was set aside:
+    - roll out skill A, take a random instant, call it the start dynamic state
+    - roll out skill B, take a random instant, call it the end dynamic state
+    - pick a duration heuristically
+    - translate the end state in space heuristically, somewhere the robot could plausibly
+      reach from the start in that duration
 
-  It cannot answer the question the bridge exists to answer. Every state here comes from a
-  policy the bridge will be asked to serve, so training and service states come from the
-  same five distributions and memorising the pool looks exactly like generalising. A bridge
-  that only ever worked on this corpus would be evidence of nothing.
+Every one of those heuristics is a model of what a humanoid can do, so the bridge was
+trained against the model rather than against the robot, and a pair the model got wrong is
+an episode with no solution. datasets/tracker.py cuts both ends out of one rollout instead,
+which makes the pair consistent by construction and needs no heuristics at all.
 
-  It offers weaker feasibility guarantees per posture family. A skill rollout covers the
-  states that skill occupies and no others, so coverage is whatever the pool happens to be,
-  and it moves every time a skill is retrained.
-
-  It made the bridge a function of the skill pool, which defeats the point. The whole
-  premise is a policy independent of the skills it connects.
+The corpus is also the wrong data. Every state in it comes from a policy the bridge will be
+asked to serve, so training and inference draw from the same distribution and the bridge
+can memorize the pool. Adding a skill later needs retraining: the new skill could introduce
+motion no other skill covered, and the bridge meets it out of distribution. That makes
+the bridge a function of the skill pool, which defeats the premise of a policy independent
+of the skills it connects.
 
 Run, if you still need it:
 
-    1. Train the skills. Any subset works; `skills` below selects which to record.
+1. Train the skills. Any subset works, the skills field below selects which to record.
 
-       uv run train Mjlab-G1-Walk --env.scene.num-envs 4096
-       uv run train Mjlab-G1-Run --env.scene.num-envs 4096
-       uv run train Mjlab-G1-Jump --env.scene.num-envs 4096
+    uv run train Mjlab-G1-Walk --env.scene.num-envs 4096
+    uv run train Mjlab-G1-Run --env.scene.num-envs 4096
+    uv run train Mjlab-G1-Jump --env.scene.num-envs 4096
 
-    2. Collect. Checkpoints are found under each skill's own log directory.
+2. Collect. Checkpoints are found under each skill's own log directory.
 
-       uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.skills
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.skills
 
-    3. Train the bridge against it, which now takes an explicit path.
+3. Train the bridge against it, which now takes an explicit path.
 
-       uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096 \
-         --env.commands.bridge.dataset-path data/bridge/rollouts.npz
-
-Every state here did come out of a skill under the physics that has to reproduce it, so
-both ends of a window are reachable by construction. That was always true and was never the
-problem.
+    uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096 \
+      --env.commands.bridge.dataset-path data/bridge/rollouts.npz
 """
 
 from __future__ import annotations
@@ -76,8 +73,8 @@ class SkillSpec:
   """Log directories to search, best first.
 
   Several names per skill because the experiments were renamed from parkour_* to g1_* and
-  the log directories did not follow at the time. They match now, so the first entry hits;
-  the rest cost nothing and keep an older copy of logs/ loadable."""
+  the log directories did not follow at the time. They match now, so the first entry hits.
+  The rest cost nothing and keep an older copy of logs/ loadable."""
 
 
 SKILLS: dict[str, SkillSpec] = {
@@ -102,7 +99,7 @@ class SkillsCfg(RolloutCfg):
 
   path: Path = SKILLS_DATASET
   checkpoints: tuple[str, ...] = ()
-  """Explicit checkpoint paths, one per entry of `skills`, for when the automatic search
+  """Explicit checkpoint paths, one per entry of skills, for when the automatic search
   picks the wrong run. Empty means search."""
 
 

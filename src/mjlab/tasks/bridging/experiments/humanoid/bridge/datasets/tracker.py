@@ -1,120 +1,81 @@
-"""The bridge's corpus: human motion, replayed by trajectory trackers under physics.
+"""The bridge corpus: human motion replayed by trajectory trackers under physics.
 
-This is the default. datasets/skills.py, which draws states from the skill pool's own
-rollouts, is deprecated and kept only for reproducing older runs.
+A window needs a start dynamic state, an end dynamic state and a duration, and the pair has
+to be consistent: there must exist at least one sequence of moves that brings the robot
+from the start to the end in the time given. This is why we cut both ends out of a single
+rollout.
 
-    1. Train a trajectory tracking policy on LAFAN1 clips. Each is ~4 minutes of continuous
-        motion, so one clip is a lot of material, but it covers only some kind of motions:
-        `walk1_subject1` is four solid minutes of human walking, turning, stopping etc., a
-        tracker trained on just that sees a lot but will be useless on `jumps1_subject1`,
-        because it never saw a jump.
+The motion the rollout recorded between the two ends is kept as well, and mdp.guidance pays
+the policy for staying near it. Without it the robot has to discover from scratch one of
+the motions that connect two states 15 to 60 control ticks apart, which is a huge space to
+explore for a reward that only pays at the end. With it, training makes progress early. The
+term anneals to zero, so what is finally optimized is the arrival alone.
 
-        uv run train Mjlab-Tracking-Flat-Unitree-G1 --env.scene.num-envs 4096
-          --env.commands.motion.motion-file data/lafan1/motions/walk1_subject1.npz
+LAFAN1 cannot be used directly, without tracker policies in between. It is human motion
+retargeted onto a humanoid: never subject to physics, carrying artifacts from the capture
+technology and from the retargeting itself, feet through the floor included. Two such
+frames are usually an impossible pair. Running a clip through a tracking policy fixes
+that, since what comes out is what a real G1 did while following the clip.
 
-        Each motion tracking task will produce a checkpoint under the `g1_tracking` experiment.
+The bridge cannot be asked to arrive in a posture no rollout ever passed through:
+if nothing here crouches, the deep crouch a jump starts from is not something a
+segment can manufacture. Vary the clips, and check the coverage as much as possible.
+We should find a way to evaluate the motion the bridge could cover.
 
-        To see how a tracking task is going:
+Pairing a checkpoint with its clip needs no arguments: uv run train dumps the env config
+into params/env.yaml beside the checkpoints, and a tracking run names motion_file there.
+Passing motions explicitly overrides the pairing.
 
-        uv run play Mjlab-Tracking-Flat-Unitree-G1 \
-          --checkpoint-file logs/rsl_rl/g1_tracking/<run>/model_3000.pt
-          --motion-file data/lafan1/motions/walk1_subject1.npz
+Run
 
-    2. Collect the dataset. Pass nothing or however many trackers you trained. Every run
-        wrote down the clip it was pointed at, so this reads them back and asks each
-        tracker only for the motion it learned.
+1. Train one trajectory tracker per clip. A LAFAN1 clip is about 4 minutes of continuous
+   motion, so one clip is a lot of material, but only of one kind: walk1_subject1 is four
+   minutes of walking, turning and stopping, and a tracker trained on it is useless
+   on jumps1_subject1 or to crouch. I tried training the bridge only on walking and
+   jumping trajectories and as expected it wasn't able to reliably squatting to reach
+   the crouch position we usually observe before a long jump. Be aware of this and
+   vary the clips as much as possible.
 
-        # Every run under `g1_tracking`, each paired with its own clip
-        uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker
+    uv run train Mjlab-Tracking-Flat-Unitree-G1 \
+      --env.scene.num-envs 4096 \
+      --agent.experiment-name g1_walk1_subject1 \
+      --env.commands.motion.motion-file data/lafan1/motions/walk1_subject1.npz
 
-        Name clips yourself only to ask a tracker for motion it was *not* trained on, when
-        the question is how far it generalizes. `survival` answers that, per clip.
+   To watch one:
 
-        uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker \
-          --motions "('data/lafan1/motions/walk2_subject1.npz','data/lafan1/motions/walk3_subject1.npz')" \
-          --checkpoints "('logs/rsl_rl/g1_tracking/<walk-run>/model_3000.pt',)"
+    uv run play Mjlab-Tracking-Flat-Unitree-G1 \
+      --checkpoint-file logs/rsl_rl/g1_walk1_subject1/<run>/model_3000.pt \
+      --motion-file data/lafan1/motions/walk1_subject1.npz
 
-    3. Look at what came out, before training anything on it. It prints how many windows
-        each clip admits, and a clip with states and no windows is one that contributed
-        nothing, then serves a window as a ghost: green either side of it, red across the
-        stretch the bridge has to invent.
+2. Collect. With no arguments this walks every run under g1_tracking and asks each tracker
+   only for the clip it was trained on, read back from the config the run wrote.
 
-        uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view
-        uv run python -m ...datasets.view --source walk1_subject1
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker
 
-    4. See how the corpus sits against what a hand-over requires. Nothing to edit
-        afterwards: the requirements are physical and do not follow the corpus. This says
-        which channels a robot standing still already satisfies and which none will reach
-        soon, both of which are worth knowing before reading a training curve.
+   If you use custom experiment names:
 
-        uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate
-          --diagnose True
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker \
+      --motions "('data/lafan1/motions/walk1_subject1.npz',)" \
+      --checkpoints "('logs/rsl_rl/g1_walk1_subject1/<walk-run>/model_3000.pt',)"
 
-    5. Train the bridge on it. This is the default dataset, so no flag is needed.
+3. Look at what came out, before training on it. Prints how many windows each clip admits,
+   then serves one as a ghost: green either side, red across the stretch the bridge has to
+   invent. A clip with states and no windows contributed nothing.
 
-        uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view
 
-##
-# Why this dataset exists
-##
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view \
+      --source walk1_subject1
 
-skills.py draws its states from the same policies the bridge will be asked to serve, so a
-bridge trained and tested on it might have learned bridging or might have learned those
-five skills. Nothing in that experiment separates the two.
+4. See how the corpus sits against what a hand-over requires. Nothing to edit afterwards:
+   the requirements are physical and do not follow the corpus.
 
-A tracker trained on LAFAN1 knows nothing about walking to a crate or kicking a ball. If a
-bridge trained only on its states still hands over cleanly between the five skills, what it
-learned is a property of the robot and the physics rather than of the pool.
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate \
+      --diagnose True
 
-##
-# Why the tracker and not the clips
-##
+5. Train the bridge.
 
-A retargeted human clip is a description, not a state a G1 is ever in: joint angles fitted
-to a different body, heights off by centimetres, nothing accounting for what these
-actuators hold. Two such frames are usually an impossible pair, and an unsolvable episode
-teaches hedging.
-
-Running a clip through a tracker fixes that. What comes out is what a real G1 did while
-following the clip, under physics, with a policy keeping it upright.
-
-##
-# One tracker per clip
-##
-
-MotionCommandCfg.motion_file names one file, so a tracker is trained against one clip. It
-is only trustworthy on clips resembling that one.
-
-So do not train on one clip and collect from all twenty-one. The tracker would fall over
-on the twenty it never learned, and the recorded states would be real physics but mostly
-recoveries from stumbling.
-
-Instead each clip is measured as it is recorded. A tracker that stays up produces one row
-per environment per step after the settle window; one that keeps falling produces far
-fewer, because every reset costs `settle` steps. That ratio is `survival`, printed per
-clip, and a clip below `min_survival` is dropped with its number said out loud.
-
-Pairing a checkpoint with its clip needs no arguments: `uv run train` dumps the whole env
-config into `params/env.yaml` beside the checkpoints, and for a tracking run that names
-`motion_file`. So this walks every run under `g1_tracking` and reads the pairing back.
-Naming `motions` explicitly overrides it, which is what to do when testing generalization.
-
-##
-# What this dataset makes possible
-##
-
-Two rows of one episode are a start and a target one robot actually got between, and the
-frames between them are a deadline it met. That is the only kind of window the bridge
-trains on: `Dataset.segments` turns the trajectory and frame columns into an index of them,
-and no window is ever assembled out of two separate rollouts.
-
-Which makes coverage this file's problem rather than the command term's. A bridge cannot be
-asked to arrive in a posture no rollout in its corpus ever passed through: if nothing here
-crouches, the deep crouch a jump wants to start from is not something a segment index can
-manufacture, and no amount of training will find it. So build the corpus around the posture
-families the selector is going to ask for, one clip family at a time, and check the coverage
-before blaming the policy. Skill rollouts are the fallback when a family is missing, at the
-cost of the independence this file exists to buy.
+    uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
 """
 
 from __future__ import annotations
@@ -151,16 +112,16 @@ class TrackerCfg(RolloutCfg):
   tracking run was trained on, read back from the config each run wrote beside its own
   checkpoints. One tracker gives one clip, four give four, and nothing has to be typed.
 
-  Naming clips here overrides that, and then `checkpoints` says what drives them.
+  Naming clips here overrides that, and then checkpoints says what drives them.
 
-  These are mjlab tracking files, per-body world poses and velocities, not the retargeted
-  joint-angle files. See this module's header for why that matters."""
+  These are mjlab tracking files, per body world poses and velocities, not the retargeted
+  joint angle files. See the module header for why that matters."""
 
   task: str = TRACKING_TASK
   checkpoints: tuple[str, ...] = ()
-  """Only read when `motions` is given. One checkpoint per clip in the same order, or a
-  single one used for all of them. Empty falls back to the newest run's checkpoint, which
-  is right only when every named clip is one that tracker can hold."""
+  """Only read when motions is given. One checkpoint per clip in the same order, or a
+  single one used for all of them. Empty falls back to the checkpoint of the newest run, which is
+  right only when every named clip is one that tracker can hold."""
 
   path: Path = TRACKER_DATASET
   steps: int = 300
@@ -170,7 +131,7 @@ class TrackerCfg(RolloutCfg):
   """How much of a clip the tracker has to get through before its states are kept.
 
   One if the robot never falls, near zero if it falls constantly, since every reset costs
-  `settle` steps of recording. 0.6 keeps a clip the tracker merely finds hard and drops one
+  settle steps of recording. 0.6 keeps a clip the tracker merely finds hard and drops one
   it cannot follow at all. Set it to zero to keep everything and read the printed numbers
   yourself."""
 
@@ -181,11 +142,11 @@ _MOTION_LINE = re.compile(r"^\s*motion_file:\s*(.+?)\s*$", re.MULTILINE)
 def _trained_on(run: Path) -> Path | None:
   """Which clip this training run was pointed at, read from the config it wrote down.
 
-  `uv run train` dumps the whole env config beside the checkpoints, so a run already
-  records the clip it learned.
+  uv run train dumps the whole env config beside the checkpoints, so a run already records
+  the clip it learned.
 
-  Matched as text, not parsed as YAML. The dump carries `!!python/object/apply` tags for
-  things like `Path`; a safe loader refuses them and an unsafe one would execute them.
+  Matched as text, not parsed as YAML. The dump carries !!python/object/apply tags for
+  things like Path; a safe loader refuses them and an unsafe one would execute them.
   """
   params = run / "params" / "env.yaml"
   if not params.exists():
@@ -201,9 +162,9 @@ def _discover() -> tuple[tuple[Path, Path], ...]:
   """Every tracking run that has a checkpoint, paired with the clip it was trained on.
 
   This is what makes running with no arguments correct rather than merely safe. A
-  checkpoint on its own says nothing about which motion it can hold, so the obvious default
-  of newest checkpoint against every clip in the folder drives a walking tracker through
-  the jumps and leaves the survival filter to discard twenty wasted rollouts.
+  checkpoint on its own says nothing about which motion it can hold, so the obvious
+  default of newest checkpoint against every clip in the folder drives a walking tracker
+  through the jumps and leaves the survival filter to discard twenty wasted rollouts.
   """
   root = dataset.LOG_ROOT / TRACKING_EXPERIMENTS[0]
   if not root.exists():
@@ -305,8 +266,8 @@ def collect(cfg: TrackerCfg) -> Path:
       cfg.task, env_cfg, checkpoint, cfg, clip.stem
     )
 
-    # What a tracker that never fell would have produced. Each fall costs `settle` steps
-    # of recording, so the shortfall is how much of the clip it lost
+    # What a tracker that never fell would have produced. Each fall costs settle steps of
+    # recording, so the shortfall is how much of the clip it lost
     ceiling = cfg.num_envs * max(cfg.steps - cfg.settle, 1)
     survival = len(rows) / ceiling
     if survival < cfg.min_survival:

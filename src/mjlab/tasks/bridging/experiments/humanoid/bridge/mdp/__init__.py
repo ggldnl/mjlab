@@ -1,13 +1,5 @@
-"""The bridge's MDP terms: the window (commands), what it pays (rewards), how it ends
-(terminations).
+"""Bridge MDP terms: commands (the window), rewards, terminations."""
 
-ROOT_STATE_DIM is re-exported from the dataset: a state's layout is part of this vocabulary
-everywhere it is read.
-"""
-
-from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
-  ROOT_STATE_DIM as ROOT_STATE_DIM,
-)
 from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import (
   CHANNELS as CHANNELS,
 )

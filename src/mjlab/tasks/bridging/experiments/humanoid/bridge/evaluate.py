@@ -1,54 +1,43 @@
 """Score a trained bridge, always next to a robot that does nothing.
 
 Run
----
 
-    1. Score a checkpoint against the statue baseline.
+1. Score a checkpoint against the statue baseline. The newest checkpoint is picked when
+   none is named, and the path is printed.
 
-       uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate
-       uv run python -m ...bridge.evaluate --episodes 2048 \
-         --checkpoint logs/rsl_rl/g1_bridge/<run>/model_5000.pt
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate
 
-    2. Measure the statue on its own, before there is anything to compare it to.
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate \
+      --episodes 2048 \
+      --checkpoint logs/rsl_rl/g1_bridge/<run>/model_5000.pt
 
-       uv run python -m ...bridge.evaluate --policies "('statue',)"
+2. Measure the statue on its own, before there is anything to compare it to.
 
-To watch instead of read, the player draws the target as a translucent robot and leaves it
-standing where it was put, so the gap to the real robot at the deadline is the arrival
-error:
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate --policies "('statue',)"
+
+3. Watch instead of read. The player draws the target as a translucent robot and leaves it
+   standing, so the gap to the real robot at the deadline is the arrival error.
 
     uv run play Mjlab-G1-Bridge
-    uv run play Mjlab-G1-Bridge --agent zero    # the statue, visually
+    uv run play Mjlab-G1-Bridge --agent zero
 
 Reading the table
------------------
 
     arrived            every channel inside tolerance at the deadline, over every episode
                        including the ones that ended on the floor. The honest number
     score              the smooth version the reward is built on
     reached deadline   share of episodes that got that far
     failed early       share that terminated instead
-    err *              per-channel medians, over the episodes that reached their deadline
+    err *              per channel medians, over the episodes that reached their deadline
                        only. An episode that fell has no arrival to be wrong about, and
                        counting it as zero would flatter a policy that falls often. Read
-                       these against `reached deadline`
+                       these against reached deadline
 
-Why the statue column is not optional
--------------------------------------
-
-`score` is a blend of exponential kernels and has no absolute meaning. Widen every tolerance
-and a robot doing nothing approaches 1.0: scaling them all by 10 takes the statue from 0.06
-to 0.71. A score is only ever a number next to another number, and the statue is that other
-number.
-
-`arrived` stands alone because it is not a kernel. Every channel inside its requirement, and
-the requirements are physical, chosen for what the next skill needs rather than derived from
-how hard the corpus happens to be. See `Tolerances`. Nothing about them moves when the
-dataset is rebuilt.
-
-`--diagnose` reports how the corpus sits against those requirements: which channels a statue
-already satisfies, and which are far enough out that `arrived` reads zero for a while.
-Neither is a reason to change them.
+score is a blend of exponential kernels and has no absolute meaning: widen every tolerance
+and a robot doing nothing approaches 1.0. It is only ever a number next to another number,
+which is why the statue column is always printed. arrived stands alone because it is not a
+kernel: the requirements are physical, chosen for what the next skill needs, and nothing
+about them moves when the dataset is rebuilt.
 """
 
 from __future__ import annotations
@@ -80,8 +69,8 @@ COMMAND = "bridge"
 @dataclass
 class EvalCfg:
   checkpoint: str | None = None
-  """Explicit checkpoint. Empty takes the newest under logs/rsl_rl/g1_bridge and prints the
-  path, because picking by modification time has loaded the wrong policy here before."""
+  """Explicit checkpoint. Empty takes the newest under logs/rsl_rl/g1_bridge and prints
+  the path, because picking by modification time has loaded the wrong policy here before."""
 
   episodes: int = 1024
   num_envs: int = 256
@@ -94,16 +83,16 @@ class EvalCfg:
   """Report how the corpus sits against the arrival requirements, instead of evaluating a
   policy. Needs no checkpoint.
 
-  Read it, do not act on it. The requirements are what a hand-over needs; this says how far
-  a robot doing nothing is from meeting them, which tells you which channels are the hard
-  ones and which will read zero for a while."""
+  Read it, do not act on it. The requirements are what a hand-over needs, this says how
+  far a robot doing nothing is from meeting them, which tells you which channels are the
+  hard ones and which will read zero for a while."""
 
   policies: tuple[str, ...] = ("bridge", "statue")
-  """Which policies to run, one column of the table each. 'bridge' is the trained
-  checkpoint, 'statue' is a robot holding its default pose for the whole window.
+  """Which policies to run, one column of the table each. bridge is the trained
+  checkpoint, statue is a robot holding its default pose for the whole window.
 
   The statue alone needs no checkpoint. That is the point: the floor a trained bridge has
-                       to clear is measurable before there is anything to measure against it."""
+  to clear is measurable before there is anything to measure against it."""
 
   per_joint: bool = False
   """Print terminal joint position and velocity errors for every joint."""
@@ -120,7 +109,7 @@ class Result:
   fell: torch.Tensor
   errors: torch.Tensor
   """(episodes, len(CHANNELS)). Rows for episodes that never reached a deadline are
-  unfilled, and are excluded by `reached`."""
+  unfilled, and are excluded by reached."""
   joint_pos_errors: torch.Tensor
   joint_vel_errors: torch.Tensor
 
@@ -183,7 +172,7 @@ def _trained(env: ManagerBasedRlEnv, cfg: EvalCfg):
 
 def _statue(env: ManagerBasedRlEnv, cfg: EvalCfg):
   """Hold the default pose. The action term offsets from the default, so a zero action is
-  exactly that: the do-nothing baseline, not merely a weak policy."""
+  exactly that: the do nothing baseline, not merely a weak policy."""
   shape = env.action_space.shape
   del cfg
 
@@ -195,7 +184,7 @@ def _statue(env: ManagerBasedRlEnv, cfg: EvalCfg):
 
 
 def rollout(env: ManagerBasedRlEnv, policy, cfg: EvalCfg, name: str) -> Result:
-  """Run windows until `episodes` of them have finished, recording each one's arrival."""
+  """Run windows until episodes of them have finished, recording each arrival."""
   command = _command(env)
   torch.manual_seed(cfg.seed)
   obs, _ = env.reset(seed=cfg.seed)
@@ -295,13 +284,13 @@ def diagnose(env: ManagerBasedRlEnv, cfg: EvalCfg) -> None:
   """How far a robot that does nothing is from each arrival requirement.
 
   Nothing is stepped. The error at the instant a window opens is what a statue would still
-  have at its deadline, so it is the do-nothing baseline for every channel at once.
+  have at its deadline, so it is the do nothing baseline for every channel at once.
 
-  There is nothing to paste back into the config. An earlier version of this printed a
-  suggested `Tolerances(...)` block at half the measured gap, which made the definition of a
-  successful hand-over a function of how hard the corpus currently was: rebuild the dataset,
-  get a different definition, and every number previously reported quietly changed meaning.
-  The requirements are physical now and stay put. This only says where the task sits against
+  There is nothing to paste back into the config. An earlier version printed a suggested
+  Tolerances block at half the measured gap, which made the definition of a successful
+  hand-over a function of how hard the corpus currently was: rebuild the dataset, get a
+  different definition, and every number previously reported quietly changed meaning. The
+  requirements are physical now and stay put. This only says where the task sits against
   them.
   """
   from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import (

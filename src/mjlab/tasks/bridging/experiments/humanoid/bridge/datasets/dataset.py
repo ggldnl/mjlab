@@ -1,15 +1,16 @@
-"""The dataset format, plus the rollout driver every source shares.
+"""Dataset format and rollout driver.
 
-A dataset is a table of states the robot was measured being in, under physics, with a policy
-holding it up. That is the only property the bridge needs: both ends of a window are
-reachable because a robot reached them.
+A bridge starts from a dynamic state and has to reach another dynamic state within a time
+period, so one training sample is three things: the start state, the end state, and the
+duration between them. A dataset is a table of the dynamic states the robot was measured
+being in while a policy drove it, tagged with the rollout each row came from and how far
+into that rollout it was. Two rows of one rollout are then a start, a target, and the
+time the robot took to get from one to the other.
 
 Every source builds one the same way, by driving a trained policy and writing down what
-happens, so the driving lives here. A source module only says which policy, in which
-environment, with what on the floor. See datasets/tracker.py for the recipe.
-
-Row layout
-----------
+happens, so the driving lives here and a source module only says which policy, in which
+environment, with what on the floor. datasets/tracker.py is the source in use, the other
+is deprecated.
 
 One row per environment per control step:
 
@@ -19,27 +20,23 @@ Root position has the environment origin subtracted off x and y, so the numbers 
 and mean "where in its own tile". Height is untouched, since height above the floor is
 part of the state the bridge has to reach.
 
-Rows in the first `settle` steps after a reset are dropped. mjlab resets the instant an
-environment terminates, so the step after a fall is a robot standing at its default pose,
-and without this the dataset fills up with one identical standing pose per failure.
-
-Four extra columns
-------------------
+Plus four columns:
 
     source      which policy or clip the row came from
-    trajectory  which physical rollout. A reset always starts a new one, so two rows sharing
-                this were reached without the simulator being touched in between. Unique
-                within a source and not across them, since each source is recorded on its
-                own; `load_dataset` pairs it with `source` to get one identifier per rollout
+    trajectory  which physical rollout. A reset always starts a new one, so two rows
+                sharing this were reached without the simulator being touched in between.
+                Unique within a source, not across them, since each source is recorded on
+                its own. load_dataset pairs it with source to get one id per rollout
     frame       control steps since that row's episode started. Two rows of one trajectory
                 whose frames differ by k are a start and a target one robot got between in
-                k control steps, and that is the only kind of window the bridge trains on.
-                `Dataset.segments` is what turns the two columns into that index
-    goal        every command term's value at that step, side by side. What the skill was
-                being asked for while it was in that state. For the selector: a walk state
-                produced at 2 m/s is only an entry point for a walk about to be asked for
-                2 m/s. Width is per source and means nothing across sources. Older datasets
-                lack the column; readers treat absent as unknown, not as an error.
+                k control ticks, which is the only kind of window the bridge trains on.
+                Dataset.segments turns the two columns into that index
+    goal        every command term value at that step, side by side. What the skill was
+                being asked for while it was in that state.
+
+Rows in the first settle steps after a reset are dropped. mjlab resets the instant an
+environment terminates, so the step after a fall is a robot standing at its default pose,
+and without this the dataset fills up with one identical standing pose per failure.
 """
 
 from __future__ import annotations
@@ -67,13 +64,8 @@ TRACKER_DATASET = DATASET_ROOT / "tracker.npz"
 """The human motion corpus, built by driving trajectory trackers over LAFAN1 clips."""
 
 DEFAULT_DATASET = TRACKER_DATASET
-"""What every config points at unless told otherwise.
-
-The human motion corpus, because it is the one that gives the bridge a claim to being
-independent of the skill pool. A bridge trained on skill rollouts and tested on skill
-hand-overs cannot distinguish having learned bridging from having learned those five
-policies; nothing in that experiment separates the two.
-"""
+"""What every config points at unless told otherwise. The human motion corpus, which is
+what keeps the bridge independent of the skill pool. See datasets/tracker.py."""
 
 SKILLS_DATASET = DATASET_ROOT / "rollouts.npz"
 """Deprecated. The corpus built from the skill pool's own rollouts. See datasets/skills.py.
@@ -112,7 +104,7 @@ def state(robot: Entity) -> torch.Tensor:
 
 
 def commanded(env: ManagerBasedRlEnv) -> torch.Tensor:
-  """Every active command term's value, side by side. (N, G).
+  """Every active command term value, side by side. (N, G).
 
   Order and width are whatever the manager happens to hold, so a row is only comparable
   against another row of the same skill. A skill with no command term gives a zero width
@@ -167,14 +159,14 @@ def record(
   Returns the states, the environment and physical trajectory each row came from, how many
   steps into that trajectory it was, and what it was commanded to do at the time.
 
-  The caller configures `env_cfg` first, and that is the only difference between sources: a
+  The caller configures env_cfg first, and that is the only difference between sources: a
   skill wants its own environment untouched, a tracker wants the same environment with a
   different clip in it.
 
-  Always the training config, never the play one. Play narrows command ranges and drops the
-  noise the policy trained under, which gives a tidier demo and a narrower dataset. What is
-  wanted here is the full spread of states the policy occupies in service, including the
-  ones at the edge of its command range.
+  Always the training config, never the play one. Play narrows command ranges and drops
+  the noise the policy trained under, which gives a tidier demo and a narrower dataset.
+  What is wanted here is the full spread of states the policy occupies in service,
+  including the ones at the edge of its command range.
   """
   from tensordict import TensorDict
 
@@ -212,8 +204,8 @@ def record(
     obs, _, terminated, truncated, _ = env.step(action)
     done = terminated | truncated
     age = torch.where(done, torch.zeros_like(age), age + 1)
-    # A reset starts a new physical trajectory. Adding num_envs keeps every trajectory
-    # identifier unique while retaining the environment identity in its remainder.
+    # A reset starts a new physical trajectory. Adding num_envs keeps every trajectory id
+    # unique while retaining the environment identity in its remainder
     trajectory = torch.where(done, trajectory + cfg.num_envs, trajectory)
 
     here = state(robot).clone()
@@ -257,14 +249,14 @@ def write(
   fps: float,
   goals: list[np.ndarray] | None = None,
 ) -> Path:
-  """One npz, in the layout `load_dataset` expects.
+  """One npz, in the layout load_dataset expects.
 
-  The `skill` and `skill_names` keys keep their names even though a tracker dataset puts
-  clip names in them. Renaming would orphan the datasets already on disk.
+  The skill and skill_names keys keep their names even though a tracker dataset puts clip
+  names in them. Renaming would orphan the datasets already on disk.
 
-  Sources have different command widths, so `goal` is padded to the widest and `goal_dim`
-  says how much of each row is real. Padded into one table rather than one array per
-  source, because one row per state is the layout everything downstream indexes by.
+  Sources have different command widths, so goal is padded to the widest and goal_dim says
+  how much of each row is real. Padded into one table rather than one array per source,
+  because one row per state is the layout everything downstream indexes by.
   """
   everything = np.concatenate(states)
   path.parent.mkdir(parents=True, exist_ok=True)
@@ -295,11 +287,11 @@ class Dataset:
   states: torch.Tensor
   """(N, 13 + 2J)."""
   skill: torch.Tensor
-  """(N,) index into `names`."""
+  """(N,) index into names."""
   trajectory: torch.Tensor
   """(N,) physical rollout identity. A reset always starts a new one."""
   frame: torch.Tensor
-  """(N,) control step within `trajectory`."""
+  """(N,) control step within trajectory."""
   names: tuple[str, ...]
   fps: float
 
@@ -308,7 +300,7 @@ class Dataset:
     return (self.states.shape[1] - ROOT_STATE_DIM) // 2
 
   def of(self, names: tuple[str, ...] | None) -> torch.Tensor:
-    """Row indices belonging to these sources, or every row when `names` is None."""
+    """Row indices belonging to these sources, or every row when names is None."""
     if names is None:
       return torch.arange(self.states.shape[0], device=self.states.device)
     mask = torch.zeros_like(self.skill, dtype=torch.bool)
@@ -330,19 +322,19 @@ class Dataset:
 
     Both ends of a window come from one trajectory, so a window is never a pair of states
     invented by putting two rollouts side by side: a robot was demonstrably in the first,
-    and `steps` control ticks later it was demonstrably in the second, under physics.
+    and steps control ticks later it was demonstrably in the second, under physics.
 
     Both ends therefore also come from the same source. Restricting the start to a set of
-    sources restricts the target to the same set, which is why there is one filter here and
-    not two. Coverage of a posture family is a property of the corpus, not of a pairing
-    rule.
+    sources restricts the target to the same set, which is why there is one filter here
+    and not two. Coverage of a posture family is a property of the corpus, not of a
+    pairing rule.
     """
     if min_steps < 1 or max_steps < min_steps:
       raise ValueError("Segment bounds must satisfy 1 <= min_steps <= max_steps.")
 
     # Sort into (trajectory, frame) order. The recording is time-major, so rows of one
     # rollout are strided rather than adjacent, and the settle cut can shorten a rollout
-    # from the front. Sorting is what makes "the row `k` ticks later" an index offset
+    # from the front. Sorting is what makes "the row k ticks later" an index offset
     width = int(self.frame.max().item()) + 1
     order = torch.argsort(self.trajectory * width + self.frame)
     trajectory = self.trajectory[order]
@@ -384,11 +376,11 @@ class Dataset:
 class Segments:
   """Where every legal window lives, and how to draw one.
 
-  Kept as an index rather than a materialised table of pairs. A rollout of `L` usable steps
-  contains `L * K` windows for `K` admissible durations, and writing them all down costs
-  memory proportional to that product for no benefit: the duration is drawn per episode
-  anyway, and drawing it fresh is what stops a 15000-iteration run from seeing the same
-  frozen set of windows for its whole life.
+  An index rather than a materialised table of pairs. A rollout of L usable steps contains
+  L * K windows for K admissible durations, and writing them all down costs memory
+  proportional to that product for no benefit: the duration is drawn per episode anyway,
+  and drawing it fresh is what stops a 15000 iteration run from seeing the same frozen set
+  of windows for its whole life.
   """
 
   order: torch.Tensor
@@ -402,17 +394,17 @@ class Segments:
   def draw(
     self, count: int
   ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """`count` windows: start rows, target rows, durations in control steps, and the
-    position each one opened at.
+    """count windows: start rows, target rows, durations in control ticks, and the position
+    each one opened at.
 
     The duration is uniform over what the chosen start actually admits, which is not the
     same as uniform over the configured range: a start near the end of its rollout only
-    offers short windows. Sampling the start first and the duration inside it is what keeps
-    every drawn window a demonstrated one.
+    offers short windows. Sampling the start first and the duration inside it is what
+    keeps every drawn window a demonstrated one.
 
-    The position is returned because the two endpoints are not all a window holds. Inside a
-    run, position plus k is the state k control ticks later, so the positions between a
-    start and its target are the crossing the robot actually made, and `path` reads them.
+    The position is returned because the two endpoints are not all a window holds. Inside
+    a run, position plus k is the state k control ticks later, so the positions between a
+    start and its target are the crossing the robot actually made, and path reads them.
     """
     device = self.starts.device
     picked = torch.randint(0, self.starts.numel(), (count,), device=device)
@@ -426,10 +418,10 @@ class Segments:
   def path(
     self, position: torch.Tensor, steps: torch.Tensor, span: int
   ) -> torch.Tensor:
-    """The rows of the demonstrated crossing, one per control tick. (N, span + 1).
+    """The rows of the recorded crossing, one per control tick. (N, span + 1).
 
     Column k is the state k ticks after the window opened, so column 0 is the start and
-    column `steps` is the target. Columns past a window's own duration repeat its target
+    column steps is the target. Columns past the duration of a window repeat its target
     rather than running on into whatever follows in the rollout: nothing reads them, since
     the episode is over by then, and a row from the next stride would be a quietly wrong
     answer if anything ever did.
@@ -444,14 +436,14 @@ def load_dataset(
 ) -> Dataset:
   """Read a dataset and keep one side of the split.
 
-  One environment in every `holdout` goes to 'eval'. Splitting by environment rather than by
+  One environment in every holdout goes to eval. Splitting by environment rather than by
   frame keeps evaluation pairs out of every rollout a training pair came from. Consecutive
-  frames of one rollout are nearly the same state, so a frame level split would put a row's
-  near twin on the other side of it.
+  frames of one rollout are nearly the same state, so a frame level split would put the
+  near twin of a row on the other side of it.
 
   For the skills dataset both sides come from the same policies, so this measures whether
-  the bridge learned the task or the particular pairs it saw. It says nothing about transfer
-  to a skill it never met. tracker.py is what answers that.
+  the bridge learned the task or the particular pairs it saw. It says nothing about
+  transfer to a skill it never met. tracker.py is what answers that.
   """
   if split not in ("train", "eval"):
     raise ValueError(f"split is 'train' or 'eval', not '{split}'.")
@@ -473,12 +465,12 @@ def load_dataset(
       "collector before training this bridge."
     )
 
-  # A trajectory identifier is unique inside one source and starts over at zero for the
-  # next, because every source is recorded by its own `record` call. So two clips hold the
-  # same identifiers, and `segments` sorts rows by (trajectory, frame): shared identifiers
-  # interleave rows of different clips at equal frames, no adjacent pair steps by one, every
-  # run collapses to a single row and nothing is long enough to be a window. Pairing the
-  # identifier with its source is what makes one physical rollout one trajectory again
+  # A trajectory id is unique inside one source and starts over at zero for the next,
+  # because every source is recorded by its own record call. So two clips hold the same
+  # ids, and segments sorts rows by (trajectory, frame): shared ids interleave rows of
+  # different clips at equal frames, no adjacent pair steps by one, every run collapses to
+  # a single row and nothing is long enough to be a window. Pairing the id with its source
+  # is what makes one physical rollout one trajectory again
   skill = torch.from_numpy(raw["skill"]).to(device).long()
   trajectory = torch.from_numpy(raw["trajectory"]).to(device).long()
   trajectory = skill * (int(trajectory.max().item()) + 1) + trajectory

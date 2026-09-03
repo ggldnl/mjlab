@@ -1,16 +1,17 @@
-"""The window: where the bridge starts, where it has to be, how long it has.
+"""The window: a start state, a target state, and a deadline.
 
-One episode is one window. Start state and target state come from one rollout, a fixed
-number of control ticks apart, and the deadline is exactly that many ticks. The robot is
-teleported onto the start and the clock runs. The middle is never scored.
+One episode is one window. Start and target come from one rollout, a fixed number of
+control ticks apart, and the deadline is exactly that many ticks expressed in seconds.
+The robot is teleported onto the start with full dynamic state and the clock runs.
+The real motion from the masked window (coming from the rollout) is used as
+learning signal.
 
 Command layout
---------------
 
 What the policy reads, 17 + 2J numbers:
 
     d_pos    3   where the target is from here, in the heading frame
-    d_rot    6   rotation from this orientation to the target's
+    d_rot    6   rotation from this orientation to the target
     d_lin    3   how much faster the target is going, in the body frame
     d_ang    3   and how much more it is turning
     d_q      J   how far each joint still has to travel
@@ -18,52 +19,26 @@ What the policy reads, 17 + 2J numbers:
     left     1   seconds to the deadline
     span     1   seconds the whole window was given
 
-Every channel is a difference. Proprioception carries the robot's own state in the same
-units, so a network handed absolute targets could subtract them itself, but it has to learn
-to first. What it learned instead was to close the channels that arrived as differences and
-ignore the rest. Subtracting here costs nothing and removes the choice.
+Every channel is a difference, so the network can learn to close it. The target itself is
+fixed in the world for the whole window and only the observation is relative: a goal
+recomputed from the current state every tick is one the robot satisfies by standing still.
 
-The target is fixed in the world for the whole window. Only the observation is relative. A
-goal recomputed from the current state every tick is one the robot satisfies by standing
-still.
+Both clock numbers are needed. Without time to go the task is not Markov, since the same
+state a quarter of the way through a window and a step from its end call for opposite
+actions. Without the span, a policy one tick from its deadline cannot tell a long window it
+has nearly finished from a short one it has barely started.
 
-Both clock numbers are needed. Without time-to-go the task is not Markov: the same state a
-quarter of the way through a window and a step from its end call for opposite actions.
-Without the span, a policy one tick from its deadline cannot tell a long window it has
-nearly finished from a short one it has barely started.
+CHANNELS names the 8 ways an arrival can be wrong. Arms are split from legs, and each group
+is scored on its worst joint. Channels stay separate because the units differ, and because
+a single channel at zero is what the bottleneck in arrival_score uses to hold the whole
+score down. Scored on 6 channels with all 29 joints in one of them, the policy found the
+hole: park the arms wherever balance wants them, take the loss on one joint channel,
+collect the four root channels in full.
 
-Arrival channels
-----------------
-
-`CHANNELS` names the 8 ways an arrival can be wrong. They stay separate because the units
-differ, and because a single channel at zero is what the bottleneck in `arrival_score` uses
-to hold the whole score down.
-
-Arms are split from legs for that reason. Scored on 6 channels with all 29 joints in one of
-them, the policy found the hole: park the arms wherever balance wants them, take the loss on
-one joint channel, collect the four root channels in full. Split, and scoring each group on
-its worst joint, an abandoned arm is a channel at zero.
-
-Why both ends come from one rollout
------------------------------------
-
-Two individually reachable states can be an unreachable pair, and an unsolvable episode is
-worse than none: the gradient points nowhere, and enough of them teach the policy to hedge.
-An impossible pair implies an impossible acceleration:
-
-    3 m/s -> stopped in 0.2 s   =   15 m/s^2
-
-An earlier version drew the two ends independently, then argued the pair was feasible:
-place the target where the start's momentum would carry it, reject on an acceleration bound,
-reject on a joint travel bound, stretch the deadline when nothing fit. Each of those is a
-model of what a humanoid can do, and the bridge ended up trained against the model rather
-than against the robot.
-
-A contiguous segment needs no model. Displacement, velocity change, joint travel, contact
-mode and time available were demonstrated together by this robot under this physics.
-`Dataset.segments` is the whole feasibility argument. All this term adds is a yaw applied to
-both ends at once, which changes no question that is ever asked, and a perturbation on the
-start.
+Both ends come from one rollout because two individually reachable states can be an
+unreachable pair, and an unsolvable episode is worse than none. An earlier version drew the
+ends independently and argued feasibility with an acceleration bound and a joint travel
+bound. That was a bad idea.
 """
 
 from __future__ import annotations
@@ -109,22 +84,21 @@ CHANNELS = (
   "arm_joint_pos",
   "arm_joint_vel",
 )
-"""The 8 ways an arrival can be wrong. See this module's header for why they stay apart."""
+"""The 8 ways an arrival can be wrong. See the module header for why they stay apart."""
 
 ARM_JOINT = re.compile(r"(shoulder|elbow|wrist)")
 """What counts as an arm. Everything else, legs and waist alike, is the supporting chain."""
 
 TARGET_COLOR = (1.0, 0.72, 0.2, 0.45)
-"""The target ghost: amber, standing still where the window ends."""
+"""Target ghost: amber, standing still where the window ends."""
 
 REFERENCE_COLOR = (0.35, 0.6, 1.0, 0.35)
-"""The reference ghost: blue, walking through the crossing as the clock runs.
+"""Reference ghost: blue, walking the recorded crossing as the clock runs.
 
-Fainter than the target on purpose. The target is what the robot is scored on and the
-reference is only what it is being shaped toward, and by the end of training the shaping is
-switched off and the blue ghost is a demonstration nobody is being paid for. It is drawn so
-the two can be watched coming apart, which is the whole diagnosis of whether the shaping
-helps or leads somewhere else.
+Fainter than the target on purpose. The target is what the robot is scored on, the
+reference is only what it is shaped toward, and by the end of training the shaping is off
+and the blue ghost is a demonstration nobody is paid for. It is drawn so the two can be
+watched coming apart, which is the whole diagnosis of whether the shaping helps.
 """
 
 
@@ -136,8 +110,8 @@ helps or leads somewhere else.
 def arm_mask(joint_names: tuple[str, ...], device: str | torch.device) -> torch.Tensor:
   """Which joints belong to an arm. (J,) bool.
 
-  By name, because the joint order is the model's and nothing guarantees the arms are
-  contiguous. A robot whose names do not match leaves one group empty, which `_worst` scores
+  By name, because the joint order is the model order and nothing guarantees the arms are
+  contiguous. A robot whose names do not match leaves one group empty, which _worst scores
   as perfect rather than raising: a quadruped has no arms to abandon.
   """
   return torch.tensor(
@@ -156,35 +130,35 @@ class Tolerances:
   number below is a length, an angle, a speed or a rate with a stated physical reason.
 
   Do not calibrate these from the corpus. They used to be half the median gap per channel,
-  which broke three ways: the number moved whenever the corpus was rebuilt; half the median
-  gap is where an exponential kernel is informative, which is a fact about the reward and
-  not about whether a hand-over worked; and a threshold defined as a fraction of current
-  difficulty gets easier exactly when the task does.
+  which broke three ways: the number moved whenever the corpus was rebuilt; half the
+  median gap is a fact about where an exponential kernel is informative, not about whether
+  a hand-over worked; and a threshold defined as a fraction of current difficulty gets
+  easier exactly when the task does.
 
-  The reward does not need them anyway. `_retune` sets the kernel width from the policy's
-  own running error. These are the fixed instrument: `arrived` and every reported number.
+  The reward does not need them anyway. _retune sets the kernel width from the running
+  error of the policy. These are the fixed instrument: arrived, and every reported number.
 
-  `_check_tolerances` still measures the gap, demoted to a printed check. It says which
-  channels a motionless robot already satisfies, and which are so far out that `arrived`
-  will read zero for a long time. Both are worth knowing before reading a training curve.
+  _check_tolerances still measures the gap, demoted to a printed check. It says which
+  channels a motionless robot already satisfies, and which are so far out that arrived
+  reads zero for a long time. Both are worth knowing before reading a training curve.
   Neither is a reason to edit this file.
 
-  What should replace these eventually: the selector measures how far each skill can be
-  displaced from an entry state and still succeed. That is this requirement, per skill, per
+  The selector should replace these eventually: it measures how far each skill can be
+  displaced from an entry state and still succeed, which is this requirement per skill per
   channel. Until it exists, one conservative set for the G1.
   """
 
   root_pos: float = 0.05
-  """Metres. About a fifth of the G1's foot length, so the support polygon the next skill
+  """Metres. About a fifth of the G1 foot length, so the support polygon the next skill
   inherits is the one it expects. Tighter is not measurable: a state estimator on hardware
   does not know the pelvis to a centimetre."""
   root_ori: float = 0.05
-  """Radians, about 3 degrees of torso tilt or yaw. Small enough that the next skill's own
-  balance controller sees a disturbance rather than a different task."""
+  """Radians, about 3 degrees of torso tilt or yaw. Small enough that the balance
+  controller of the next skill sees a disturbance rather than a different task."""
   root_lin_vel: float = 0.15
-  """Metres per second. Over the half second a skill takes to establish itself, this is 7 cm
-  of drift. The channel that matters most for a hand-over: a body in the right pose carrying
-  the wrong momentum is about to be somewhere else."""
+  """Metres per second. Over the half second a skill takes to establish itself this is 7 cm
+  of drift. The channel that matters most for a hand-over: a body in the right pose
+  carrying the wrong momentum is about to be somewhere else."""
   root_ang_vel: float = 0.30
   """Radians per second, about 9 degrees of unwanted turn over that same half second."""
   leg_joint_pos: float = 0.10
@@ -195,11 +169,11 @@ class Tolerances:
   arm_joint_pos: float = 0.05
   """Radians on the worst arm joint, about 3 degrees.
 
-  Tighter than the legs, which is the opposite of what the dynamics would suggest, and
-  deliberate. An arm has little say in whether the next skill can stand up, so a requirement
-  argued from balance alone would be loose, and loose here is exactly the hole that let a
-  bridge park its arms wherever it liked. Three degrees is the bar for "the same posture",
-  and holding the arms to it is what the arm channels exist for.
+  Tighter than the legs, which is the opposite of what the dynamics suggest, and
+  deliberate. An arm has little say in whether the next skill can stand up, so a
+  requirement argued from balance alone would be loose, and loose here is exactly the hole
+  that let a bridge park its arms wherever it liked. Three degrees is the bar for "same
+  posture", and holding the arms to it is what the arm channels exist for.
   """
   arm_joint_vel: float = 0.75
   """Radians per second on the worst arm joint."""
@@ -226,7 +200,7 @@ def channel_errors(
 ) -> torch.Tensor:
   """How wrong one state is against another, per channel. (N, 8), in natural units.
 
-  Both states are dataset rows, (N, 13 + 2J). `arms` is the mask from `arm_mask` and its
+  Both states are dataset rows, (N, 13 + 2J). arms is the mask from arm_mask and its
   length is where J comes from.
 
   A free function, not a method: the reward, the metrics and an offline evaluation with no
@@ -266,12 +240,12 @@ def arrival_score(
       bottleneck   the worst channel's kernel alone. Makes "arrive on all of them" the
                    objective rather than "arrive on the cheap ones"
 
-  At `bottleneck_weight` 0.7 the bottleneck dominates: one channel at zero caps the whole
+  At bottleneck_weight 0.7 the bottleneck dominates: one channel at zero caps the whole
   score at 0.3 whatever the other seven do.
 
-  The four joint channels outweigh the four root ones in the average. One root state can be
-  reached by many postures, so the root channels are the easy half, and left equal they are
-  where the policy spends its capacity.
+  The four joint channels outweigh the four root ones in the average. One root state can
+  be reached by many postures, so the root channels are the easy half, and left equal they
+  are where the policy spends its capacity.
   """
   kernel = torch.exp(-(errors / tolerances).square())
   weights = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0, 1.5, 2.0, 1.5], device=errors.device)
@@ -284,7 +258,7 @@ def arrival_score(
 def arrived(errors: torch.Tensor, tolerances: torch.Tensor) -> torch.Tensor:
   """Every channel inside tolerance. (N,) bool. The success metric, never the reward.
 
-  A reward has to be smooth to be learnable; this has to be honest to be reportable. Seven
+  A reward has to be smooth to be learnable, this has to be honest to be reportable. Seven
   channels out of eight is not an arrival, and with the arms split out that is not a
   technicality: seven out of eight is what a robot that never brought its arms back looks
   like.
@@ -316,9 +290,9 @@ class BridgeCommand(CommandTerm):
     self._span = 0
     """Longest window in control ticks, and so the width of the reference table."""
     if cfg.dataset_path is None:
-      # No corpus. A window then has to come from outside through `open_window`, which is
-      # what the transition arena does: it never draws one, so making it load and index the
-      # bridge's whole training corpus was sixty megabytes read to learn a frame rate
+      # No corpus. A window then comes from outside through open_window, which is what
+      # the transition arena does: it never draws one, so making it load and index the
+      # whole training corpus was sixty megabytes read to learn a frame rate
       self.fps = 1.0 / (env.cfg.sim.mujoco.timestep * env.cfg.decimation)
     else:
       self.dataset = load_dataset(cfg.dataset_path, str(self.device), cfg.split)
@@ -328,8 +302,8 @@ class BridgeCommand(CommandTerm):
           f"{self.num_joints}. Rebuild the dataset against this robot."
         )
       self.fps = self.dataset.fps
-      # The duration range is configured in seconds and only becomes control ticks here, at
-      # the simulator boundary. Everything above this line, and the whole external
+      # The duration range is configured in seconds and becomes control ticks only here,
+      # at the simulator boundary. Everything above this line, and the whole external
       # interface, is in seconds
       min_steps = max(1, math.ceil(cfg.duration_s_range[0] * self.fps))
       max_steps = max(min_steps, math.floor(cfg.duration_s_range[1] * self.fps))
@@ -339,12 +313,12 @@ class BridgeCommand(CommandTerm):
       self._span = max_steps
 
     self.tolerances = cfg.tolerances.as_tensor(self.device)
-    """The requirements. Fixed for the whole run. This is what `arrived` means and what
-    every reported number is measured against, so it must not move."""
+    """The requirements. Fixed for the whole run. This is what arrived means and what every
+    reported number is measured against, so it must not move."""
 
     self.reward_tolerances = self.tolerances * cfg.tolerance_ceiling
     """What the reward actually uses. Starts wide and descends toward the fixed ones. See
-    `_retune` for why, and why the two have to be different objects."""
+    _retune for why, and why the two have to be different objects."""
 
     self._running_error = self.reward_tolerances / max(cfg.tolerance_slack, 1e-6)
     """Slow average of what each channel misses by at the deadline. Initialized so the
@@ -352,24 +326,24 @@ class BridgeCommand(CommandTerm):
     there."""
 
     self._retuned_at = -1
-    """Environment step the curriculum last moved on. `errors_now` is called from a reward
+    """Environment step the curriculum last moved on. errors_now is called from a reward
     term, and a second term reading it would advance the average twice in one step."""
 
     self._checked = False
     self._opening_gaps: list[torch.Tensor] = []
-    """Gaps caught at the instant windows open, held until there are enough of them to take
-    a median. Only `_check_tolerances` touches either."""
+    """Gaps caught at the instant windows open, held until there are enough for a median.
+    Only _check_tolerances touches either."""
 
     self.state_dim = ROOT_STATE_DIM + 2 * self.num_joints
 
     ##
-    # The demonstrated crossing. Read by the guidance reward and by the viewer, and by
-    # nothing else: it is in neither observation group and no metric is measured against it.
+    # The recorded crossing. Read by the guidance reward and by the viewer, by nothing
+    # else: it is in neither observation group and no metric is measured against it.
     ##
 
     self.has_reference = torch.zeros(self.num_envs, device=self.device)
-    """1 where this window carries a demonstrated crossing. Zero for a window aimed from
-    outside through `open_window`, which is what a live hand-over is: the robot is already
+    """1 where this window carries a recorded crossing. Zero for a window aimed from
+    outside through open_window, which is what a live hand-over is: the robot is already
     somewhere, and nothing recorded the motion from there."""
 
     self._ref_rows = torch.zeros(
@@ -377,19 +351,20 @@ class BridgeCommand(CommandTerm):
     )
     """Dataset row per control tick. Column k is the state k ticks after the window opened.
 
-    Rows and not states. The states are (13 + 2J) wide and a table of them would be tens of
-    megabytes at 4096 environments, for something only one column of which is read per step.
+    Rows and not states. The states are (13 + 2J) wide and a table of them would be tens
+    of megabytes at 4096 environments, for something only one column of which is read per
+    step.
     """
     self._ref_rotation = torch.zeros(self.num_envs, 4, device=self.device)
     self._ref_rotation[:, 0] = 1.0
     self._ref_from = torch.zeros(self.num_envs, 3, device=self.device)
     self._ref_to = torch.zeros(self.num_envs, 3, device=self.device)
-    """The yaw and the translation `place` applied to this window, kept so a reference row
+    """The yaw and the translation place applied to this window, kept so a reference row
     can be moved into the environment the same way its endpoints were. Storing the recipe
-    rather than the moved states is what keeps the table to one row index per tick."""
+    rather than the moved states keeps the table at one row index per tick."""
 
-    # The window. target is a dataset row placed in this environment's world, deadline is
-    # how many control steps the policy has to reach it
+    # The window. target is a dataset row placed in the world of this environment,
+    # deadline is how many control steps the policy has to reach it
     self.target = torch.zeros(self.num_envs, self.state_dim, device=self.device)
     self.deadline = torch.full(
       (self.num_envs,),
@@ -434,10 +409,10 @@ class BridgeCommand(CommandTerm):
   def step(self) -> torch.Tensor:
     """Control steps this episode has taken. (num_envs,).
 
-    The environment's own counter, not one kept here. It is zeroed on reset and incremented
-    at the top of every step, before terminations and rewards, so during those it names the
+    The environment counter, not one kept here. It is zeroed on reset and incremented at
+    the top of every step, before terminations and rewards, so during those it names the
     step that just happened. A counter maintained by this term would have to advance in
-    `_update_command`, which runs after the auto-reset, and would be a step out for every
+    _update_command, which runs after the auto-reset, and would be a step out for every
     environment that just finished.
     """
     return self._env.episode_length_buf
@@ -508,15 +483,15 @@ class BridgeCommand(CommandTerm):
     )
 
   def reference_now(self) -> torch.Tensor:
-    """The demonstrated state for this control tick. (num_envs, 13 + 2J).
+    """The recorded state for this control tick. (num_envs, 13 + 2J).
 
-    One column of the row table, moved into the environment by the same yaw and translation
-    `place` applied to the window's endpoints. Undefined where `has_reference` is zero, and
-    the guidance reward multiplies by that rather than branching.
+    One column of the row table, moved into the environment by the same yaw and
+    translation place applied to the window's endpoints. Undefined where has_reference is
+    zero, and the guidance reward multiplies by that rather than branching.
 
-    A yaw and a horizontal slide are the whole transform, which is why this is cheap: the
-    crossing is a demonstrated motion and nothing about it is stretched, retimed or bent to
-    fit. It is either the motion that happened, moved, or it is not used.
+    A yaw and a horizontal slide are the whole transform, which is why this is cheap:
+    nothing about the crossing is stretched, retimed or bent to fit. It is either the
+    motion that happened, moved, or it is not used.
     """
     tick = self.step.clamp(min=0, max=self._span)
     rows = self._ref_rows.gather(1, tick.unsqueeze(-1)).squeeze(-1)
@@ -529,17 +504,16 @@ class BridgeCommand(CommandTerm):
 
   @property
   def guide_scale(self) -> float:
-    """How much the demonstrated crossing is worth right now, from one down to zero.
+    """How much the recorded crossing is worth right now, from one down to zero.
 
-    Linear, reaching zero at `guide_steps`. After that this task is the ordinary bridge
+    Linear, reaching zero at guide_steps. After that this task is the ordinary bridge
     exactly, which is the point of shaping rather than of adding an objective: the policy
     finally optimized is the one that was always wanted, and the demonstration only said
     where to look first.
 
-    It runs down while `noise_scale` runs up, and that is not a coincidence. The recorded
-    crossing starts from the recorded start, and the further the perturbation moves the
-    robot off it, the less that particular motion answers the question being asked. The two
-    ramps are the same statement made twice.
+    It runs down while noise_scale runs up, which is not a coincidence. The crossing
+    starts from the recorded start, so the further the perturbation moves the robot off
+    it, the less that particular motion answers the question being asked.
     """
     if self.cfg.guide_steps <= 0:
       return 0.0
@@ -547,16 +521,16 @@ class BridgeCommand(CommandTerm):
     return 1.0 - alpha
 
   def errors_now(self) -> torch.Tensor:
-    """The 8 channel errors against the target this step, latching them at the deadline.
+    """The 8 channel errors against the target this step, latched at the deadline.
 
     Called from the reward, which is the only place an arrival can be read at all. The
     reward manager runs before the auto-reset; the metrics run after it, by which point an
-    environment that just finished holds a fresh robot at its default pose, so every number
-    taken from it describes a different episode. This project once shipped a success metric
-    that read 100% for exactly that reason.
+    environment that just finished holds a fresh robot at its default pose, so every
+    number taken from it describes a different episode. This project once shipped a
+    success metric that read 100% for exactly that reason.
 
-    So the deadline snapshot is taken here and written straight into `metrics`, where
-    `CommandTerm.reset` picks it up. `_update_metrics` never touches those entries.
+    So the deadline snapshot is taken here and written straight into metrics, where
+    CommandTerm.reset picks it up. _update_metrics never touches those entries.
     """
     errors = channel_errors(self.state_now(), self.target, self.arms)
     self._check_tolerances(errors)
@@ -605,11 +579,11 @@ class BridgeCommand(CommandTerm):
                                      what makes the task hard. Usually means the quantity
                                      barely changes over a window this long
         out of reach                 requirement is more than 10x below the gap, so
-                                     `arrived` reads zero on it for a long time
+                                     arrived reads zero on it for a long time
 
-    Neither is a reason to edit `Tolerances`. The requirement is what a hand-over needs; this
-    only reports how the task sits against it. An earlier version printed a value to paste
-    in, which made the definition of success a function of current difficulty.
+    Neither is a reason to edit Tolerances. The requirement is what a hand-over needs,
+    this only reports how the task sits against it. An earlier version printed a value to
+    paste in, which made the definition of success a function of current difficulty.
 
     Read at the step a window opens, which is the error a statue would still have at its
     deadline. Windows open a few environments at a time, so gaps are collected until there
@@ -645,24 +619,24 @@ class BridgeCommand(CommandTerm):
   def _retune(self, arrived_errors: torch.Tensor) -> None:
     """Set each channel's reward tolerance so its kernel keeps teaching.
 
-    An exponential kernel only teaches over a narrow band. Past about 3 tolerances the kernel
-    and its gradient are numerically zero, the channel drops out of the objective, and since
-    it then costs nothing the policy spends it on the channels that still pay.
+    An exponential kernel only teaches over a narrow band. Past about 3 tolerances the
+    kernel and its gradient are numerically zero, the channel drops out of the objective,
+    and since it then costs nothing the policy spends it on the channels that still pay.
 
     Two things propose a tolerance and the wider one wins:
 
-        schedule    walks from `tolerance_ceiling` x requirement down to the requirement
-                    over `tolerance_steps`. The pressure to improve
-        brake       `tolerance_slack` x the running error, holding the tolerance near what
-                    the policy is missing by, about 1.4 tolerances out, the steepest part
-                    of the kernel
+        schedule   walks from tolerance_ceiling x requirement down to the requirement over
+                   tolerance_steps. The pressure to improve
+        brake      tolerance_slack x the running error, holding the tolerance near what
+                   the policy is missing by, about 1.4 tolerances out, the steepest part
+                   of the kernel
 
     So the schedule only binds while the policy keeps up with it.
 
-    Do not make this ratchet down only. It used to, on the argument that a tolerance free to
-    widen would let a regressing policy score the same. It cannot: `score` and `arrived` are
-    computed against `self.tolerances`, which never moves. What the ratchet did instead, over
-    a 1713-iteration run:
+    Do not make this ratchet down only. It used to, on the argument that a tolerance free
+    to widen would let a regressing policy score the same. It cannot: score and arrived
+    are computed against self.tolerances, which never moves. What the ratchet did instead,
+    over a 1713 iteration run:
 
         iteration   err joint_pos   reward tolerance   kernel
         0           0.161           0.990              0.97
@@ -674,8 +648,8 @@ class BridgeCommand(CommandTerm):
     An untrained bridge stands near its default pose, which scores well on joints for the
     same reason a person standing still is good at not tripping. The ratchet read that as
     capability and locked to it. Then the policy learned to move the root, moving the root
-    moves the joints, the error rose past a tolerance that could not follow, and the channel
-    was dead from iteration 1440 on. `arrived` was 0.000 all run.
+    moves the joints, the error rose past a tolerance that could not follow, and the
+    channel was dead from iteration 1440 on. arrived was 0.000 all run.
 
     The running average covers errors latched at a deadline only. An episode that ended on
     the floor has no arrival to be wrong about.
@@ -733,11 +707,11 @@ class BridgeCommand(CommandTerm):
     start, target = reframe_pair(start, target, rotation)
     self.place(env_ids, start, target, steps.float() / self.fps)
 
-    # After `place`, which clears the reference along with every other latch. `origin` is
-    # the start position before the reframe, which is also after it: a yaw turns a state
-    # without moving it. `landed` is where the nominal start went, recomputed rather than
-    # read back off the robot, because the robot is perturbed after being put there and the
-    # crossing is anchored to the window, not to the noise
+    # After place, which clears the reference along with every other latch. origin is the
+    # start position before the reframe, which is also after it: a yaw turns a state
+    # without moving it. landed is where the nominal start went, recomputed rather than
+    # read back off the robot, because the robot is perturbed after being put there and
+    # the crossing is anchored to the window, not to the noise
     landed = start[:, 0:3].clone()
     landed[:, 0:2] = self._env.scene.env_origins[env_ids][:, :2]
     self._ref_rows[env_ids] = self.windows.path(position, steps, self._span)
@@ -762,7 +736,7 @@ class BridgeCommand(CommandTerm):
   def open_window(self, env_ids: torch.Tensor, duration_s: torch.Tensor) -> None:
     """Start the clock on the target currently held, for this many seconds. Teleports nobody.
 
-    `place` is this plus a start state to teleport onto. A live hand-over already has the
+    place is this plus a start state to teleport onto. A live hand-over already has the
     robot where it wants it, so it calls this instead.
     """
     self._open(env_ids, duration_s, self.robot.data.root_link_pos_w[env_ids])
@@ -772,14 +746,14 @@ class BridgeCommand(CommandTerm):
   ) -> None:
     """Set the deadline and clear every latch from the window before.
 
-    `root_pos` is where the robot starts, passed in rather than read, because `place` calls
-    this before it has written the teleport to the simulator and the live buffers still hold
-    the previous episode.
+    root_pos is where the robot starts, passed in rather than read, because place calls
+    this before it has written the teleport to the simulator and the live buffers still
+    hold the previous episode.
     """
     self.deadline[env_ids] = self.steps_for(duration_s)
     self.start_distance[env_ids] = (root_pos - self.target[env_ids, 0:3]).norm(dim=-1)
-    # Cleared here rather than in `place`, so a window aimed from outside cannot inherit
-    # the crossing of the window before it
+    # Cleared here rather than in place, so a window aimed from outside cannot inherit the
+    # crossing of the window before it
     self.has_reference[env_ids] = 0.0
     self.reached[env_ids] = 0.0
     self.score[env_ids] = 0.0
@@ -802,9 +776,9 @@ class BridgeCommand(CommandTerm):
       start, target: (N, 13 + 2J) dataset rows in one shared frame.
       duration_s: how long the bridge gets.
 
-    Both states slide horizontally so the start lands on the environment origin, which keeps
-    them in one coordinate system without the caller knowing where that is. Heights, headings
-    and velocities are untouched by the slide.
+    Both states slide horizontally so the start lands on the environment origin, which
+    keeps them in one coordinate system without the caller knowing where that is. Heights,
+    headings and velocities are untouched by the slide.
 
     The target is written once, here, in world coordinates, and nothing moves it until the
     next window. That is the difference between a goal and a carrot.
@@ -858,15 +832,15 @@ class BridgeCommand(CommandTerm):
 
   @property
   def noise_scale(self) -> float:
-    """How hard the start state is perturbed right now. Ramps from 0 to `start_noise`.
+    """How hard the start state is perturbed right now. Ramps from 0 to start_noise.
 
     At inference the bridge takes over from whatever the outgoing skill left behind, never
-    from a dataset row, so a policy that has only ever started exactly on one has never had
-    to steer.
+    from a dataset row, so a policy that has only ever started exactly on one has never
+    had to steer.
 
     The perturbation is also the one thing here that can make a window unreachable: the
-    endpoints are demonstrated, and pushing the start off its demonstrated value breaks that.
-    Ramping means the task is solvable while the policy is learning what it is.
+    endpoints are demonstrated, and pushing the start off its demonstrated value breaks
+    that. Ramping means the task is solvable while the policy is learning what it is.
     """
     if self.cfg.start_noise <= 0.0:
       return 0.0
@@ -879,7 +853,7 @@ class BridgeCommand(CommandTerm):
   def _update_metrics(self) -> None:
     """Only the live numbers.
 
-    `errors_now` writes the latched ones before the reset that destroys the state they are
+    errors_now writes the latched ones before the reset that destroys the state they are
     read from. Writing them again here would overwrite them with a freshly reset robot.
     """
     self.metrics["deadline_s"] = self.duration_s
@@ -898,20 +872,20 @@ class BridgeCommand(CommandTerm):
   def _debug_vis_impl(self, visualizer) -> None:
     """Two translucent robots: the target, and the crossing that leads to it.
 
-    The amber one stands in the target. A pose and nothing else, because a pose is all that
-    can be drawn: half of a target is velocity and a still body says nothing about that. It
-    does show where the window is sending the robot, and after the deadline it stays where
-    it was put, so the gap to the real robot is the arrival error left standing to be looked
-    at.
+    The amber one stands in the target. A pose and nothing else, because a pose is all
+    that can be drawn: half of a target is velocity and a still body says nothing about
+    that. It does show where the window is sending the robot, and after the deadline it
+    stays where it was put, so the gap to the real robot is the arrival error left
+    standing to be looked at.
 
-    The blue one walks the demonstrated crossing, a frame per control tick, and arrives
-    inside the amber one at the deadline because the last frame of the crossing is the
-    target. It is what `guidance` is paying for, so watching the robot fall behind it is
-    watching the shaping fail to take; watching the robot follow it and still miss the
-    target would mean the crossing is being tracked and the arrival is not.
+    The blue one walks the recorded crossing, a frame per control tick, and arrives inside
+    the amber one at the deadline because the last frame of the crossing is the target. It
+    is what guidance is paying for, so watching the robot fall behind it is watching the
+    shaping fail to take. Watching the robot follow it and still miss the target would
+    mean the crossing is being tracked and the arrival is not.
 
     Drawn only where there is a crossing to draw. A window aimed from outside through
-    `open_window` has none, and a blue robot standing at the last window's pose would be a
+    open_window has none, and a blue robot standing at the last window's pose would be a
     picture of something that is not happening.
     """
     if self._ghost is None:
@@ -951,7 +925,7 @@ class BridgeCommand(CommandTerm):
         )
 
   def _tinted(self, color: tuple[float, float, float, float]) -> mujoco.MjModel:
-    """This scene's model with the robot painted `color` and everything else hidden."""
+    """This scene's model with the robot painted color and everything else hidden."""
     ghost = copy.deepcopy(self._env.sim.mj_model)
     mine = set(self.robot.indexing.geom_ids.tolist())
     for geom in range(ghost.ngeom):
@@ -1005,8 +979,8 @@ def reframe_pair(
 def _rot6d(quat: torch.Tensor) -> torch.Tensor:
   """First two columns of a rotation matrix, flattened. (..., 4) -> (..., 6).
 
-  Six numbers rather than a quaternion's four: a quaternion has two representations for
-  every rotation, and this form is unique and continuous.
+  Six numbers rather than the four of a quaternion: a quaternion has two representations
+  for every rotation, and this form is unique and continuous.
   """
   matrix = matrix_from_quat(quat)
   return matrix[..., :, :2].transpose(-1, -2).reshape(*quat.shape[:-1], 6)
@@ -1019,23 +993,23 @@ class BridgeCommandCfg(CommandTermCfg):
   dataset_path: Path | None = DEFAULT_DATASET
   """The corpus windows are drawn from, or None for a command aimed entirely from outside.
 
-  None is what the transition arena wants: it never draws a window, so loading a corpus there
-  reads a large file to learn a frame rate the environment already knows."""
+  None is what the transition arena wants: it never draws a window, so loading a corpus
+  there reads a large file to learn a frame rate the environment already knows."""
   split: str = "train"
   sources: tuple[str, ...] | None = None
   """Which skills or clips a window may come from. None means any in the dataset.
 
-  One filter and not a separate one per end. A window is a contiguous stretch of a single
-  rollout, so both ends are always the same source, and asking for a start from one skill
-  and a target from another describes nothing this dataset contains. Covering a posture
-  family is a matter of what went into the corpus, which is `datasets/tracker.py`'s job.
+  One filter, not one per end. A window is a contiguous stretch of a single rollout, so
+  both ends are always the same source, and asking for a start from one skill and a target
+  from another describes nothing this dataset contains. Covering a posture family is a
+  matter of what went into the corpus, which is the job of datasets/tracker.py.
   """
 
   duration_s_range: tuple[float, float] = (0.3, 1.2)
   """How long a window may be, in seconds.
 
   The simulator still advances in discrete control ticks, but the dataset, this config and
-  the external bridge interface are all in seconds. `BridgeCommand.steps_for` is the only
+  the external bridge interface are all in seconds. BridgeCommand.steps_for is the only
   conversion.
   """
 
@@ -1056,49 +1030,49 @@ class BridgeCommandCfg(CommandTermCfg):
   tolerance_slack: float = 0.7
   """Where the tolerance sits relative to the error being made, as a fraction.
 
-  At 0.7 the policy is about 1.4 tolerances out, near the steepest part of the kernel. Above
-  1.0 the channel saturates and stops teaching; below 0.5 it flattens out at the other
-  end."""
+  At 0.7 the policy is about 1.4 tolerances out, near the steepest part of the kernel.
+  Above 1.0 the channel saturates and stops teaching, below 0.5 it flattens out at the
+  other end."""
 
   tolerance_rate: float = 1.0e-3
   """How fast the running error follows the measured one, per environment step.
 
-  Slow on purpose. The tolerance is read off this average every step, so a rate that reacts
-  to a single lucky batch makes the task jitter under the policy."""
+  Slow on purpose. The tolerance is read off this average every step, so a rate that
+  reacts to a single lucky batch makes the task jitter under the policy."""
 
   tolerance_steps: int = 120_000
   """Environment steps to walk a reward kernel from the ceiling down to the requirement.
 
-  A third of a 15000-iteration run at 24 steps per iteration, leaving two thirds of training
-  at the tolerance actually being asked for. A bound, not a demand: the running error holds
-  the tolerance above the schedule for as long as the policy needs it there, so a shorter
-  setting stops the schedule binding rather than making the task harder."""
+  A third of a 15000 iteration run at 24 steps per iteration, leaving two thirds of
+  training at the tolerance actually being asked for. A bound, not a demand: the running
+  error holds the tolerance above the schedule for as long as the policy needs it there,
+  so a shorter setting stops the schedule binding rather than making the task harder."""
 
   start_noise: float = 1.0
   """Full scale of the perturbation applied to the start state.
 
   Every component of the state is perturbed, not just position and joint angles: an
-  interruption or a state estimator can be wrong about a root orientation or a velocity too,
-  and those are the ones a bridge has to steer out of.
+  interruption or a state estimator can be wrong about a root orientation or a velocity
+  too, and those are the ones a bridge has to steer out of.
   """
 
   guide_steps: int = 60_000
-  """Environment steps the `guidance` shaping takes to fade from full weight to nothing.
+  """Environment steps the guidance shaping takes to fade from full weight to nothing.
 
   Zero switches it off, which turns this task into the bridge without shaping.
 
-  Matched to `start_noise_steps`. The crossing starts from the recorded start, so the further
-  the perturbation moves the robot off it, the less that motion answers the question. One
-  ramp up and one down is the same statement twice.
+  Matched to start_noise_steps. The crossing starts from the recorded start, so the
+  further the perturbation moves the robot off it, the less that motion answers the
+  question.
 
-  Must finish well before `tolerance_steps`, or the arrival kernel reaches the accuracy it is
-  actually asking for while the policy is still being paid to imitate.
+  Must finish well before tolerance_steps, or the arrival kernel reaches the accuracy it
+  is actually asking for while the policy is still being paid to imitate.
   """
 
   start_noise_steps: int = 60_000
-  """Environment steps the perturbation takes to widen from nothing to `start_noise`.
+  """Environment steps the perturbation takes to widen from nothing to start_noise.
 
-  See `BridgeCommand.noise_scale`. Shorter than the tolerance schedule on purpose: this one
+  See BridgeCommand.noise_scale. Shorter than the tolerance schedule on purpose: this one
   makes the task harder and should be finished well before the tolerances arrive at what
   they are actually asking for."""
 

@@ -1,48 +1,31 @@
-"""Look at the windows the bridge is actually trained on.
+"""Viewer for the windows the bridge is trained on.
 
-A window is a pair: a start state, a target state, and a deadline. Both come from one
-contiguous stretch of one rollout, so between them there is a real motion that a real robot
-performed under physics. The bridge never sees that motion. It is handed the two ends and
-the clock, and everything in between is masked.
+A window is a start state, a target state and a deadline. Both ends come from one
+contiguous stretch of one rollout, so between them there is a real motion a real robot
+performed under physics. The bridge uses that motion as a learning signal.
 
-That masked stretch is what this shows. A ghost replays the recording straight through, and
-its colour says which part of it the bridge is being asked about:
+The mask is what this shows:
 
-    green   context, before the start and after the target. Not part of the question,
+    green   context, before the start and after the target. Not part of the training data,
             shown so the window can be read against the motion it was cut out of
-    red     the masked window itself, from the start state to the target state. What the
-            bridge has to invent
-
-So a red stretch that crosses a footfall is a window that requires a step, and one that
-begins mid-flight is a window that begins in the air. Neither is visible in a table of
-numbers, and both change what the policy is being asked for.
-
-Run
----
-
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view
-    uv run python -m ...datasets.view --source jumps1_subject1 --split eval
-
-Then open the printed address. `Next window` draws another from the same corpus, duration
-range and segment index the command term draws from, so what is on screen is a sample of the
-training distribution, not an illustration of it.
-
-Read the startup listing after every rebuild of the corpus. `states` is how much of a clip
-survived recording, `windows` is how much of it the bridge can be asked about, and a source
-with states but no windows contributed nothing to training. That has happened, silently, and
-is visible nowhere else.
-
-Implementation notes
---------------------
-
-No physics. The states were recorded under physics already, and stepping the solver through
-them would integrate a second time and drift off what was written down. The ghost is posed
-by writing qpos and running forward kinematics, so a foot through the floor here is a defect
-in the recording, not in the playback.
+    red     the masked window, start state to target state. What the bridge has to perform
 
 Two robots are compiled, one green and one red, and the one not wanted is parked under the
-floor. A geom's colour is baked at compile time and cannot be repainted frame by frame, so
-switching colour has to be switching robots.
+floor. A geom color is baked at compile time and cannot be repainted frame by frame, so
+switching color has to be switching robots.
+
+Run
+
+1. Serve the viewer, then open the printed address. Next window draws another from the same
+   corpus, duration range and segment index the command term draws from, so what is on
+   screen is a sample of the training distribution.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view
+
+2. Restrict to one clip, and to the side of the split uv run play and evaluate read.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view \
+      --source jumps1_subject1 --split eval
 """
 
 from __future__ import annotations
@@ -86,15 +69,15 @@ ANY = "any source"
 class ViewCfg:
   path: Path = DEFAULT_DATASET
   split: str = "train"
-  """Which side of the holdout split to draw from. 'train' is what the bridge learns on,
-  'eval' is what `uv run play` and `evaluate` read."""
+  """Which side of the holdout split to draw from. train is what the bridge learns on,
+  eval is what uv run play and evaluate read."""
 
   source: str = ""
   """Restrict windows to one clip or skill. Empty starts on any of them, and the dropdown
   changes it without restarting."""
 
   duration_s: tuple[float, float] = (0.3, 1.2)
-  """How long a window may be. The default is `BridgeCommandCfg.duration_s_range`, so what
+  """How long a window may be. The default is BridgeCommandCfg.duration_s_range, so what
   is drawn here is what the task draws. Change both together or this stops being a picture
   of the training distribution."""
 
@@ -119,12 +102,12 @@ class Slot:
   """qpos address of its free joint. Position is [free, free + 3), orientation is
   [free + 3, free + 7)."""
   joints: np.ndarray
-  """(J,) qpos addresses, in model joint order, which is the order the dataset's joint
-  block was recorded in."""
+  """(J,) qpos addresses, in model joint order, which is the order the dataset joint block
+  was recorded in."""
 
 
 def build() -> tuple[mujoco.MjModel, Slot, Slot]:
-  """One model holding both coloured copies and a floor, and where to write each pose."""
+  """One model holding both colored copies and a floor, and where to write each pose."""
   world = mujoco.MjSpec()
   world.worldbody.add_geom(
     type=mujoco.mjtGeom.mjGEOM_PLANE,
@@ -143,18 +126,18 @@ def build() -> tuple[mujoco.MjModel, Slot, Slot]:
 
 
 def tint(model: mujoco.MjModel, prefix: str, color: tuple[float, ...]) -> None:
-  """Paint one copy's visual geoms and hide its collision ones.
+  """Paint the visual geoms of one copy and hide its collision ones.
 
   Collision geoms are the crude convex stand-ins the solver works with, and drawing them
   puts a robot made of boxes inside the robot.
 
-  The material has to be dropped and not merely recoloured. A geom's colour resolves as
-  material first and `geom_rgba` only as a fallback, so a G1 mesh that still carries its
-  material comes out the robot's own colour no matter what is written here. That failure
+  The material has to be dropped, not merely recolored. A geom color resolves as
+  material first and geom_rgba only as a fallback, so a G1 mesh that still carries its
+  material comes out in the robot's own color no matter what is written here. That failure
   is not just cosmetic: the renderer batches bodies whose geometry fingerprints match, the
   fingerprint is over type, mesh, material and rgba, and two copies that were never
-  actually recoloured fingerprint identically. They merge into one mesh, and instead of a
-  green robot and a red one there is a single robot in its factory colours.
+  actually recolored fingerprint identically. They merge into one mesh, and instead of a
+  green robot and a red one there is a single robot in its factory colors.
   """
   for geom in range(model.ngeom):
     body = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, model.geom_bodyid[geom])
@@ -168,11 +151,11 @@ def tint(model: mujoco.MjModel, prefix: str, color: tuple[float, ...]) -> None:
 
 
 def slot(model: mujoco.MjModel, prefix: str) -> Slot:
-  """Resolve one copy's qpos addresses, in model joint order.
+  """Resolve the qpos addresses of one copy, in model joint order.
 
   Order and not name, because a dataset does not record the joint names it was written
   against. Both copies are the same spec attached twice, so both give the same order, and
-  it is the order `robot.data.joint_pos` was in when the rows were recorded. The count is
+  it is the order robot.data.joint_pos was in when the rows were recorded. The count is
   checked against the dataset, which is as much of that assumption as a file can carry.
   """
   free: int | None = None
@@ -192,7 +175,7 @@ def slot(model: mujoco.MjModel, prefix: str) -> Slot:
 
 
 def show(qpos: np.ndarray, where: Slot, state: np.ndarray, shift: np.ndarray) -> None:
-  """Write one state into the shared qpos, moved by `shift`."""
+  """Write one state into the shared qpos, moved by shift."""
   qpos[where.free : where.free + 3] = state[0:3] + shift
   qpos[where.free + 3 : where.free + 7] = state[3:7]
   qpos[where.joints] = state[ROOT_STATE_DIM : ROOT_STATE_DIM + where.joints.size]
@@ -211,7 +194,7 @@ class Window:
   states: np.ndarray
   """(L, 13 + 2J). Everything played, in time order: context, window, context."""
   start: int
-  """Index into `states` of the start state the bridge is teleported onto."""
+  """Index into states of the start state the bridge is teleported onto."""
   stop: int
   """Index of the target state it has to arrive in. Red covers [start, stop]."""
   fps: float
@@ -228,11 +211,11 @@ class Window:
 def runs(
   data: Dataset, rows: torch.Tensor
 ) -> tuple[torch.Tensor, list[tuple[int, int]]]:
-  """Rows in time order, and the half-open bounds of every contiguous stretch in them.
+  """Rows in time order, and the half open bounds of every contiguous stretch in them.
 
-  The same runs `Dataset.segments` indexes, found the same way: sort into (trajectory,
+  The same runs Dataset.segments indexes, found the same way: sort into (trajectory,
   frame) order, then cut wherever the frame does not step by one. Rebuilt here rather than
-  read off a `Segments`, because that holds where a window may open and this needs where the
+  read off a Segments, because that holds where a window may open and this needs where the
   rollout around it ends, which is what stops context being borrowed from the next one.
   """
   width = int(data.frame.max().item()) + 1
@@ -349,7 +332,7 @@ def serve(cfg: ViewCfg) -> None:
     )
   mj_data = mujoco.MjData(model)
 
-  # Indexed once per source. `of` builds a mask over the whole table, and redoing it per
+  # Indexed once per source. of builds a mask over the whole table, and redoing it per
   # window would scan the corpus every few seconds to draw one pair
   indexed = {name: runs(data, data.of((name,))) for name in data.names}
   indexed[ANY] = runs(data, data.of(None))
@@ -365,7 +348,7 @@ def serve(cfg: ViewCfg) -> None:
   scene.camera_tracking_enabled = False
 
   # With tracking off nothing places the camera, and viser's default look is along the
-  # floor. A rollout's root position has its environment origin subtracted off x and y, so
+  # floor. A rollout root position has its environment origin subtracted off x and y, so
   # every window starts near here and wanders a metre or two
   @server.on_client_connect
   def _(client: viser.ClientHandle) -> None:
@@ -384,10 +367,10 @@ def serve(cfg: ViewCfg) -> None:
   cursor = server.gui.add_slider("Frame", 0, 1, 1, 0)
   readout = server.gui.add_markdown("")
 
-  # Every window drawn this session, and where in it we are. Kept so `Previous` goes back
-  # to the window that was just on screen rather than drawing a different one: a window
-  # worth a second look is gone the moment `Next` redraws, and the draw is random, so
-  # without this there is no way back to it
+  # Every window drawn this session, and where in it we are. Kept so Previous goes back to
+  # the window that was just on screen rather than drawing a different one: a window worth
+  # a second look is gone the moment Next redraws, and the draw is random, so without this
+  # there is no way back to it
   history: list[Window] = []
   at = 0
   playing = True

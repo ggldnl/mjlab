@@ -1,77 +1,60 @@
-"""One policy that drives the robot from where a skill stopped to where the next can start.
+"""Bridge task. One policy that drives the robot from a start dynamic state to a target
+dynamic state, in a given time period.
 
-Task id `Mjlab-G1-Bridge`, checkpoints under `logs/rsl_rl/g1_bridge`.
+Task id Mjlab-G1-Bridge, checkpoints under logs/rsl_rl/g1_bridge.
 
-    in     own state (root velocities, gravity, joint angles and rates, last action)
-           + gap to the target state
-           + seconds left, and how long the window was
-    out    joint position targets, 29 of them
+    in     state (root velocities, gravity, joint angles and rates, last action)
+           + per channel gap to the target state
+           + seconds left + window length
+    out    29 joint position targets
 
-One episode is one window: teleport onto a start state, cross to a target state, deadline
-in between. Only the arrival is scored. What the robot does in the middle is free.
+One episode is one window: teleport onto a start state, reach the target state before the
+deadline.
+
+Endpoints come from tracker rollouts, never from motion capture. A retargeted human clip is
+a description, not a state a G1 is ever in. Both endpoints come from one rollout a fixed
+time apart, which makes the pair reachable by construction. The motion recorded between
+them is used as a learning signal (mdp.guidance, annealed to zero), never as an input: the
+policy reads only its own state and the gap to the target, in training and at inference
+alike.
 
 Run
----
 
-    1. Build the corpus. See datasets/tracker.py, which has the full recipe.
+1. Build the corpus. Look at datasets/tracker.py.
 
-        uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker
 
-    2. Check what came out before training on it. Per-source counts, then a window drawn
-       as a ghost.
+2. Inspect it: per source counts, then a window replayed as a ghost.
 
-        uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view
 
-    3. Train.
+3. Train.
 
-        uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
+    uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
 
-    4. Score it against a robot that does nothing. A bridge that cannot beat the statue
-       has not learned anything.
+4. Score it against a robot that does nothing.
 
-        uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate
 
-    5. Watch it. Amber ghost is the target, blue ghost walks the recorded crossing.
+5. Watch it. Amber ghost is the target, blue ghost is the recorded crossing.
 
-        uv run play Mjlab-G1-Bridge
+    uv run play Mjlab-G1-Bridge
 
 Layout
-------
 
     datasets/      where start and target states come from
-    mdp/           the window (commands), what it pays (rewards), how it ends (terminations)
+    mdp/           commands (the window), rewards, terminations
     env_cfg.py     the mjlab task
-    evaluate.py    scoring against the do-nothing baseline
+    evaluate.py    scoring against the do nothing baseline
 
-Interface
----------
+API
 
-Aim the bridge from outside with two calls on the command term:
+Two methods on the command term drive the bridge from outside:
 
     place(env_ids, start, target, duration_s)    teleport onto a start, then cross
     open_window(env_ids, duration_s)             cross from wherever the robot already is
 
-Durations are seconds, not control ticks. A tick count changes with the decimation and
-means nothing to a caller choosing between a 1.0 s target and a 0.5 s one.
-`BridgeCommand.steps_for` is the only conversion in the task.
-
-Design rules
-------------
-
-Nothing scores the middle. Many motions connect two states, so scoring one of them
-penalizes the rest. Earlier versions regressed the recorded in-between and put a foot
-through the floor in 2 windows out of 5.
-
-Endpoints come from tracker rollouts, never from motion capture. A retargeted human clip
-is a description, not a state a G1 is ever in.
-
-Both endpoints come from one rollout, a fixed time apart. Two individually reachable states
-can be an unreachable pair. A contiguous segment needs no feasibility model: the
-displacement, velocity change, joint travel and time available were demonstrated together.
-
-The recorded crossing is a training signal, never an input. `mdp.guidance` pays for staying
-near it and anneals to zero, so the policy reads only its own state and the gap to the
-target, at training time and at inference alike.
+Durations are seconds, not control ticks. Tick counts change with the decimation.
 """
 
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
@@ -82,17 +65,17 @@ BRIDGE_TASK_ID = "Mjlab-G1-Bridge"
 
 
 def bridge_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-  """PPO for the bridge. Copied from the jump: same robot, same rate, both goal conditioned.
+  """PPO config. Copied from the jump: same robot, same rate, both goal conditioned.
 
-  Three settings differ from the rsl_rl defaults:
+  Three values differ from the rsl_rl defaults:
 
-      init_std 0.6            1.0 is too much per-joint noise at this action scale, and the
-                              shortest window is 0.3 s, too short to recover from it
+      init_std 0.6            1.0 is too much per joint noise at this action scale, and
+                              the shortest window (0.3 s) is too short to recover from it
       num_learning_epochs 4   fewer chances per iteration for the KL schedule to ratchet
-      desired_kl 0.015        the learning rate down to rsl_rl's 1e-5 floor, where a run
-                              looks plateaued but is only crawling
+      desired_kl 0.015        the learning rate down to the rsl_rl floor of 1e-5, where a
+                              run looks plateaued but is only crawling
 
-  Read the learning rate first when a run stalls.
+  Check the learning rate first when a run stalls.
   """
   return RslRlOnPolicyRunnerCfg(
     actor=RslRlModelCfg(
