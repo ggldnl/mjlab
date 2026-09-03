@@ -21,4 +21,4 @@ from mjlab.tasks.bridging.experiments.humanoid.tests.actors import PUSH, WALK
 from mjlab.tasks.bridging.experiments.humanoid.tests.stage import Couple, main
 
 if __name__ == "__main__":
-  main(Couple(leaving=WALK, entering=PUSH, steps=35, frame=0))
+  main(Couple(leaving=WALK, entering=PUSH, duration_s=0.7))
