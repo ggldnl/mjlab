@@ -581,10 +581,6 @@ def g1_jump_env_cfg(
     motion_cmd.pose_range = {}
     motion_cmd.velocity_range = {}
     motion_cmd.joint_position_range = (0.0, 0.0)
-    # Enter where the jump loads rather than at the clip's opening stand. The clips carry
-    # one to two seconds of standing still first, and playing that back is a faithful
-    # reproduction of the recording rather than anything the skill needs. Which frame is
-    # `entry_landmark`. Set this to "start" to watch the whole clip, stand included
-    motion_cmd.sampling_mode = "entry"
+    motion_cmd.sampling_mode = "start"
 
   return cfg

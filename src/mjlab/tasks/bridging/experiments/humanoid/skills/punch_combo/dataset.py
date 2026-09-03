@@ -24,13 +24,14 @@ import tyro
 
 import mjlab
 from mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset import (
+  CLIP_DIR,
   SOURCE_DIR,
   STILL_HOLD_S,
   Crop,
   convert,
 )
 
-MOTION_DIR = SOURCE_DIR / "punch_combo"
+MOTION_DIR = CLIP_DIR / "punch_combo"
 
 # 131 frames, four and a half seconds at 30 Hz. Longer than the front kick because a
 # combination is several strikes, and the window has to reach the end of the last one

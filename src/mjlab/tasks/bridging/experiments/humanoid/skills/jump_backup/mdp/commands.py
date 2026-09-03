@@ -520,33 +520,6 @@ class JumpCommand(CommandTerm):
       device=self.device,
     )
 
-  @property
-  def entry_steps(self) -> torch.Tensor:
-    """Frame each environment's clip is entered at, shape [B].
-
-    The landmark the config asked for, backed off by `entry_offset`. Per clip and not a
-    constant, because crouch depth grows with jump distance: eight centimetres on the
-    shortest clip, twenty-six on the longest. The entry pose carries the goal, so one fixed
-    frame cannot serve every distance.
-    """
-    landmark = (
-      self.motion.crouch_steps
-      if self.cfg.entry_landmark == "crouch"
-      else self.motion.load_steps
-    )
-    return (landmark[self.motion_ids] - self.cfg.entry_offset).clamp(min=0)
-
-  def _entry_time_steps(self, env_ids: torch.Tensor) -> torch.Tensor:
-    """Where an episode begins for these environments.
-
-    Frame zero everywhere except "entry" sampling, so the viewer slider and a scripted
-    evaluation put the robot where a reset would rather than back at the clip's opening
-    stand. A goal picked by hand and a goal picked by resampling should start the same way.
-    """
-    if self.cfg.sampling_mode == "entry":
-      return self.entry_steps[env_ids]
-    return torch.zeros(len(env_ids), dtype=torch.long, device=self.device)
-
   def solve_landing(
     self, distance: float, takeoff_before: float | None = None
   ) -> tuple[int, float]:
@@ -602,7 +575,7 @@ class JumpCommand(CommandTerm):
     self.scales[env_ids] = torch.tensor(
       [s for _, s in solved], dtype=torch.float32, device=self.device
     )
-    self.time_steps[env_ids] = self._entry_time_steps(env_ids)
+    self.time_steps[env_ids] = 0
     self.motion_done[env_ids] = False
 
     self._write_reference_state_to_sim(
@@ -672,30 +645,6 @@ class JumpCommand(CommandTerm):
     self.time_steps[env_ids] = 0
     self.metrics["sampling_entropy"][:] = 1.0
 
-  def _entry_sampling(self, env_ids: torch.Tensor) -> None:
-    """Start at the entry landmark, skipping the stand every clip opens with.
-
-    The clips spend their first second to two seconds standing still before anything
-    happens, and frame zero is the middle of that. A policy started there stands, settles,
-    crouches, and only then jumps, which is the clip being faithful rather than the skill
-    needing the time.
-
-    Nothing about this is a new state for the policy. Training samples the whole clip
-    (see `_adaptive_sampling`), so it has been reset into the crouch and asked to continue
-    from it for the whole run. What changes here is only which of those frames a fresh
-    episode gets, and every observation is already written to survive it: the goal is the
-    displacement still to cover, the clock is the time still to run.
-
-    Which frame is `entry_landmark`, and the default is not the bottom of the crouch. See
-    that field: the crouch is where the retargeted clips sink furthest into the floor, and
-    a reset is the one place that costs something.
-    """
-    self.motion_ids[env_ids] = torch.randint(
-      0, self.motion.num_motions, (len(env_ids),), device=self.device
-    )
-    self.time_steps[env_ids] = self.entry_steps[env_ids]
-    self.metrics["sampling_entropy"][:] = 1.0
-
   def _pretakeoff_sampling(self, env_ids: torch.Tensor) -> None:
     """Start anywhere in the run-up, never in the air.
 
@@ -752,8 +701,6 @@ class JumpCommand(CommandTerm):
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     if self.cfg.sampling_mode == "start":
       self._start_sampling(env_ids)
-    elif self.cfg.sampling_mode == "entry":
-      self._entry_sampling(env_ids)
     elif self.cfg.sampling_mode == "pretakeoff":
       self._pretakeoff_sampling(env_ids)
     elif self.cfg.sampling_mode == "uniform":
@@ -766,7 +713,7 @@ class JumpCommand(CommandTerm):
     if self._requested_goal is not None:
       motion_id, scale = self._requested_goal
       self.set_goal(env_ids, motion_id, scale)
-      self.time_steps[env_ids] = self._entry_time_steps(env_ids)
+      self.time_steps[env_ids] = 0
 
     self.motion_done[env_ids] = False
 
@@ -1043,9 +990,7 @@ class JumpCommandCfg(CommandTermCfg):
   goal_success_threshold: float = 0.25
   """Landing within this many metres of the target counts as reaching the goal."""
 
-  sampling_mode: Literal["adaptive", "uniform", "start", "pretakeoff", "entry"] = (
-    "adaptive"
-  )
+  sampling_mode: Literal["adaptive", "uniform", "start", "pretakeoff"] = "adaptive"
   """Where in a clip an episode begins.
 
       adaptive     the whole clip, weighted toward where episodes are being lost
@@ -1053,51 +998,10 @@ class JumpCommandCfg(CommandTermCfg):
       start        always frame zero
       pretakeoff   the run-up only, which is the set of frames another policy could hand
                    this one control at. Nothing can deliver a robot into mid-flight.
-      entry        always the entry landmark, which skips the stand the clip opens with
 
   Flight has to be in the draw for the airborne phase to be learned at all, so the first
-  two are what training wants. "entry" is a playback and evaluation setting: it changes
-  where an episode starts, not what the policy knows, and it is only honest because
-  training already covered those frames.
+  two are what training wants.
   """
-
-  entry_landmark: Literal["crouch", "load"] = "load"
-  """Which frame "entry" sampling starts at.
-
-      load     the frame the root first drops out of standing
-      crouch   the bottom of the crouch, half a second later and a fifth of a second
-               before takeoff
-
-  "load" is the default, and the reason is the floor. The retargeted clips are shifted
-  vertically to put a *standing* foot on the ground, and that shift is capped by
-  MAX_GROUND_PENETRATION measured on the ankle body origin (see dataset.py). The proxy holds
-  while the foot is flat and breaks when it pitches: standing, the ankle origin sits 3.6 cm
-  above the sole, but in the crouch the heel lifts and that grows to 7.7 cm. So the clips
-  pass their own check while the sole is 4.3 to 7.5 cm underground, and the crouch is the
-  worst frame in every one of them.
-
-  That costs nothing while the clip is only a tracking target, which is why training samples
-  those frames happily and why the skill tracks them well. It costs something at a reset,
-  which writes the robot into the pose: the episode then opens with the contact solver
-  shoving the robot up out of the floor. "load" is the last frame before the sink begins, so
-  it stands on the ground the way frame zero does, and it still skips every second of
-  standing.
-
-  Measured sole height at each landmark, in metres, negative being underground:
-
-      clip     frame 0    load    crouch
-      level1    -0.009  -0.023    -0.043
-      level2    -0.013  -0.018    -0.057
-      level3    +0.031  +0.022    -0.071
-      level4    +0.003  -0.007    -0.075
-      level5    +0.009  -0.004    -0.075
-  """
-
-  entry_offset: int = 0
-  """Frames to back the entry landmark off by, towards the start of the clip.
-
-  Dials continuously between the two landmarks and past them. Zero enters exactly on the
-  landmark."""
 
   pretakeoff_margin: int = 2
   """Frames before takeoff that "pretakeoff" sampling stops at.

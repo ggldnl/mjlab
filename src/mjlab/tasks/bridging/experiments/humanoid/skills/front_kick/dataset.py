@@ -113,7 +113,10 @@ LAFAN1_URL = (
 )
 
 SOURCE_DIR = Path("data") / "lafan1_g1"
-MOTION_DIR = SOURCE_DIR / "front_kick"
+CLIP_DIR = SOURCE_DIR / "clips"
+"""Where the converter puts its output, one directory per clip."""
+
+MOTION_DIR = CLIP_DIR / "front_kick"
 
 # How long the reference stands still before the strike begins. Long enough that the policy
 # has to hold a stance and then break out of it, short enough not to spend the episode on it

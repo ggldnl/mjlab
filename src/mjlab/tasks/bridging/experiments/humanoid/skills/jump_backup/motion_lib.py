@@ -18,44 +18,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-# How far the root has to drop below its standing height before the crouch counts as
-# started. Two centimetres is past the retargeting noise the clips carry while standing and
-# well short of the shallowest crouch, which is eight
-CROUCH_ONSET_DROP = 0.02
-
-# Frames of a clip's opening taken to be a stand, used to measure the standing root height.
-# Every clip opens with the subject settled and still for at least this long
-STANCE_FRAMES = 40
-
-
-def detect_entry_steps(root_z: np.ndarray, takeoff_step: int) -> tuple[int, int]:
-  """Find the two frames a jump can be entered at, from the root height alone.
-
-  Returns the frame the root first drops out of standing and the bottom of the crouch. Both
-  are places another policy, or a reset, can put the robot to skip the stand the clip opens
-  with. The bottom is the later of the two and the tighter one: it is a fifth of a second
-  before takeoff, and it is where the vertical velocity passes through zero.
-
-  Read off the root height rather than stored by dataset.py, so a clip converted before this
-  existed needs no reconversion. The takeoff frame does come from the conversion, because
-  finding it needs the foot heights.
-
-  A clip whose flight was never detected is stored with takeoff_step -1, see dataset.py.
-  There is no run-up to search then, and both fall back to frame zero: entering such a clip
-  is the same as starting it, which is wrong but visible, where guessing a frame would be
-  wrong and silent.
-  """
-  takeoff = int(takeoff_step)
-  if takeoff <= 0:
-    return 0, 0
-
-  run_up = root_z[:takeoff]
-  crouch = int(np.argmin(run_up))
-  standing = float(np.median(run_up[: min(STANCE_FRAMES, len(run_up))]))
-  below = np.nonzero(run_up < standing - CROUCH_ONSET_DROP)[0]
-  load = int(below[0]) if below.size else crouch
-  return load, crouch
-
 
 @dataclass
 class MotionMetadata:
@@ -69,8 +31,6 @@ class MotionMetadata:
   goal_apex: float
   takeoff_step: int
   land_step: int
-  load_step: int
-  crouch_step: int
 
   @property
   def distance(self) -> float:
@@ -134,10 +94,6 @@ class MotionLibrary:
     self.root_pos_w = all_body_pos_w[:, :, 0]
     self.root_lin_vel_w = all_body_lin_vel_w[:, :, 0]
 
-    entry_steps = [
-      detect_entry_steps(d["body_pos_w"][:, 0, 2], int(d["takeoff_step"])) for d in raw
-    ]
-
     self.metadata = [
       MotionMetadata(
         name=path.stem,
@@ -148,12 +104,8 @@ class MotionLibrary:
         goal_apex=float(data["goal_apex"]),
         takeoff_step=int(data["takeoff_step"]),
         land_step=int(data["land_step"]),
-        load_step=entry[0],
-        crouch_step=entry[1],
       )
-      for path, data, length, entry in zip(
-        paths, raw, lengths, entry_steps, strict=True
-      )
+      for path, data, length in zip(paths, raw, lengths, strict=True)
     ]
 
     self.goals = torch.tensor(
@@ -168,12 +120,6 @@ class MotionLibrary:
       [m.land_step if m.land_step >= 0 else m.num_frames - 1 for m in self.metadata],
       dtype=torch.long,
       device=device,
-    )
-    self.crouch_steps = torch.tensor(
-      [m.crouch_step for m in self.metadata], dtype=torch.long, device=device
-    )
-    self.load_steps = torch.tensor(
-      [m.load_step for m in self.metadata], dtype=torch.long, device=device
     )
 
   @staticmethod
@@ -194,8 +140,7 @@ class MotionLibrary:
       lines.append(
         f"  [{i}] {m.name:<22} {m.num_frames:>4} frames  "
         f"{m.distance:.2f} m  apex {m.goal_apex:.2f} m  "
-        f"flight [{m.takeoff_step}, {m.land_step}]  "
-        f"entry load {m.load_step} crouch {m.crouch_step}"
+        f"flight [{m.takeoff_step}, {m.land_step}]"
       )
     return "\n".join(lines)
 
