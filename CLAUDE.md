@@ -41,6 +41,7 @@ Added/Changed/Fixed categories. Reference issues with `:issue:\`123\``
 (renders as a link to the GitHub issue).
 
 # Comments style guide
+
 Use plain comments, for example (python):
 
 ```
@@ -51,11 +52,11 @@ def func(*args, **kwargs):  # this is an inline comment
 
 ```
 
-Comments do not have a dot at the end. Normal comments start with capital letter, 
-inline they start with lowercase letter. Avoid at all costs to pad comments to fill
+Comments should not end with a punctuation mark. Normal comments start with capital letter, 
+inline comments start with lowercase letter. Avoid at all costs to pad comments to fill
 the line with whatever character. Avoid at all costs to box comments.
 
-Examples of this to avoid (python):
+Examples of comment styles to avoid:
 
 ```
 
@@ -74,39 +75,28 @@ Examples of this to avoid (python):
 
 ```
 
-Apply the same concepts to any other programming language other than python. 
-If the user edits some comment or decides to apply any other styling guide,
-let it do so, do not change the comments it produces. What I specified only
-applies to you.
+Use the same writing style in any programming language.
 
 Avoid hyphen, en dashes and em dashes in comments as punctuation marks
 (you might still use them in formulas).
 Avoid bolding text in docstrings and comments when not extremely necessary.
-Avoid using "`" in docstrings and comments when not extremely necessary.
+Avoid using "`" when not necessary.
+Avoid adding too much math or reference too many variables and bits of code
+in comments, as they make it more difficult to read. Keep a concise style.
 
-# Commits
+# Docstrings style guidelines
 
-For any big change you produce on a repo, at the end of your message
-suggest a commit message that describes the change.
-You might need to work on more than one repo at a time: you'll have to do
-this for all of them producing a dict {repo: commit message}
-Commit messages should be just small sentences, not explain thoroughly
-the change.
-
-Example:
-
-```
-repo x: "Fixed this problem"
-repo y: "Fixed this other problem"
-```
-
-Remember: 
-- not all the changes you do to a repo are worth having a dedicated commit. 
-  Some changes might be extended with the conversation going furhter;
-  in that case, omit the commit message suggestion.
-- commit message should be plain, concise prose. No section headers, checklists,
-  or structured templates. Describe the problem, what the change does, and
-  any non-obvious tradeoffs. A good description reads like a short
-  paragraph to a colleague, not a form.
-- commit messages are rendered on GitHub, so don't hard-wrap them
-  at 88 columns. Let each sentence flow on one line.
+The style you adopt usually in docstrings is very cumbersome, heavy, difficult 
+to read. Nothing is clear immediately as you look through the docstring, you 
+have to read a lot to get a slight idea of what the class/component is intended 
+to do. When writing a docstring, use a simpler, more concise, direct way. It 
+should be immediately clear what the component they refer to does. There should 
+be a dedicated section with instructions on what to run and how. 
+Do not use prose at all cost, use a vocabulary close to what programmers use,
+direct, simple and efficient. 
+Use math in the docstrings only in dedicated spots when needed, not in between 
+words, as I find that difficult to read. 
+Do not abuse inline math, frequent "`", referencing variables and bits of code.
+Do not use bold and/or italics.
+Do not use complex terms and jargon, go straight to the point. The docstring
+should only describe how the code works, it should not be too long.
