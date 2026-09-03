@@ -150,7 +150,7 @@ class JumpCommand(CommandTerm):
 
   @property
   def stretch_vel_offset(self) -> torch.Tensor:
-    """Time derivative of `stretch_offset`, shape [B, 2]."""
+    """Time derivative of stretch_offset, shape [B, 2]."""
     mid, t = self._index
     return (self.scales - 1.0).unsqueeze(-1) * self.motion.root_lin_vel_w[mid, t, :2]
 
@@ -224,14 +224,14 @@ class JumpCommand(CommandTerm):
     at_pos: torch.Tensor | None = None,
     at_quat: torch.Tensor | None = None,
   ) -> None:
-    """Pin the clip to where the robot is now and wind it to `start_frame`.
+    """Pin the clip to where the robot is now and wind it to start_frame.
 
     What a reset does for this skill. Called when a composition hands control to the jump,
     so the reference starts from the robot's current position and heading rather than from
     the origin. Nothing is written to the simulation: the robot is not moved, the reference
     is.
 
-    `start_frame` is the entry handle. A tracking policy has no privileged beginning: any
+    start_frame is the entry handle. A tracking policy has no privileged beginning: any
     frame of its clip is a state it knows how to continue from, provided the robot is
     actually in that state when it takes over. Zero is the clip's own opening, a stand,
     which is what a naive hand-off gets. The bottom of the crouch is a second and a half
@@ -239,15 +239,15 @@ class JumpCommand(CommandTerm):
     frame is responsible for the robot being in it, which is the bridge's job and the reason
     this parameter exists.
 
-    `at_pos` and `at_quat` pin the clip to a pose that is not the robot's current one, which
+    at_pos and at_quat pin the clip to a pose that is not the robot's current one, which
     is what a bridge needs. The robot is not at the entry frame yet, so the clip is placed
     where the robot will be, once, before the bridge starts. Anchoring again at hand-over
     would slide the clip onto wherever the robot actually arrived, erasing the arrival error
     instead of leaving it for the entered skill to cope with.
 
-    `at_quat` is the direction the jump should travel, not the heading the robot should hold
+    at_quat is the direction the jump should travel, not the heading the robot should hold
     at the entry frame. The two differ by the pelvis twist the clip carries; read
-    `body_quat_w` after this call to get the second one. See the anchor rotation comment
+    body_quat_w after this call to get the second one. See the anchor rotation comment
     below.
     """
     frame = int(start_frame)
@@ -459,7 +459,7 @@ class JumpCommand(CommandTerm):
   ##
 
   def solve_goal(self, distance: float) -> tuple[int, float]:
-    """Pick the clip and stretch that jump `distance` metres.
+    """Pick the clip and stretch that jump distance metres.
 
     Every clip can serve every distance in principle. The one whose own distance is closest
     needs the least stretching, and less stretching means a reference closer to something a
@@ -483,7 +483,7 @@ class JumpCommand(CommandTerm):
   def landing_distances(self) -> torch.Tensor:
     """How far each clip has travelled by the frame it touches down on, [num_motions].
 
-    Not the same quantity as `motion.distances`, and the difference is what an obstacle
+    Not the same quantity as motion.distances, and the difference is what an obstacle
     cares about. A clip's goal is where its last frame is, and every clip here keeps walking
     for half a metre after it lands:
 
@@ -524,7 +524,7 @@ class JumpCommand(CommandTerm):
   def entry_steps(self) -> torch.Tensor:
     """Frame each environment's clip is entered at, shape [B].
 
-    The landmark the config asked for, backed off by `entry_offset`. Per clip and not a
+    The landmark the config asked for, backed off by entry_offset. Per clip and not a
     constant, because crouch depth grows with jump distance: eight centimetres on the
     shortest clip, twenty-six on the longest. The entry pose carries the goal, so one fixed
     frame cannot serve every distance.
@@ -550,11 +550,11 @@ class JumpCommand(CommandTerm):
   def solve_landing(
     self, distance: float, takeoff_before: float | None = None
   ) -> tuple[int, float]:
-    """Pick the clip and stretch that touch down `distance` metres ahead.
+    """Pick the clip and stretch that touch down distance metres ahead.
 
-    The counterpart of `solve_goal` for a caller with an obstacle rather than a target: what
+    The counterpart of solve_goal for a caller with an obstacle rather than a target: what
     has to be cleared is decided by where the reference lands and where it leaves the
-    ground. `takeoff_before` is the distance to whatever must be airborne over, and clips
+    ground. takeoff_before is the distance to whatever must be airborne over, and clips
     whose stretched run-up would still be on the ground at that point are rejected outright
     rather than penalized. A jump that takes off on top of the box is not a worse jump, it
     is a trip.
@@ -681,12 +681,12 @@ class JumpCommand(CommandTerm):
     needing the time.
 
     Nothing about this is a new state for the policy. Training samples the whole clip
-    (see `_adaptive_sampling`), so it has been reset into the crouch and asked to continue
+    (see _adaptive_sampling), so it has been reset into the crouch and asked to continue
     from it for the whole run. What changes here is only which of those frames a fresh
     episode gets, and every observation is already written to survive it: the goal is the
     displacement still to cover, the clock is the time still to run.
 
-    Which frame is `entry_landmark`, and the default is not the bottom of the crouch. See
+    Which frame is entry_landmark, and the default is not the bottom of the crouch. See
     that field: the crouch is where the retargeted clips sink furthest into the floor, and
     a reset is the one place that costs something.
     """
@@ -703,7 +703,7 @@ class JumpCommand(CommandTerm):
     mid-flight is impossible rather than hard: whatever was driving would have had to launch
     the robot on the reference's behalf, and nothing does.
 
-    Uniform over the run-up rather than failure-weighted like `_adaptive_sampling`. The
+    Uniform over the run-up rather than failure-weighted like _adaptive_sampling. The
     run-up is a few dozen frames of one continuous descent, so there is little for an
     adaptive scheme to find, and a uniform draw leaves one less thing between a change to
     the perturbation and its effect on the log.
@@ -1028,7 +1028,7 @@ class JumpCommandCfg(CommandTermCfg):
   time-out) resets this command like any other. With the default, that reset teleports the
   robot back onto the clip at the origin, which reads as the jump inexplicably restarting
   from the start line. It is also silent, because mjlab resets terminated environments
-  inside `step`, so nothing in the composition sees it happen.
+  inside step, so nothing in the composition sees it happen.
   """
 
   pose_range: dict[str, tuple[float, float]] = field(default_factory=dict)
@@ -1069,7 +1069,7 @@ class JumpCommandCfg(CommandTermCfg):
                before takeoff
 
   "load" is the default, and the reason is the floor. The retargeted clips are shifted
-  vertically to put a *standing* foot on the ground, and that shift is capped by
+  vertically to put a standing foot on the ground, and that shift is capped by
   MAX_GROUND_PENETRATION measured on the ankle body origin (see dataset.py). The proxy holds
   while the foot is flat and breaks when it pitches: standing, the ankle origin sits 3.6 cm
   above the sole, but in the crouch the heel lifts and that grows to 7.7 cm. So the clips
@@ -1108,7 +1108,7 @@ class JumpCommandCfg(CommandTermCfg):
   entry_velocity_range: dict[str, tuple[float, float]] = field(default_factory=dict)
   """Root linear velocity written at reset on top of the clip's own, in m/s.
 
-  `velocity_range` is symmetric noise around the reference. This is momentum the reference
+  velocity_range is symmetric noise around the reference. This is momentum the reference
   does not have. These clips are standing jumps, so their run-up frames carry almost no
   forward travel and this is the only way an episode begins with any. Given in the clip's
   frame, which during training is the world's, since a reset pins the reference at the

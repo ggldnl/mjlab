@@ -1,4 +1,4 @@
-"""MDP terms for the goal-conditioned jump.
+"""MDP terms for the goal conditioned jump.
 
 The tracking task's terms come in first and the jump's are layered on top, so a config
 reaches everything through this one namespace. The jump command exposes the same properties

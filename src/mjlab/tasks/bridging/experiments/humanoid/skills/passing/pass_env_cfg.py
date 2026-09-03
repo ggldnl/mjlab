@@ -1,9 +1,23 @@
 """The pass environment: a standing G1, a football in reach, and a commanded launch.
 
-Run:
+Rewards, as rungs:
 
-    uv run train Mjlab-G1-Pass --env.scene.num-envs 4096
-    uv run play Mjlab-G1-Pass
+    floor        alive, upright, posture, stay_put. Paid every step from iteration one.
+                 The only thing that pays during the standing stage of the curriculum, and
+                 still the largest per step term afterward, which is what stops a policy
+                 discovering that falling over ends the penalties
+    rung one     approach_ball. Dense, switched off once the ball has been touched, so it
+                 points at the ball rather than paying for a foot resting against it
+    rung two     ball_touched. Latched: touch once and the floor rises for the rest of the
+                 episode. Contact is the discrete event between a policy that can balance
+                 and one that can score the strike
+    rung three   pass_quality. Latched on the fastest the ball has gone, scored against the
+                 commanded launch velocity. This is the task
+
+The penalties are deliberately small. On a 29 joint humanoid a penalty set that outweighs
+the positive terms makes immediate termination the highest return trajectory available,
+because a failure bootstraps zero. The tell is mean episode length falling monotonically
+from the first iteration.
 
 What to watch:
 
@@ -13,29 +27,15 @@ What to watch:
     Episode/rew_pass_quality     the goal term itself
     Curriculum/pass_quality      whether the strike weights are on yet
 
-launch_rate separates "learning to strike" from "learning to stand near a ball". vel_error
-and heading_error together check that the conditioning is real rather than one memorized
-pass: a policy ignoring the command still launches, but its errors stay flat at the spread
-of the command range instead of falling.
+launch_rate separates learning to strike from learning to stand near a ball. vel_error and
+heading_error together check that the conditioning is real rather than one memorized pass:
+a policy ignoring the command still launches, but its errors stay flat at the spread of the
+command range instead of falling.
 
-Rewards:
+Run
 
-    Floor        alive, upright, posture, stay_put. Paid every step from iteration one.
-                 The only thing that pays during the standing stage of the curriculum, and
-                 still the largest per-step term afterward, which is what stops a policy
-                 discovering that falling over ends the penalties.
-    Rung one     approach_ball. Dense, switched off once the ball has been touched, so it
-                 points at the ball rather than paying for a foot resting against it.
-    Rung two     ball_touched. Latched: touch once and the floor rises for the rest of the
-                 episode. Contact is the discrete event between a policy that can balance
-                 and one that can score the strike.
-    Rung three   pass_quality. Latched on the fastest the ball has gone, scored against the
-                 commanded launch velocity. This is the task.
-
-The penalties are deliberately small. On a 29-joint humanoid a penalty set that outweighs
-the positive terms makes immediate termination the highest return trajectory available,
-because a failure bootstraps zero. The tell is mean episode length falling monotonically
-from the first iteration.
+    uv run train Mjlab-G1-Pass --env.scene.num-envs 4096
+    uv run play Mjlab-G1-Pass
 """
 
 from __future__ import annotations

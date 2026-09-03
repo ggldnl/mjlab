@@ -393,22 +393,22 @@ class PassCommand(CommandTerm):
     on_change: Callable[[], None] | None = None,
     request_action: Callable[[str, Any], None] | None = None,
   ) -> None:
-    """Speed and aim dials, which are the whole user-facing interface.
+    """Speed and aim dials, which are the whole user facing interface.
 
-    Without these the goal is whatever `_resample_command` drew at reset and there is no
-    way to ask for a different one, so watching the policy tells you it can strike a ball
-    but not whether it is answering the command or repeating one memorized strike. Which is
-    the single thing worth checking by eye, and the metrics that measure it, `vel_error` and
-    `heading_error`, only exist during training.
+    Without these the goal is whatever _resample_command drew at reset and there is no way
+    to ask for a different one, so watching the policy tells you it can strike a ball but
+    not whether it is answering the command or repeating one memorized strike. That is the
+    single thing worth checking by eye, and the metrics that measure it, vel_error and
+    heading_error, only exist during training.
 
     Applied on the spot rather than on a reset, unlike the jump's dial. The goal is a fact
-    about a ball that has not been struck yet, so moving it mid-stance is a legitimate
+    about a ball that has not been struck yet, so moving it mid stance is a legitimate
     change of mind and the policy should follow it. Once the ball is away the goal still
-    moves, and nothing happens, which is correct and is also the clearest demonstration
-    available that the strike is a one-shot event.
+    moves and nothing happens, which is correct and is also the clearest demonstration
+    available that the strike is a one shot event.
 
     Heading is taken off the robot's heading now rather than at reset, matching what
-    `_resample_command` means by the offset. The stored goal is still a world vector: see
+    _resample_command means by the offset. The stored goal is still a world vector: see
     this class's own docstring for why that distinction matters.
     """
     lo, hi = self.cfg.ranges.speed

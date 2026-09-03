@@ -1,40 +1,43 @@
 """Cut a strike out of a LAFAN1 fight performance and convert it to an mjlab motion.
 
-Run:
-
-    uv run python -m \
-      mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset
-
-    # after moving the window
-    uv run python -m ...front_kick.dataset --crop.start 1180 --crop.end 1300
+LAFAN1 (Harvey et al., SIGGRAPH 2020) has a fight category, and Unitree publishes the whole
+set retargeted to the 29 joint G1 as one CSV per performance: root position, root
+quaternion in xyzw, then the joint angles, at 30 Hz. That is the same file the tracking
+task's cropping tools read, so a strike here is a frame range into one of those
+performances.
 
 Source CSVs are cached in data/lafan1_g1, the converted motion lands in
 data/lafan1_g1/front_kick, and both steps skip files already there.
 
-LAFAN1 (Harvey et al., SIGGRAPH 2020) has a fight category, and Unitree publishes the whole
-set retargeted to the 29 joint G1 as one CSV per performance: root position, root quaternion
-in xyzw, then the joint angles, at 30 Hz. That is the same file the tracking task's cropping
-tools read, so a strike here is a frame range into one of those performances.
-
 What happens to the clip, in order:
 
     0. Download the performance, unless it is already cached.
-    1. Slice the frame window and scatter the CSV's joint columns into the model's own
-       joint order by name.
+    1. Slice the frame window and scatter the CSV joint columns into the model's own joint
+       order by name.
     2. Rotate and translate so the clip starts at the origin facing +x. The pelvis heading
        is what is removed here, not the direction of travel, because a strike goes nowhere
        and has no direction of travel.
-    3. Resample to the control rate and hold the first frame still for half a second, so the
-       clip starts from a standstill the policy has to launch out of.
+    3. Resample to the control rate and hold the first frame still for half a second, so
+       the clip starts from a standstill the policy has to launch out of.
     4. Shift the root vertically so a planted foot sits at standing foot height.
-    5. Replay through MuJoCo to log every body's world pose and velocity, and record where
+    5. Replay through MuJoCo to log every body world pose and velocity, and record where
        the clip ends up.
 
-The window below is a starting guess into mid-performance, the same status as the ones in
-the tracking task's manual_crop.py. Check it before trusting it:
+Check the frame interval using the tracking task's manual_crop.py.
 
-    uv run python src/mjlab/tasks/tracking/scripts/datasets/lafan1/interactive_crop.py \
-      --data-dir data/lafan1_g1 --motion fight1_subject2
+Run
+
+1. Convert the default window.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset
+
+2. Convert a different window, when the default lands on the wrong strike.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset       --crop.start 1180 --crop.end 1300
+
+3. Pick a window by eye first.
+
+    uv run python src/mjlab/tasks/tracking/scripts/datasets/lafan1/interactive_crop.py       --data-dir data/lafan1_g1 --motion fight1_subject2
 """
 
 from __future__ import annotations
@@ -192,10 +195,10 @@ def load_csv(path: Path, crop: Crop, joint_names: list[str], device: str) -> Raw
 def canonicalize(motion: RawMotion) -> RawMotion:
   """Move the clip to the origin and turn its opening stance to face +x.
 
-  The pelvis heading of the first frame is what is removed. The jump's converter removes the
-  direction of travel instead, because there the goal is a displacement and the clip has to
-  point along it. A strike stays where it is, so the only heading it has is the one it starts
-  in, and that is the one the policy is asked to hold.
+  The pelvis heading of the first frame is what is removed. The jump's converter removes
+  the direction of travel instead, because there the goal is a displacement and the clip
+  has to point along it. A strike stays where it is, so the only heading it has is the one
+  it starts in, and that is the one the policy is asked to hold.
   """
   correction = quat_inv(yaw_quat(motion.root_quat[0:1]))
   correction_seq = correction.expand(motion.root_quat.shape[0], 4)

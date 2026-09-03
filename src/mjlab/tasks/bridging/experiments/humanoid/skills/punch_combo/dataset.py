@@ -1,19 +1,22 @@
 """Cut the punch combination out of a LAFAN1 fight performance and convert it.
 
-Run:
-
-    uv run python -m \
-      mjlab.tasks.bridging.experiments.humanoid.skills.punch_combo.dataset
-
-    # after moving the window
-    uv run python -m ...punch_combo.dataset --crop.start 1580 --crop.end 1710
-
 Source CSVs are cached in data/lafan1_g1, the converted motion lands in
 data/lafan1_g1/punch_combo, and both steps skip files already there.
 
-Cutting a strike out of a performance is the same job whatever the strike is, so this is the
-frame window and nothing else. The converter lives in the front kick's dataset.py; read its
-module docstring for what happens to the clip between the CSV and the npz.
+Cutting a strike out of a performance is the same job whatever the strike is, so this file
+is the frame window and nothing else. The converter lives in the front kick's dataset.py.
+Read its module docstring for what happens to the clip between the CSV and the npz.
+
+Run
+
+1. Convert the default window.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.punch_combo.dataset
+
+2. Convert a different window, when the default lands on the wrong strike.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.punch_combo.dataset \
+      --crop.start 1580 --crop.end 1710
 """
 
 from __future__ import annotations

@@ -1,31 +1,31 @@
 """Pushing: a G1 drives a 1 m crate along with its hands. Any other contact is illegal.
 
-Run:
-
-    uv run train Mjlab-G1-Push --env.scene.num-envs 4096
-    uv run play Mjlab-G1-Push
-
-The crate is the asset zoo's parametric box, given a mass so it gets a freejoint and physics
-can move it, spawned a stride or two ahead of the robot in the robot's own heading frame.
+The crate is the asset zoo's parametric box, given a mass so it gets a freejoint and
+physics can move it, spawned a stride or two ahead of the robot in the robot's own heading
+frame.
 
 This starts from locomotion rather than from scratch. The environment is mjlab's flat G1
-velocity task with the crate added: the robot first learns to walk and track a commanded
-twist, then to push.
-
-The goal is the twist itself, not a second command. The robot is told to travel at a
-velocity, and the crate in front of it has to travel at that velocity too.
+velocity task with the crate added, so the robot first learns to walk and track a commanded
+twist, then to push. The goal is that twist, not a second command: the robot is told to
+travel at a velocity, and the crate in front of it has to travel at that velocity too.
 
 What to check:
 
     Episode_Metrics/push_hands_contact_rate   is the crate being touched by the hands at
                                               all. Everything else is meaningless until
-                                              this is high.
-    Episode_Metrics/push_body_contact_rate    did the hands-only constraint take. Should
-                                              fall toward zero. High alongside a healthy
-                                              displacement means the policy is paying the
-                                              penalty and body checking the crate anyway.
+                                              this is high
+    Episode_Metrics/push_body_contact_rate    are the hands the only body part touching
+                                              the crate. Should fall toward zero. High
+                                              alongside a healthy displacement means
+                                              the policy is paying the penalty and the
+                                              body is checking the crate anyway
     Episode_Metrics/push_box_displacement     is the crate going anywhere. Furthest it got
-                                              in an episode, in metres.
+                                              in an episode, in metres
+
+Run
+
+    uv run train Mjlab-G1-Push --env.scene.num-envs 4096
+    uv run play Mjlab-G1-Push
 """
 
 from __future__ import annotations

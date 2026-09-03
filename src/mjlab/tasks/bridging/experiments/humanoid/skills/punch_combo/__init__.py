@@ -1,29 +1,27 @@
 """A punch combination for the Unitree G1, tracked from a standstill.
 
-Run:
-
-    1. Cut the clip out of LAFAN1 and convert it. Writes to data/lafan1_g1/punch_combo.
-
-       uv run python -m \
-         mjlab.tasks.bridging.experiments.humanoid.skills.punch_combo.dataset
-
-    2. Train.
-
-       uv run train Mjlab-G1-Punch-Combo --env.scene.num-envs 4096
-
-    3. Watch.
-
-       uv run play Mjlab-G1-Punch-Combo
-
 The front kick's skill against a different window of the same LAFAN1 performance: a stance,
-then a run of punches, then a recovery. The converter and the environment both come from the
-front_kick package, because a strike is a strike and only the reference motion differs. What
-is here is the frame window, in dataset.py, and the registration below.
+then a run of punches, then a recovery. The converter and the environment both come from
+the front_kick package, because a strike is a strike and only the reference motion differs.
+What is here is the frame window, in dataset.py, and the registration below.
 
-Harder than the front kick for one reason. A kick is one strike, so the tracking reward has
-one moment to get right; a combination is several in a row, and missing the timing on the
-first puts every one after it out of phase. Watch whether the policy lands the opening punch
-before reading anything into the rest of the episode.
+Harder than the front kick: a kick is one strike, so the tracking reward has one moment
+to get right. A combination is several in a row, and missing the timing on the
+first puts every one after it out of phase.
+
+Run
+
+1. Cut the clip out of LAFAN1 and convert it. Writes to data/lafan1_g1/punch_combo.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.punch_combo.dataset
+
+2. Train.
+
+    uv run train Mjlab-G1-Punch-Combo --env.scene.num-envs 4096
+
+3. Watch.
+
+    uv run play Mjlab-G1-Punch-Combo
 """
 
 from __future__ import annotations

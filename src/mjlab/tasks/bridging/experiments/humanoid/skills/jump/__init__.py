@@ -1,28 +1,28 @@
-"""A goal-conditioned jump for the Unitree G1, learned the ASAP way.
-
-Run:
-
-    1. Fetch and convert the clips. Writes to data/asap/motions.
-
-       uv run --with joblib python -m \
-         mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
-
-    2. Train.
-
-       uv run train Mjlab-G1-Jump --env.scene.num-envs 4096
-
-    3. Watch.
-
-       uv run play Mjlab-G1-Jump
+"""A goal conditioned jump for the Unitree G1, learned the ASAP way.
 
 ASAP (RSS 2025, https://agile.human2humanoid.com/) gets a G1 to jump by tracking a
-retargeted human jump frame by frame: reference-state initialization, a dense per-frame
+retargeted human jump frame by frame: reference state initialization, a dense per frame
 tracking reward, and termination the moment tracking is lost.
 
-The clips ship with the repo, already retargeted to a 23-DoF G1. Five of them are forward
-jumps of increasing length, which is what turns a single-skill tracker into a
-goal-conditioned one: the policy sees the target displacement, and each episode stretches
-its clip so the reachable distances are continuous.
+The clips ship with the repo, already retargeted to a 23 DoF G1. Five of them are forward
+jumps of increasing length, which is what turns a single skill tracker into a goal
+conditioned one: the policy sees the target displacement, and each episode stretches its
+clip so the reachable distances are continuous.
+
+Run
+
+1. Fetch and convert the clips. Writes to data/asap/motions.
+
+    uv run --with joblib python -m \
+      mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
+
+2. Train.
+
+    uv run train Mjlab-G1-Jump --env.scene.num-envs 4096
+
+3. Watch.
+
+    uv run play Mjlab-G1-Jump
 """
 
 from __future__ import annotations

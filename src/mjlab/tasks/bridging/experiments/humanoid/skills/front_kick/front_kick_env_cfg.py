@@ -1,34 +1,42 @@
 """The strike environment: track one crop of a LAFAN1 fight performance from a standstill.
 
-Run:
-
-    uv run python -m \
-      mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset
-    uv run train Mjlab-G1-Front-Kick --env.scene.num-envs 4096
-    uv run play Mjlab-G1-Front-Kick --checkpoint-file <path>
-
 Same recipe as the jump: track a human clip frame by frame, start episodes anywhere in it,
 and terminate the moment tracking is lost. The clip is a strike instead of a jump, and it
 begins with half a second of held stance, so what the policy learns is to stand still and
 then break out of that stance fast enough to follow the reference.
 
 This module builds the environment for both strike tasks. One strike is one clip and one
-policy, so nothing here is conditioned on which strike it is; the punch combo is the same
+policy, so nothing here is conditioned on which strike it is: the punch combo is the same
 environment pointed at a different motion directory.
 
 Two things are dropped from the jump's setup, both because they are about flight and this
 motion has none.
 
-  The goal terms. A jump is asked to land somewhere and is paid for it. A strike goes
-  nowhere, so the only thing to say about where it ends up is that it should not have
-  drifted, and the anchor position term already says that at every frame.
-
-  The feet orientation penalty. It asks for level feet at all times, which is a fair prior
-  for a jump and wrong here: a kicking foot points where the kick goes. The reference
-  already says where both feet should be, and an unconditional prior can only argue with it.
+    goal terms         a jump is asked to land somewhere and is paid for it. A strike goes
+                       nowhere, so the only thing to say about where it ends up is that it
+                       should not have drifted, and the anchor position term already says
+                       that at every frame
+    feet orientation   the penalty asks for level feet at all times, a fair prior for a
+                       jump and wrong here: a kicking foot points where the kick goes. The
+                       reference already says where both feet should be, and an
+                       unconditional prior can only argue with it
 
 What is raised is the body velocity term. A strike that hits the right poses slowly is not
 a strike, and the poses alone do not distinguish the two.
+
+Run
+
+1. Convert the clip.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset
+
+2. Train.
+
+    uv run train Mjlab-G1-Front-Kick --env.scene.num-envs 4096
+
+3. Watch.
+
+    uv run play Mjlab-G1-Front-Kick --checkpoint-file <path>
 """
 
 from __future__ import annotations

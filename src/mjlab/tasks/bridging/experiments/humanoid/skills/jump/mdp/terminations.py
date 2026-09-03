@@ -1,10 +1,10 @@
-"""Termination terms for the jump.
+"""How a jump episode ends.
 
-The tracking task's terminations (anchor height, anchor orientation, end-effector drift) are
-reused from the env config. Added here:
-
-    motion_ended    the clip ran out. A time-out, not a failure
+    motion_ended    the clip ran out. Time-out, not failure
     motion_too_far  ASAP's global tracking failure, and the term the curriculum tightens
+
+The tracking task's own terminations (anchor height, anchor orientation, end effector
+drift) are reused from the env config.
 """
 
 from __future__ import annotations
@@ -36,11 +36,11 @@ def motion_ended(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
 def motion_too_far(
   env: ManagerBasedRlEnv, command_name: str, threshold: float
 ) -> torch.Tensor:
-  """Any tracked body more than `threshold` from where the reference says it is.
+  """Any tracked body further than threshold from where the reference says it is.
 
-  ASAP's global tracking failure, and the term the curriculum tightens over training. A full
-  3D distance rather than the z-only variants, so it also catches a policy that jumps the
-  right height in the wrong direction.
+  ASAP's global tracking failure, and the term the curriculum tightens over training. A
+  full 3D distance rather than the z only variants, so it also catches a policy that jumps
+  the right height in the wrong direction.
   """
   command = _cmd(env, command_name)
   error = torch.norm(command.body_pos_w - command.robot_body_pos_w, dim=-1)

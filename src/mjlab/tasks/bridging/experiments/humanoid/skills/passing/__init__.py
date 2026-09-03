@@ -1,25 +1,25 @@
 """Passing: a standing G1 sends a football off at a commanded launch velocity.
 
-Run:
-
-    uv run train Mjlab-G1-Pass --env.scene.num-envs 4096
-    uv run play Mjlab-G1-Pass
-
 The ball is a size 5 football from the asset zoo, spawned in reach of the right foot, so
 there is no locomotion here. The robot stands, waits out a stance window, then puts the
 ball where it was asked: the command is a launch speed and a heading offset, and the reward
-scores the ball's own velocity against it. This is essentially the robot passing a ball to
-someone, not a proper kick.
+scores the ball's own velocity against it. This is the robot passing a ball to someone,
+not a proper kick. See kick/ for that.
 
 What to check:
 
-    Metrics/pass/launch_rate      is the ball struck at all. Everything else is
-                                  meaningless until this is high
+    Metrics/pass/launch_rate      is the ball struck at all. Everything else is meaningless
+                                  until this is high
     Metrics/pass/vel_error        is the policy answering the command or repeating one
     Metrics/pass/heading_error    memorized pass. A policy ignoring the command still
                                   launches and still scores on pass_quality whenever the
-                                  sampled command lands near its one pass; what it cannot
+                                  sampled command lands near its one pass. What it cannot
                                   do is drive these two down
+
+Run
+
+    uv run train Mjlab-G1-Pass --env.scene.num-envs 4096
+    uv run play Mjlab-G1-Pass
 """
 
 from __future__ import annotations

@@ -1,16 +1,9 @@
-"""The goal-conditioned jump environment.
+"""The goal conditioned jump environment.
 
-Run:
-
-    uv run --with joblib python -m \
-      mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
-    uv run train Mjlab-G1-Jump --env.scene.num-envs 4096
-    uv run play Mjlab-G1-Jump --checkpoint-file <path>
-
-ASAP's stage-one recipe, phase-based motion tracking, assembled out of mjlab parts. The
+ASAP's stage one recipe, phase based motion tracking, assembled out of mjlab parts. The
 claim worth porting is narrow: a humanoid learns a jump by tracking a jump frame by frame,
-with reference-state initialization and an early termination that fires the moment tracking
-is lost. No style discriminator, no hand-designed jump reward, no standing-first
+with reference state initialization and an early termination that fires the moment tracking
+is lost. No style discriminator, no hand designed jump reward, no standing first
 curriculum. The reference supplies the shape of the motion and the policy only has to make
 it physical.
 
@@ -19,6 +12,21 @@ clip. Five forward jumps of different lengths share a policy here, the goal is i
 observation and in the reward, and each episode stretches its clip a little so the
 reachable distances are continuous rather than five discrete points. See mdp/commands.py
 for the stretching.
+
+Run
+
+1. Convert the clips.
+
+    uv run --with joblib python -m \
+      mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
+
+2. Train.
+
+    uv run train Mjlab-G1-Jump --env.scene.num-envs 4096
+
+3. Watch.
+
+    uv run play Mjlab-G1-Jump --checkpoint-file <path>
 """
 
 from __future__ import annotations
@@ -584,7 +592,7 @@ def g1_jump_env_cfg(
     # Enter where the jump loads rather than at the clip's opening stand. The clips carry
     # one to two seconds of standing still first, and playing that back is a faithful
     # reproduction of the recording rather than anything the skill needs. Which frame is
-    # `entry_landmark`. Set this to "start" to watch the whole clip, stand included
+    # entry_landmark. Set this to "start" to watch the whole clip, stand included
     motion_cmd.sampling_mode = "entry"
 
   return cfg

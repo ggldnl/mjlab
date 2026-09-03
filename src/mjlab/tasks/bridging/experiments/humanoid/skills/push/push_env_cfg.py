@@ -1,9 +1,29 @@
 """The push environment: mjlab's G1 velocity task with a 1 m crate in front of the robot.
 
-Run:
+Reward steps:
 
-    uv run train Mjlab-G1-Push --env.scene.num-envs 4096
-    uv run play Mjlab-G1-Push
+    floor        everything mjlab's flat G1 task already pays: velocity tracking, upright,
+                 posture, foot clearance and slip, the regularizers
+    step one     reach_box. Dense, a kernel on each hand's distance to the crate surface,
+                 averaged over the two, reaching one when a palm is against it. Ungated, so
+                 it also pulls a hand back if contact is lost
+    step two     hands_on_box. Fraction of the hands on the crate, paid every step contact
+                 holds
+    step three   push_tracking. Fraction of the commanded velocity the crate is carrying,
+                 paid only while a hand is on it
+    penalty      body_contact. Flat, while anything that is not a hand touches the crate
+
+The lower two steps agree with learning to walk from iteration one, since they ask the
+robot to go somewhere and put its hands on it, which costs a walking policy nothing.
+A large weight on the crate velocity is a reward a robot that cannot yet walk has
+no way to earn, and the cheapest way to look for it is to throw itself at the crate.
+The penalty is live from iteration one for the same reason in reverse: a body
+push that is ever profitable is a habit that has to be unlearned later.
+
+The default pose puts the arms out front. The velocity task's posture reward holds every
+joint near its default, so the way to hold the arms forward is to make forward the default
+rather than fight that reward with a second one. It is also the reset pose and the zero
+point of the action, so the policy begins every episode already reaching.
 
 What to watch:
 
@@ -14,40 +34,16 @@ What to watch:
     Episode/rew_push_tracking                the goal term itself
     Curriculum/push_tracking                 whether that weight is on yet
 
-push_hands_contact_rate separates "learning to push" from "learning to walk around a
-crate". Near zero while the velocity tracking reward climbs means the policy found the
-detour, and the fix is a larger reach_box weight, not a larger push_tracking one. Climbing
-alongside push_body_contact_rate means the policy is paying the penalty, and the fix is a
-larger body_contact weight.
+push_hands_contact_rate separates learning to push from learning to walk around a crate.
+Near zero while the velocity tracking reward climbs means the policy found the detour, and
+the fix is a larger reach_box weight, not a larger push_tracking one. Climbing alongside
+push_body_contact_rate means the policy is paying the penalty, and the fix is a larger
+body_contact weight.
 
-The default pose puts the arms out front. The velocity task's posture reward holds every
-joint near its default, so the way to hold the arms forward is to make forward the
-default rather than fight that reward with a second one. It is also the reset pose and
-the zero point of the action, so the policy begins every episode already reaching.
+Run
 
-Rewards:
-
-    Floor        everything mjlab's flat G1 task already pays: velocity tracking, upright,
-                 posture, foot clearance and slip, the regularizers.
-    Rung one     reach_box. Dense, a kernel on each hand's distance to the crate's surface,
-                 averaged over the two, reaching one when a palm is against it. Ungated, so
-                 it also pulls a hand back if contact is lost.
-    Rung two     hands_on_box. Fraction of the hands on the crate, paid every step contact
-                 holds. Contact is the discrete step between reaching for a crate and
-                 moving it, and the distance kernel cannot express it.
-    Rung three   push_tracking. Fraction of the commanded velocity the crate is carrying,
-                 paid only while a hand is on it. This is the task, and the only term on
-                 the curriculum.
-    Penalty      body_contact. Flat, while anything that is not a hand touches the crate.
-                 Weighted to outweigh the contact rung, so a torso lean is never the
-                 cheaper route to the top rung.
-
-Only the top rung is ramped in. The lower two agree with learning to walk from iteration
-one, since they ask the robot to go somewhere and put its hands on it, which costs a
-walking policy nothing. A large weight on the crate's velocity is a reward a robot that
-cannot yet walk has no way to earn, and the cheapest way to look for it is to throw itself
-at the crate. The penalty is live from iteration one for the same reason in reverse: a body
-push that is ever profitable is a habit that has to be unlearned later.
+    uv run train Mjlab-G1-Push --env.scene.num-envs 4096
+    uv run play Mjlab-G1-Push
 """
 
 from __future__ import annotations

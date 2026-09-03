@@ -1,42 +1,45 @@
 """Fetch ASAP's retargeted G1 jump clips and convert them into mjlab motions.
 
-Run:
-
-    uv run --with joblib python -m \
-      mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
-
-    # the turning and sideways jumps too, which widen the goal space
-    uv run --with joblib python -m \
-      mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset --clips all
+ASAP publishes its motions already retargeted to g1_29dof_anneal_23dof, as joblib pickles
+holding a root trajectory plus 23 joint angles per frame. mjlab's tracking machinery wants
+per body world poses and velocities, produced by replaying the motion through the actual
+MuJoCo model. This script downloads the few clips this experiment needs and does the
+translation.
 
 Raw pickles are cached in data/asap/raw, converted motions land in data/asap/motions, and
 both steps skip files already there.
 
-ASAP publishes its motions already retargeted to g1_29dof_anneal_23dof, as joblib pickles
-holding a root trajectory plus 23 joint angles per frame. mjlab's tracking machinery wants
-per-body world poses and velocities, produced by replaying the motion through the actual
-MuJoCo model. This script downloads the few clips this experiment needs and does the
-translation.
-
 What happens to each clip, in order:
 
     0. Download the pickle from ASAP's repository, unless it is already cached.
-    1. Scatter the 23 ASAP joints into mjlab's 29-joint G1 by name. The six wrist joints
+    1. Scatter the 23 ASAP joints into mjlab's 29 joint G1 by name. The six wrist joints
        ASAP does not have stay at zero.
-    2. Rotate and translate so the clip starts at the origin facing +x. Every
-       clip was captured with a different world heading, and without this the jump
-       direction is a different vector in every file.
+    2. Rotate and translate so the clip starts at the origin facing +x. Every clip was
+       captured with a different world heading, and without this the jump direction is a
+       different vector in every file.
     3. Shift the root vertically so the lowest foot over the clip sits exactly at standing
        foot height. The retargeting was fitted against ASAP's own XML, and a couple of
        centimetres of mismatch against mjlab's G1 is the difference between a jump and a
        stumble.
     4. Resample from 30 Hz to the control rate, finite difference the velocities, and
-       replay through MuJoCo to log every body's world pose and velocity.
-    5. Detect the flight phase from the foot heights and store the jump's goal
+       replay through MuJoCo to log every body world pose and velocity.
+    5. Detect the flight phase from the foot heights and store the jump goal
        (displacement, turn, apex) alongside the frames.
 
 The resulting npz is a superset of what mjlab.scripts.csv_to_npz writes, so the files also
 work with the stock tracking task.
+
+Run
+
+1. Convert the five forward jumps this experiment needs.
+
+    uv run --with joblib python -m \
+      mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
+
+2. Convert the turning and sideways jumps too, which widen the goal space.
+
+    uv run --with joblib python -m \
+      mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset --clips all
 """
 
 from __future__ import annotations
@@ -429,7 +432,7 @@ def convert_clip(
 
   # First pass: find how far off the ground the retargeted clip sits.
   #
-  # Aim the *standing* phase at the ground rather than the lowest frame of the whole
+  # Aim the standing phase at the ground rather than the lowest frame of the whole
   # clip. The lowest frame is the bottom of the landing crouch, which in some clips
   # dips several centimetres below where the same foot sits while standing; anchoring
   # on it leaves the robot hovering through the entire run-up, and the run-up is what
@@ -544,7 +547,7 @@ def main(
     cache_dir: Where the downloaded ASAP pickles are kept.
     output_fps: Should match the env control rate, 1 / (timestep * decimation).
     clips: Which clip set to convert, "forward" or "all".
-    align: Which yaw to remove, "displacement" or "heading". See `_canonicalize`.
+    align: Which yaw to remove, "displacement" or "heading". See _canonicalize.
     ref: Branch or tag of the ASAP repository to download from.
     device: Torch device for the replay.
   """

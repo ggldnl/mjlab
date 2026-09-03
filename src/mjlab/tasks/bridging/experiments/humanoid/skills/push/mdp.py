@@ -4,8 +4,8 @@ The goal is the twist. Walking already has one, the velocity task's commanded li
 angular velocity, which the policy already sees and is already scored on. Pushing does not
 need a different goal, it needs the same goal applied to the crate, so the push reward asks
 how much of the commanded velocity the crate is actually carrying. That keeps the
-conditioning real on both sides without inventing a second command term whose relationship
-to the locomotion one would have to be negotiated every step.
+conditioning real on both sides without a second command term whose relationship to the
+locomotion one would have to be negotiated every step.
 
 The hands are the only legal contact. Every other collision geom on the robot is illegal
 and carries a penalty. Without that gate the task is locomotion with a crate in the way,
@@ -78,10 +78,10 @@ def hands_cfg() -> SceneEntityCfg:
   """A fresh entity config selecting the two hand collision geoms.
 
   A function rather than a module constant, and passed explicitly by every term that needs
-  hand positions. Explicitly, because a SceneEntityCfg is only resolved when it appears in a
-  term's params, so a default argument arrives with geom_ids still slice(None) and quietly
-  selects every geom on the robot. Fresh, because resolving one writes a particular scene's
-  ids into it, and this config is built twice, for training and for play.
+  hand positions. Explicitly, because a SceneEntityCfg is only resolved when it appears in
+  a term's params, so a default argument arrives with geom_ids still slice(None) and
+  quietly selects every geom on the robot. Fresh, because resolving one writes a particular
+  scene's ids into it, and this config is built twice, for training and for play.
   """
   return SceneEntityCfg(ROBOT, geom_names=HAND_GEOMS)
 
@@ -160,7 +160,7 @@ def box_surface_gap(
   points_w: torch.Tensor,
   half_size: tuple[float, float, float] = BOX_HALF_SIZE,
 ) -> torch.Tensor:
-  """Distance from each of K world points to the box's surface, (num_envs, K).
+  """Distance from each of K world points to the box surface, (num_envs, K).
 
   Exterior distance, computed in the box's own frame:
 
@@ -211,7 +211,7 @@ def body_on_box(env: ManagerBasedRlEnv) -> torch.Tensor:
   subtree primary is a single element, so there is no way to say "the whole robot except
   these two geoms" in one sensor, and spelling the other thirty collision geoms out costs
   thirty sensors and their match buffers at four thousand environments. Both sensors report
-  `found` as the number of matching contacts over the same contact list, so:
+  found as the number of matching contacts over the same contact list, so:
 
       whole robot count - hands count = contacts made by something that is not a hand
   """
@@ -336,25 +336,24 @@ def reach_box(
 ) -> torch.Tensor:
   """Dense pull of the hands toward the box, shaped (num_envs,).
 
-  A positive kernel on each hand's distance to the crate's surface, averaged over the two,
+  A positive kernel on each hand's distance to the crate surface, averaged over the two,
   never a difference of distances. A difference telescopes over the episode to start minus
   end, so any rollout ending away from the crate scores net negative however well it pushed.
 
   Averaging the two kernels rather than kernelling the mean gap is what makes it worth
   bringing the second hand up. With the mean gap inside the exponential, one hand planted
-  and one hanging scores the same as two hands halfway there, and the policy has no gradient
-  saying which to prefer.
+  and one hanging scores the same as two hands halfway there, and the policy has no
+  gradient saying which to prefer.
 
-  Measured at the hands rather than the root, which is the whole difference between this and
-  the walking task it is built on. A root kernel is maximized by standing as close to the
-  crate as possible, which for a G1 means chest against cardboard. A hand kernel is
+  Measured at the hands rather than the root, which is the whole difference between this
+  and the walking task it is built on. A root kernel is maximized by standing as close to
+  the crate as possible, which for a G1 means chest against cardboard. A hand kernel is
   maximized by reaching, and reaching is the skill.
 
   Ungated, unlike the kick's version. There the term had to stop paying on contact or the
   policy would park a foot against the ball, the opposite of a kick. Here parking a palm
   against the crate is the skill, so the kernel saturates at one while the hand stays there
-  and comes back on its own if contact is lost, which makes it a chase rather than a
-  one-off approach.
+  and comes back on its own if contact is lost.
   """
   gap = hand_box_gap(env, hands_cfg)
   return torch.mean(torch.exp(-torch.square(gap) / std**2), dim=-1)
@@ -393,8 +392,8 @@ def push_tracking(
   """How much of the commanded velocity the box is carrying, shaped (num_envs,).
 
   The fraction of the commanded speed the crate moves at along the commanded direction,
-  clamped to [0, 1], paid only while a hand is on it. This is the task: the robot is told to
-  travel at a velocity, and the crate in front of it has to travel at that velocity too,
+  clamped to [0, 1], paid only while a hand is on it. This is the task: the robot is told
+  to travel at a velocity, and the crate in front of it has to travel at that velocity too,
   driven from the palms.
 
   Clamped above at one, so there is nothing to gain from shoving the crate away and letting
@@ -406,7 +405,7 @@ def push_tracking(
   flickering contact pays only for the steps it holds, and that is the right trade: a push
   the hands are not part of is not this skill.
 
-  The command lives in the robot's full base frame and the crate's velocity is taken in its
+  The command lives in the robot's full base frame and the crate velocity is taken in its
   heading frame, which differ when the robot leans. The difference is a cosine of the lean,
   a few percent at the pitch a push involves, and the heading frame is the right one for
   something sliding on the ground: a crate does not tilt because the robot pushing it did.

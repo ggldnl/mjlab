@@ -1,21 +1,6 @@
 """A front kick for the Unitree G1, tracked from a standstill.
 
-Run:
-
-    1. Cut the clip out of LAFAN1 and convert it. Writes to data/lafan1_g1/front_kick.
-
-       uv run python -m \
-         mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset
-
-    2. Train.
-
-       uv run train Mjlab-G1-Front-Kick --env.scene.num-envs 4096
-
-    3. Watch.
-
-       uv run play Mjlab-G1-Front-Kick
-
-The jump's recipe with a different clip: reference-state initialization, a dense per-frame
+The jump's recipe with a different clip: reference state initialization, a dense per frame
 tracking reward, and termination the moment tracking is lost.
 
 The source is LAFAN1's fight performances, retargeted to the 29 joint G1 by Unitree. Those
@@ -27,9 +12,23 @@ starts mid-bounce, and without the hold the policy would only ever be asked to c
 motion that was already under way. With it, every episode that starts at frame zero starts
 from a robot standing still, which is the state a composition would hand it.
 
-The punch combo is the same skill against a different window of the same performance, and
-it reuses this package's dataset.py and front_kick_env_cfg.py. Anything changed here
-changes both.
+punch_combo is the same skill against a different window of the same performance, and it
+reuses this package's dataset.py and front_kick_env_cfg.py. Anything changed here changes
+both.
+
+Run
+
+1. Cut the clip out of LAFAN1 and convert it. Writes to data/lafan1_g1/front_kick.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset
+
+2. Train.
+
+    uv run train Mjlab-G1-Front-Kick --env.scene.num-envs 4096
+
+3. Watch.
+
+    uv run play Mjlab-G1-Front-Kick
 """
 
 from __future__ import annotations

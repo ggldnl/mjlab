@@ -1,17 +1,13 @@
 """What the jump costs when it is entered somewhere other than the clip's first frame.
 
-Run:
-
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.jump.entry
-
 The clips open with a second or two of standing still, and a policy started at frame zero
 plays that back before it does anything. Skipping it needs no retraining in principle: the
-skill is trained with reference-state initialization over the whole clip, so the crouch is a
-frame it has been reset into and asked to continue from thousands of times. Whether that
+skill is trained with reference state initialization over the whole clip, so the crouch is
+a frame it has been reset into and asked to continue from thousands of times. Whether that
 holds in practice is what this measures, because "the policy saw those frames" and "the
 policy opens cleanly from those frames cold" are not the same claim.
 
-Each entry mode is run over the same clips and stretches, and three numbers come back:
+Each entry mode is run over the same clips and stretches, and four numbers come back:
 
     survived    reached the end of the clip without a tracking failure
     reached     landed within the command's success threshold of the target
@@ -19,15 +15,19 @@ Each entry mode is run over the same clips and stretches, and three numbers come
     sole        how far the lowest foot sits above the floor the instant the reset writes
                 the entry pose, negative being underground
 
-A mode that survives as well as "start" is a mode that costs nothing, and the standing is
+A mode that survives as well as start is a mode that costs nothing, and the standing is
 free to go. One that does not is the case for retraining with the entry frames weighted.
 
-`sole` is here because it is the one thing separating the two landmarks, and none of the
+sole is here because it is the one thing separating the two landmarks, and none of the
 other three columns show it. The clips are shifted to stand on the ground and that shift is
 capped on the ankle body origin, which stops describing the sole once the foot pitches, so
 the bottom of the crouch sits several centimetres into the floor. As a tracking target that
-is free. As a reset pose it opens the episode with the contact solver pushing the robot back
-out of the ground.
+is free. As a reset pose it opens the episode with the contact solver pushing the robot
+back out of the ground.
+
+Run
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.jump.entry
 """
 
 from __future__ import annotations
@@ -162,7 +162,7 @@ def run_mode(
 
       # The termination buffers are the exception: they are written during step and are
       # what the reset itself reads, so they still describe the episode that just ended.
-      # `motion_ended` is registered time_out=True, so timing out is the clip finishing
+      # motion_ended is registered time_out=True, so timing out is the clip finishing
       finished = dones.bool() & ~done_once
       if finished.any():
         timed_out = env.termination_manager.time_outs

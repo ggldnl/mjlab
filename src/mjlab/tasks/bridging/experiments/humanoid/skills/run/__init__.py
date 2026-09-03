@@ -1,18 +1,18 @@
 """Running: velocity tracking at speeds the stock walk task does not reach.
 
-Run:
-
-    uv run train Mjlab-G1-Run --env.scene.num-envs 4096
-    uv run play Mjlab-G1-Run
-
 Same machinery as Mjlab-Velocity-Flat-Unitree-G1, tuned for forward speed. See
 run_env_cfg.py for what changed.
 
-The curriculum climbs five speed stages, so this needs a long run and `max_iterations` is
-set accordingly. Two things to watch:
+The curriculum climbs five speed stages, so this needs a long run and max_iterations is set
+accordingly. Two things to watch:
 
     Curriculum/command_vel/lin_vel_x_max   which stage it is on
-    the velocity tracking reward           whether it holds the commanded speed or not
+    the velocity tracking reward           whether it holds the commanded speed
+
+Run
+
+    uv run train Mjlab-G1-Run --env.scene.num-envs 4096
+    uv run play Mjlab-G1-Run
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
-"""Observation terms specific to the goal-conditioned jump.
+"""What the jump policy reads on top of the tracking task.
 
 Everything the tracking task already exposes (anchor error, body poses, joint state) is
-reused as is. What is added here is the goal and the clock: what the policy is being asked
-to do, and where in the jump it is.
+reused as is. Added here is the goal and the clock: what the policy is being asked to do,
+and where in the jump it is.
 """
 
 from __future__ import annotations

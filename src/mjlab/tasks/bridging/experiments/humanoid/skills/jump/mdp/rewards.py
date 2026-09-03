@@ -1,13 +1,13 @@
-"""Reward terms for the jump.
+"""What the jump is paid for.
+
+    joint tracking   ASAP's teleop_joint_position and teleop_joint_velocity
+    feet terms       what decides whether a landing holds
+    goal term        where the jump has to end up
+    landing impact   stops the robot reaching the target by falling onto it
 
 The tracking terms mjlab ships (anchor position and orientation, relative body position and
-orientation, body velocities) cover most of ASAP's reward set and are used directly from the
-env config. Added here:
-
-    joint-space tracking     ASAP's teleop_joint_position and teleop_joint_velocity
-    the feet terms           what decides whether a landing holds
-    the goal term            where the jump has to end up
-    landing impact           stops the robot reaching the target by falling onto it
+orientation, body velocities) cover the rest of ASAP's reward set and are used directly
+from the env config.
 """
 
 from __future__ import annotations
