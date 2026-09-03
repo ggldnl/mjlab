@@ -9,11 +9,10 @@ carries the goal. The clip says how to jump, the goal says which jump this is.
 
 It stretches. Five clips is five distances, and a policy asked for 1.2 m would have to
 interpolate between two points it has only ever seen exactly. So each episode samples a
-scale and stretches the reference horizontally by it: every body gets the same time-varying
-horizontal offset, proportional to how far the root has traveled since the clip began. The
-pose is untouched and only the translation changes, which keeps the reference physically
-reachable. During flight that is exactly a different takeoff velocity; on the ground it is a
-longer stride. Continuous goal coverage from a handful of clips.
+scale and stretches the reference horizontally by it. The pose is untouched and only
+the translation changes, which keeps the reference physically reachable. During flight
+that is exactly a different takeoff velocity; on the ground it is a longer stride.
+This yields continuous goal coverage from a handful of clips.
 
 The command exposes the same property names as mjlab's MotionCommand, so the tracking
 task's reward and termination terms work against it unchanged.

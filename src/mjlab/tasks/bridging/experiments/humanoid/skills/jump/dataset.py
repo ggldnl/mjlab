@@ -9,7 +9,7 @@ translation.
 Raw pickles are cached in data/asap/raw, converted motions land in data/asap/motions, and
 both steps skip files already there.
 
-What happens to each clip, in order:
+What happens to each clip:
 
     0. Download the pickle from ASAP's repository, unless it is already cached.
     1. Scatter the 23 ASAP joints into mjlab's 29 joint G1 by name. The six wrist joints
