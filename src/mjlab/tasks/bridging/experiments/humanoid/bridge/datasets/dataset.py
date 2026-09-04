@@ -294,6 +294,23 @@ class Dataset:
   """(N,) control step within trajectory."""
   names: tuple[str, ...]
   fps: float
+  goal: torch.Tensor | None = None
+  """(N, G) every command term's value at that step, padded to the widest source.
+
+  Optional because datasets written before the column exists still load. Read it with
+  `commands_of`, which trims the padding off."""
+  goal_dim: tuple[int, ...] = ()
+  """(S,) how much of `goal` is real, per source. The rest is padding."""
+
+  def commands_of(self, skill: str) -> torch.Tensor | None:
+    """The command column for one source, padding removed. (N, G_skill).
+
+    None when the dataset predates the column. A source with no command term gives a
+    zero width tensor, which is the honest answer: there is nothing to condition on.
+    """
+    if self.goal is None or not self.goal_dim:
+      return None
+    return self.goal[:, : self.goal_dim[self.names.index(skill)]]
 
   @property
   def num_joints(self) -> int:
@@ -482,6 +499,8 @@ def load_dataset(
     frame=torch.from_numpy(raw["frame"]).to(device).long()[mask],
     names=tuple(str(n) for n in raw["skill_names"]),
     fps=float(raw["fps"]),
+    goal=torch.from_numpy(raw["goal"]).to(device)[mask] if "goal" in raw else None,
+    goal_dim=tuple(int(v) for v in raw["goal_dim"]) if "goal_dim" in raw else (),
   )
   print(f"[dataset] {loaded.states.shape[0]} states in '{split}' from {loaded.names}")
   return loaded
