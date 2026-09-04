@@ -1,5 +1,4 @@
-"""MDP terms for the goal conditioned jump.
-"""
+"""MDP terms for the goal conditioned jump."""
 
 from mjlab.tasks.tracking.mdp import *  # noqa: F401, F403
 
