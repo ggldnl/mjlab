@@ -2,16 +2,7 @@
 
 First step of the pipeline. Drives one trained policy per skill and writes down every
 control step: one npz, one source per skill, in the layout bridge/datasets/dataset.py
-defines. Needs a trained checkpoint per skill, found under logs/rsl_rl/g1_<skill>, and the
-path picked is printed before each recording starts.
-
-Separate from bridge/datasets/, which records for a different purpose: the bridge wants
-states to cross between, this wants the states one skill occupies. Same file layout, so
-bridge/datasets/view.py can play these back, and no shared entry point.
-
-Training configs, not play configs. Play narrows command ranges and drops the noise the
-policy trained under, which gives a tidier demo and a narrower set of states. Entry points
-should cover what a skill does in service, edges of its command range included.
+defines. Needs a trained checkpoint per skill, found under logs/rsl_rl/g1_<skill>.
 
 The first settle steps after every reset are dropped, so progress 0 is half a second into
 an episode rather than its first frame. Without that the dataset fills with one identical
@@ -46,32 +37,8 @@ import mjlab
 from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets import dataset
 from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import RolloutCfg
 from mjlab.tasks.bridging.experiments.humanoid.selector.table import ROLLOUTS_PATH
-from mjlab.tasks.bridging.experiments.humanoid.skills.front_kick import (
-  FRONT_KICK_TASK_ID,
-)
-from mjlab.tasks.bridging.experiments.humanoid.skills.jump import JUMP_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.skills.passing import PASS_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.skills.punch_combo import (
-  PUNCH_COMBO_TASK_ID,
-)
-from mjlab.tasks.bridging.experiments.humanoid.skills.push import PUSH_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.skills.run import RUN_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.skills.walk import WALK_TASK_ID
+from mjlab.tasks.bridging.experiments.humanoid.skills import SKILLS
 from mjlab.tasks.registry import load_env_cfg
-
-SKILLS: dict[str, str] = {
-  "walk": WALK_TASK_ID,
-  "run": RUN_TASK_ID,
-  "jump": JUMP_TASK_ID,
-  "front_kick": FRONT_KICK_TASK_ID,
-  "pass": PASS_TASK_ID,
-  "push": PUSH_TASK_ID,
-  "punch_combo": PUNCH_COMBO_TASK_ID,
-}
-"""Skill name to task id. Every one logs to g1_<name>, so nothing else has to be said.
-
-Add a skill by adding a line. It needs a trained checkpoint under that log directory and
-nothing else: build.py does not know what any of these are."""
 
 
 def experiment(skill: str) -> str:
@@ -88,7 +55,11 @@ class RecordCfg(RolloutCfg):
   many command values the recording contains, and a node has to be visited under all of
   them to look reliable rather than rare."""
 
-  skills: tuple[str, ...] = ("walk", "run", "jump")
+  # TODO we should extend this to work with whatever object the skill expects in the environment
+  #   In this case the view script should change and account for the object.
+  #   We could make it so each skill declares the objects it needs along with its observation
+  #   of the objects
+  skills: tuple[str, ...] = tuple(SKILLS.keys())
   """Which skills to record. The default three need nothing on the floor.
 
   Front kick, push and pass work too. Their entry states mean less on their own, since
@@ -167,6 +138,11 @@ def collect(cfg: RecordCfg) -> Path:
       )
     fps = rate
 
+    # TODO how many trajectories do we collect per-skill? As of my understanding, we do the following:
+    #   1. we create an environment, that implicitly consists of many parallel independent rollouts
+    #   2. we step the environment and we record the outcomes
+    #   3. we store them
+    #   So the number of trajectories depend on the environment, it will be something like 1024, right?
     checkpoint = dataset.find_checkpoint(
       (experiment(name),),
       cfg.checkpoints[index] if index < len(cfg.checkpoints) else None,

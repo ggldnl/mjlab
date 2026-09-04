@@ -1,8 +1,7 @@
 """How a robot state is written down, compared and scaled.
 
 Shared by build.py, which clusters states, and query.py, which measures how far one is from
-another. Both have to mean the same thing by "far apart", or the table says one thing and
-the chooser reading it says another.
+another.
 
 A state is a dataset row: root position, orientation, both root velocities, then joint
 angles and joint rates, (13 + 2J,).

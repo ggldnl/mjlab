@@ -23,6 +23,11 @@ Run
     uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.view --path data/selector/candidates.npz
 """
 
+# TODO we have nothing to control in the viewer. The nodes depend on the conditioning signal
+#   so it would be nice to show how the nodes change with respect to that signal
+# TODO the markdown should go, it shows nothing important except for names. What do the names
+#   even mean? They are something like p50, p03, ... are those percentages, percentiles, ...?
+
 from __future__ import annotations
 
 import time
@@ -105,6 +110,7 @@ def markdown(skill: str, entries: tuple[Entry, ...]) -> str:
   nodes with genuinely different commands, a left and a right kick, are two nodes and
   should stay two.
   """
+  # TODO this markdown is awful. It takes a lot of space and shows nothing important
   return "\n".join(
     [
       f"**{skill}**, left to right along +y",

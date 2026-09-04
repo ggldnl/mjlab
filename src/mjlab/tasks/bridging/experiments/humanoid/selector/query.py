@@ -1,13 +1,13 @@
 """Pick which entry to aim at, given where the robot is now.
 
-Last step of the pipeline, and the only one with no command line: the bridge calls it.
+Last step of the pipeline: the bridge calls it.
 
     reaches = nearest(table, "jump", state, seconds=0.7)
     reaches[0].entry     the easiest one to get to
     reaches[0].effort    below 1 is reachable, above 1 is asking too much
     reaches[0].binding   which channel is the hard part
 
-Not plain distance, because the channels have very different prices and two of them are
+Not plain distance, because the channels have very different meanings and two of them are
 free. Ground position and heading cost nothing, since whoever aims the bridge picks them.
 Momentum and posture are capped by what a body can do in the time available. So the
 question is not how far a state is, but what rate of change getting there would demand and
@@ -18,10 +18,10 @@ whether a robot achieves that rate:
 achievable comes from the rollouts themselves, so an effort above 1 means the hand-over
 needs a faster change than any recorded skill ever performed. See build.achievable.
 
-A necessary condition, not a sufficient one. It says impossible reliably and possible
-weakly, because taking the worst channel ignores that changing two channels at once is
-harder than either alone. Capturing that needs a model fitted to bridge arrivals, which
-needs a sweep of (start, target, duration) outcomes that does not exist yet.
+This gives a necessary condition, not a sufficient one. It says impossible reliably and
+possible weakly, because taking the worst channel ignores that changing two channels at
+once is harder than either alone. Capturing that would need a model fitted to bridge
+arrivals.
 
 nearest takes any Cost, so another scorer can be passed instead:
 
@@ -29,8 +29,7 @@ nearest takes any Cost, so another scorer can be passed instead:
 
 The one worth trying next is the bridge's own critic, which already estimates "from here,
 aiming there, how will I do" in one forward pass and is calibrated to the current bridge.
-It is not the default because it would tie this package to a bridge checkpoint, and the
-point of the selector is that it has none.
+It is not the default because it would tie this package to a bridge checkpoint.
 """
 
 from __future__ import annotations
@@ -123,7 +122,7 @@ def nearest(
 
   seconds is the window the bridge would get. Under RateCost it scales every effort by the
   same factor, so it decides which entries are reachable and never which is easiest: the
-  order is the same at 0.3 s and at 1.2 s. A cost that modelled saturation would reorder
+  order is the same at 0.3 s and at 1.2 s. A cost that modeled saturation would reorder
   them.
 
   Returns every entry, not the good ones. Rejecting is filter.py's job and already happened.

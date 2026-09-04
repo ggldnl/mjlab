@@ -10,32 +10,32 @@ This package says where, and how good each spot is.
 
 Idea: cluster the states a skill visits and keep the spots most of its rollouts pass
 through. Those are the moments the skill has to go through to do its job, so they are the
-moments another skill can join it at. No contacts, no gait, no clip landmarks, so the same
-code works for a jump, a kick or a backflip.
+moments another skill can join it at.
 
-    record.py    drives each trained skill and writes down what it does. Runnable
-    build.py     clusters those states and measures every candidate. Runnable
-    filter.py    accepts or rejects candidates. Every criterion lives here. Runnable
+    record.py    drives each trained skill and writes down what it does
+    build.py     clusters those states and produces candidate
+    filter.py    accepts or rejects candidates. Every criterion lives here
     query.py     picks which entry to aim at, given where the robot is now
     view.py      draws one skill's entries side by side. Runnable
 
     state.py     the canonical frame and the channels. Shared by build and query
     ground.py    measures a pose against the floor
-    table.py     the table type and what its columns mean
+    table.py     the table and what its columns mean
 
 Measuring and deciding are kept apart on purpose. build.py writes every cluster it found,
-judged by nothing, so filter.py can say which check rejected each one and by how much.
-Re-filtering is instant because the clustering does not repeat.
+filter.py says which check rejected each one and by how much. Re-filtering is instant
+because the clustering does not repeat.
 
-Everything lands under data/selector/. The package owns its input as well as its output, so
-nothing here depends on the bridge's dataset being built or current.
+Everything lands under data/selector/.
 
-Two things it does not answer. Whether a spot is survivable: a cluster every rollout passes
-through is one the skill visits, not one it can necessarily be restarted from, and
-confirming that needs the skill's own critic or a rollout sweep. And whether a spot is
-reachable: filter.py drops the geometrically impossible ones and query.py ranks the rest by
-the rate of change they demand, but a grounded state at 3 m/s passes both and is still out
-of reach from a standstill. Only the bridge's own arrival score answers that.
+Two things it does not answer.
+1. Whether a spot is survivable: a cluster every rollout passes through is one
+  the skill visits, not one it can necessarily be restarted from, and confirming
+  that needs the skill's own critic or a rollout sweep.
+2. Whether a spot is reachable: filter.py drops the geometrically impossible ones
+  and query.py ranks the rest by the rate of change they demand, but a grounded
+  state at 3 m/s passes both and is still out of reach from a standstill. Only
+  the bridge's own arrival score answers that.
 
 Run
 

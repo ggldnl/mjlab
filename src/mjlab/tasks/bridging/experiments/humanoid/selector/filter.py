@@ -1,17 +1,15 @@
 """Accept or reject the candidates build.py found.
 
 Third step of the pipeline: reads the candidate table, writes the entry table everything
-else uses. Every reason a spot is not worth aiming at lives here, one check per reason.
-Checks decide, they do not measure: every number they read is already in the candidate
-table, which is what lets a rejection say airborne +0.184 instead of rejected.
+else uses. Every reason a spot is not worth aiming at lives here.
 
     grounded   the robot is touching the floor in this pose
     common     enough rollouts pass through it
     steady     a rollout stays in it long enough to be aimed at
     early      enough of the skill is left to be worth entering
 
-Re-running is instant, since the clustering in build.py does not repeat, so tuning a
-threshold is a one second loop.
+Re-running is instant, since the clustering in build.py does not repeat, so we just
+have to tune a threshold.
 
 To add a check, write a function taking a candidate and the config, returning None to
 accept or a short reason to reject, and add it to CHECKS. The reason is printed as the
@@ -56,21 +54,13 @@ class FilterCfg:
   show_rejected: bool = True
   """Print the candidates that failed, and which check failed them."""
 
-  clearance_range: tuple[float, float] = (-0.03, 0.05)
+  clearance_range: tuple[float, float] = (-0.03, 0.03)
   """Metres the lowest part of the robot may sit above the floor.
 
   The upper bound rejects mid-flight: a bridge steers a body it is standing on, so an
   airborne target is unreachable however cleanly the skill passes through it. The lower
   bound catches states written into the floor, where a reading well past the sink a solver
   allows is a defect worth seeing rather than a state worth aiming at.
-
-  Both measured, not chosen. Over the jump rollouts:
-
-      p0     -0.020
-      p50    -0.001     standing, sub-millimetre
-      p75    -0.001
-      p95    +0.130     airborne
-      p100   +0.253
 
   Grounded and airborne are two separated groups with nothing between them, so anything in
   the gap works as the upper bound.
@@ -86,12 +76,9 @@ class FilterCfg:
   """Seconds a rollout must stay in it. Nothing can aim at a target open for one tick.
 
   Deliberately off the grid. Dwell is a whole number of control steps, so at 50 Hz it
-  only ever takes values 0.02, 0.04, 0.06 and so on. A threshold sitting exactly on one
-  of those decides a tie by float32 rounding: 0.06 stored and read back is a hair under
-  0.06, so 0.06 < 0.06 was true and a candidate was rejected for holding exactly as
-  long as it was asked to. Between two grid points there is no tie to lose."""
+  only ever takes values 0.02, 0.04, 0.06 and so on."""
 
-  max_progress: float = 0.85
+  max_progress: float = 0.5
   """How far into the skill a spot may sit. Past this there is too little left to be
   worth entering at."""
 

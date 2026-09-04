@@ -1,9 +1,8 @@
 """Find the candidate entry points of each skill, and measure them.
 
-Second step of the pipeline: reads the rollouts record.py wrote, writes the candidate table
-filter.py judges. Measures, decides nothing. Every cluster it finds is written out,
-including the ones no bridge could use, because filter.py can only report why a candidate
-failed if the numbers behind the failure are in the file.
+Second step of the pipeline: reads the rollouts record.py wrote, writes a candidate table.
+Every cluster it finds is written out, including the ones no bridge could use. filter.py
+will then report why a candidate failed.
 
     1. Canonicalize. Drop ground position, drop yaw, rotate the velocities into the
        heading frame. See state.py.
@@ -15,8 +14,8 @@ failed if the numbers behind the failure are in the file.
     5. Measure what the robot can do, once, over every skill. See achievable.
 
 A cluster many rollouts pass through is a spot the skill has to go through to do its job,
-so it is a spot another skill could join it at. That is the whole idea. Nothing here knows
-which skill it is looking at. What the columns mean is in table.py.
+so it is a spot another skill could join it at. Nothing here knows which skill
+it is looking at. What the columns mean is in table.py.
 
 Run
 
@@ -75,8 +74,7 @@ def kmedoids(
   is not a pose.
 
   Seeded by farthest point sampling, which is deterministic and does not spend every seed
-  in the dense part of the cloud the way random seeding does. For a jump that dense part is
-  standing still, and a seed spent there is an entry point not found anywhere else.
+  in the dense part of the cloud the way random seeding does.
 
   The update step picks, out of a random sample of each cluster, the row with the smallest
   total distance to that sample. Sampling makes the step linear in cluster size instead of
@@ -255,6 +253,14 @@ class BuildCfg:
   skills: tuple[str, ...] = ()
   """Which sources to look at. Empty means all of them."""
 
+  # TODO this worries me. We pick a number by hand that represents the nodes a skill
+  #   should contain. This is fine for a first version, but we should use something
+  #   more robust that does not hardcode the number of clusters.
+  #   For example, we can consider nodes the states where the dynamics doesn't match
+  #   with what happens near them (so we could apply some sort of sliding window and
+  #   compare each state with its neighbors): during a jump, the standing is a node,
+  #   the crouch is another node (before it the robot is going down, after it the robot
+  #   is mid-air), ... Something like this applied to all skills.
   clusters: int = 32
   """Candidate spots per skill. filter.py drops whatever does not survive, so this is an
   upper bound on the final table, not its size.
@@ -270,11 +276,14 @@ class BuildCfg:
   this is a measurement and 7/8 of the rollouts is plenty. Pass 'eval' to cross-check."""
 
   device: str = "cuda:0"
+
+  # TODO we should centralize the seed across the whole package: mjlab.tasks.bridging.humanoid
+  #   or am I overengineering it?
   seed: int = 0
 
 
 def build(cfg: BuildCfg) -> EntryTable:
-  """Every candidate of every requested skill, measured and unjudged."""
+  """Every candidate of every requested skill."""
   data = load_dataset(cfg.path, cfg.device, cfg.split)
   ground = Ground()
   if ground.num_joints != data.num_joints:
@@ -330,12 +339,18 @@ def for_skill(
   rollouts = int(torch.unique(trajectory).numel())
 
   found: list[Entry] = []
+
+  # For each cluster
   for index in range(count):
+
+    # Take the members
     members = (labels == index).nonzero().flatten()
     if members.numel() == 0:
       continue
+
     center = int(centers[index])
     pose = states[center].cpu().numpy().astype(np.float32)
+
     # The center's own progress, not the median over its members. A skill that comes
     # back to a pose puts both visits in one cluster, and the median of those is a
     # moment nothing was ever at. frame and progress have to name the same tick

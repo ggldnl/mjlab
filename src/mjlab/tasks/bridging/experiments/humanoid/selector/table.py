@@ -1,9 +1,5 @@
 """The entry table: where a skill can be started from, and how reliable each spot is.
 
-One type for both tables in the pipeline. A candidate is an entry that has not been judged
-yet, so build.py and filter.py write the same schema and view.py can draw either, which is
-how you look at what got rejected.
-
     rollouts.npz     what record.py wrote, the input to all of it
     candidates.npz   every cluster build.py found, measured, unjudged
     entries.npz      the ones filter.py accepted
@@ -12,8 +8,7 @@ Columns:
 
     state      pose to aim at, (13 + 2J), canonical frame. See state.py
     command    what the skill was being asked for while it was in this state. Width is
-               per skill, empty for a skill that takes none. Recorded, not used: it is
-               here so a node can be read against the goal that produced it
+               per skill, empty for a skill that takes none
     frame      control step inside the skill's episode, for setting the policy phase
     progress   0 at the episode start, 1 at the end
     coverage   fraction of the skill's rollouts that pass through this spot
