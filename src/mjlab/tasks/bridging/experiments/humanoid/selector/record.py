@@ -1,37 +1,37 @@
 """Record each skill's rollouts. The input build.py reads.
 
-Drives one trained policy per skill and writes down every control step. One npz, one
-source per skill, in the layout bridge/datasets/dataset.py defines.
-
-Needs a trained checkpoint per skill. They are found under logs/rsl_rl/g1_<skill>, and
-the path picked is printed before each recording starts.
-
-Run
----
-
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.record
-    uv run python -m ...selector.record --skills "('walk','jump','kick')"
-    uv run python -m ...selector.record --num-envs 128 --steps 800
-
-Then build the table:
-
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.build
-
-Notes
------
+First step of the pipeline. Drives one trained policy per skill and writes down every
+control step: one npz, one source per skill, in the layout bridge/datasets/dataset.py
+defines. Needs a trained checkpoint per skill, found under logs/rsl_rl/g1_<skill>, and the
+path picked is printed before each recording starts.
 
 Separate from bridge/datasets/, which records for a different purpose: the bridge wants
 states to cross between, this wants the states one skill occupies. Same file layout, so
 bridge/datasets/view.py can play these back, and no shared entry point.
 
 Training configs, not play configs. Play narrows command ranges and drops the noise the
-policy trained under, which gives a tidier demo and a narrower set of states. Entry
-points should cover what a skill does in service, edges of its command range included.
+policy trained under, which gives a tidier demo and a narrower set of states. Entry points
+should cover what a skill does in service, edges of its command range included.
 
-The first `settle` steps after every reset are dropped, so progress 0 is half a second
-into an episode rather than its first frame. Without that the dataset fills with one
-identical standing pose per failure: mjlab resets the instant an environment terminates,
-and the step after a fall is a robot at its default pose.
+The first settle steps after every reset are dropped, so progress 0 is half a second into
+an episode rather than its first frame. Without that the dataset fills with one identical
+standing pose per failure: mjlab resets the instant an environment terminates, and the step
+after a fall is a robot at its default pose.
+
+Run
+
+1. Record the default skills.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.record
+
+2. Choose which skills, or how much of each.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.record --skills "('walk','jump','push')"
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.record --num-envs 128 --steps 800
+
+3. Then find the candidates.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.build
 """
 
 from __future__ import annotations
@@ -46,12 +46,10 @@ import mjlab
 from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets import dataset
 from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import RolloutCfg
 from mjlab.tasks.bridging.experiments.humanoid.selector.table import ROLLOUTS_PATH
-from mjlab.tasks.bridging.experiments.humanoid.skills.backflip import BACKFLIP_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.front_kick import (
   FRONT_KICK_TASK_ID,
 )
 from mjlab.tasks.bridging.experiments.humanoid.skills.jump import JUMP_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.skills.kick import KICK_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.passing import PASS_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.punch_combo import (
   PUNCH_COMBO_TASK_ID,
@@ -65,14 +63,15 @@ SKILLS: dict[str, str] = {
   "walk": WALK_TASK_ID,
   "run": RUN_TASK_ID,
   "jump": JUMP_TASK_ID,
-  "kick": KICK_TASK_ID,
   "front_kick": FRONT_KICK_TASK_ID,
   "pass": PASS_TASK_ID,
   "push": PUSH_TASK_ID,
   "punch_combo": PUNCH_COMBO_TASK_ID,
-  "backflip": BACKFLIP_TASK_ID,
 }
-"""Skill name to task id. Every one logs to g1_<name>, so nothing else has to be said."""
+"""Skill name to task id. Every one logs to g1_<name>, so nothing else has to be said.
+
+Add a skill by adding a line. It needs a trained checkpoint under that log directory and
+nothing else: build.py does not know what any of these are."""
 
 
 def experiment(skill: str) -> str:
@@ -84,18 +83,58 @@ def experiment(skill: str) -> str:
 class RecordCfg(RolloutCfg):
   """How much of each skill to record."""
 
+  num_envs: int = 256
+  """More than the shared default. Each environment draws its own command, so this is how
+  many command values the recording contains, and a node has to be visited under all of
+  them to look reliable rather than rare."""
+
   skills: tuple[str, ...] = ("walk", "run", "jump")
   """Which skills to record. The default three need nothing on the floor.
 
-  Kick, push and pass work too. Their entry states mean less on their own, since where
-  the ball or the crate was is part of what the skill was doing and none of that is in
-  a robot state."""
+  Front kick, push and pass work too. Their entry states mean less on their own, since
+  where the ball or the crate was is part of what the skill was doing, and none of that
+  is in a robot state."""
 
   path: Path = ROLLOUTS_PATH
 
   checkpoints: tuple[str, ...] = ()
-  """Explicit checkpoint paths, one per entry of `skills`, for when the newest run under
+  """Explicit checkpoint paths, one per entry of skills, for when the newest run under
   a log directory is not the one meant. Empty means search."""
+
+
+def spread_of(
+  commands: np.ndarray, trajectories: np.ndarray, detail: int = 6
+) -> list[str]:
+  """How much of each command's range this recording actually covered.
+
+  A node is a moment the skill goes through whatever it was asked for, so the recording
+  has to contain every "whatever". Random sampling per environment usually gets there,
+  and this is how you see that it did rather than assume it: `distinct` well below the
+  rollout count means most episodes drew the same command and the corpus is narrower
+  than the skill.
+
+  A tracking skill's command is mostly the reference it is chasing, which is dozens of
+  numbers changing every frame, so only the widest `detail` of them are printed. The
+  count on the first line is the part worth reading.
+  """
+  if commands.size == 0:
+    return ["command: none"]
+  first = np.array(
+    [commands[trajectories == t][0] for t in np.unique(trajectories)], dtype=np.float64
+  )
+  distinct = len(np.unique(first.round(3), axis=0))
+  low, high = commands.min(axis=0), commands.max(axis=0)
+  span = high - low
+  moving = np.nonzero(span > 1e-9)[0]
+  out = [
+    f"command: {distinct} distinct over {len(first)} rollouts, "
+    f"{moving.size} of {commands.shape[1]} values vary"
+  ]
+  widest = moving[np.argsort(-span[moving])][:detail]
+  out += [f"  [{i}] {low[i]:+.2f} to {high[i]:+.2f}" for i in sorted(widest)]
+  if moving.size > detail:
+    out.append(f"  and {moving.size - detail} more")
+  return out
 
 
 def collect(cfg: RecordCfg) -> Path:
@@ -144,6 +183,8 @@ def collect(cfg: RecordCfg) -> Path:
     goals.append(commands)
     rollouts = len(np.unique(trajectories))
     print(f"[selector] {name}: {len(rows)} states over {rollouts} rollouts")
+    for line in spread_of(commands, trajectories):
+      print(f"[selector]   {line}")
 
   return dataset.write(
     cfg.path, states, env_ids, trajectory_ids, frames, sources, cfg.skills, fps, goals

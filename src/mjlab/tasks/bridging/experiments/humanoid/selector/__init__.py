@@ -1,46 +1,61 @@
 """Where each skill can be entered, measured from its own rollouts.
 
+record.py  ->  build.py  ->  filter.py  ->  query.py
+ (drive)       (measure)      (decide)      (choose)
+
+      view.py (look the entry points for a given skill)
+
 The bridge has a fixed window and then has to hand over, so it needs somewhere to aim.
 This package says where, and how good each spot is.
 
 Idea: cluster the states a skill visits and keep the spots most of its rollouts pass
-through. Those are the moments the skill has to go through to do its job, so they are
-the moments another skill can join it at. No contacts, no gait, no clip landmarks, so
-the same code works for a jump, a kick or a backflip.
-
-Layout
-------
+through. Those are the moments the skill has to go through to do its job, so they are the
+moments another skill can join it at. No contacts, no gait, no clip landmarks, so the same
+code works for a jump, a kick or a backflip.
 
     record.py    drives each trained skill and writes down what it does. Runnable
-    build.py     finds the entry points in those rollouts. Runnable
-    table.py     the table they are written to, and what its columns mean
+    build.py     clusters those states and measures every candidate. Runnable
+    filter.py    accepts or rejects candidates. Every criterion lives here. Runnable
+    query.py     picks which entry to aim at, given where the robot is now
     view.py      draws one skill's entries side by side. Runnable
-    selector.py  the old API the transition tests read, backed by the table
 
-Everything lands under data/selector/. The package owns its input as well as its output,
-so nothing here depends on the bridge's dataset being built or current.
+    state.py     the canonical frame and the channels. Shared by build and query
+    ground.py    measures a pose against the floor
+    table.py     the table type and what its columns mean
+
+Measuring and deciding are kept apart on purpose. build.py writes every cluster it found,
+judged by nothing, so filter.py can say which check rejected each one and by how much.
+Re-filtering is instant because the clustering does not repeat.
+
+Everything lands under data/selector/. The package owns its input as well as its output, so
+nothing here depends on the bridge's dataset being built or current.
+
+Two things it does not answer. Whether a spot is survivable: a cluster every rollout passes
+through is one the skill visits, not one it can necessarily be restarted from, and
+confirming that needs the skill's own critic or a rollout sweep. And whether a spot is
+reachable: filter.py drops the geometrically impossible ones and query.py ranks the rest by
+the rate of change they demand, but a grounded state at 3 m/s passes both and is still out
+of reach from a standstill. Only the bridge's own arrival score answers that.
 
 Run
----
 
-    1. Record the skills, once. Needs a trained checkpoint per skill.
+1. Record the skills, once. Needs a trained checkpoint per skill.
 
-        uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.record
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.record
 
-    2. Build the table. Runs on the rollouts alone, no checkpoints, a few seconds.
+2. Find the candidates. Runs on the rollouts alone, no checkpoints, a few seconds.
 
-        uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.build
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.build
 
-    3. Look at it.
+3. Accept or reject them. Prints every candidate with the check that failed it.
 
-        uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.view
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.filter
 
-    4. Aim at it.
+4. Look at it.
 
-        uv run python -m mjlab.tasks.bridging.experiments.humanoid.tests.transitions.walk2jump
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.view
 
-Query it
---------
+Then read the table, or ask which entry is easiest to reach from where the robot is:
 
     table = EntryTable.load()
     for entry in table.of("jump"):
@@ -48,30 +63,26 @@ Query it
       entry.frame     # the phase to enter the skill at
       entry.coverage  # how many rollouts pass through here
 
-What this does not do
----------------------
-
-It does not say a spot is survivable. A cluster every rollout passes through is a spot
-the skill visits, which is not the same as a spot it can be restarted from. Confirming
-that needs the skill's own critic or a rollout sweep, and neither is here yet.
-
-It does not say a spot is reachable. Mid-flight states cluster well and no bridge can
-deliver one. What the bridge can reach is the bridge's own arrival score, applied to
-this list at run time.
-
-It does not rank for a transition. Rows are sorted by how long a rollout spends in each
-spot, which is a property of the skill alone. Which entry is best depends on where the
-outgoing skill left the robot, and only the bridge knows that.
+    reaches = nearest(table, "jump", state, seconds=0.7)
+    reaches[0].entry     # aim here
+    reaches[0].effort    # below 1 is reachable
+    reaches[0].binding   # which channel makes it hard
 """
 
-from mjlab.tasks.bridging.experiments.humanoid.selector.selector import (
-  ScoringCfg as ScoringCfg,
+from mjlab.tasks.bridging.experiments.humanoid.selector.query import (
+  Cost as Cost,
 )
-from mjlab.tasks.bridging.experiments.humanoid.selector.selector import (
-  Selector as Selector,
+from mjlab.tasks.bridging.experiments.humanoid.selector.query import (
+  RateCost as RateCost,
 )
-from mjlab.tasks.bridging.experiments.humanoid.selector.selector import (
-  Shortlist as Shortlist,
+from mjlab.tasks.bridging.experiments.humanoid.selector.query import (
+  Reach as Reach,
+)
+from mjlab.tasks.bridging.experiments.humanoid.selector.query import (
+  best as best,
+)
+from mjlab.tasks.bridging.experiments.humanoid.selector.query import (
+  nearest as nearest,
 )
 from mjlab.tasks.bridging.experiments.humanoid.selector.table import (
   Entry as Entry,

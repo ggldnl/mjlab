@@ -1,19 +1,17 @@
 """Put a state on a robot and measure it against the floor.
 
-Answers one question: how far off the ground is the lowest part of the robot in this
-state. Grounded states read about zero, airborne ones read tens of centimetres, and a
-state written into the floor reads negative.
+Answers one question: how far off the ground is the lowest part of the robot in this state.
+Grounded states read about zero, airborne ones tens of centimetres, and a state written
+into the floor reads negative. build.py stores it as the clearance column and filter.py
+rejects on it; view.py uses it to draw.
 
-That is what separates a spot the bridge could deliver the robot to from one it could
-not. A mid-flight state is a real place the skill goes through, and no bridge can put
-the robot there: getting a body onto a specific ballistic arc is not something a
-position controller does. Nothing about which skill it is enters into this.
+That number is what separates a spot the bridge could deliver the robot to from one it
+could not. A mid-flight state is a real place the skill goes through, and no bridge can put
+the robot there: getting a body onto a specific ballistic arc is not something a position
+controller does. Nothing about which skill it is enters into this.
 
-No physics. Forward kinematics on a compiled model, then geometry. The state was
-recorded under physics already, and stepping the solver would integrate it a second
-time.
-
-Used by build.py to filter and by view.py to draw.
+No physics. Forward kinematics on a compiled model, then geometry. The state was recorded
+under physics already, and stepping the solver would integrate it a second time.
 """
 
 from __future__ import annotations
@@ -42,7 +40,7 @@ class Slot:
 
 
 def build(count: int = 1, floor: bool = True) -> tuple[mujoco.MjModel, list[Slot]]:
-  """A model holding `count` copies of the G1, and where to write each pose."""
+  """A model holding count copies of the G1, and where to write each pose."""
   world = mujoco.MjSpec()
   if floor:
     world.worldbody.add_geom(
@@ -83,7 +81,7 @@ def slot(model: mujoco.MjModel, prefix: str) -> Slot:
 
 
 def show(qpos: np.ndarray, where: Slot, state: np.ndarray, shift: np.ndarray) -> None:
-  """Write one state into a shared qpos, moved by `shift`."""
+  """Write one state into a shared qpos, moved by shift."""
   qpos[where.free : where.free + 3] = state[0:3] + shift
   qpos[where.free + 3 : where.free + 7] = state[3:7]
   qpos[where.joints] = state[ROOT_STATE_DIM : ROOT_STATE_DIM + where.joints.size]

@@ -1,19 +1,26 @@
 """Look at the entry points of a skill.
 
-Every entry of one skill, side by side, in table order along +y, with the numbers
-behind them. The dropdown switches skills.
-
-Run
----
-
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.view
-    uv run python -m ...selector.view --skill jump --spacing 1.2
-
-Then open the printed address.
+Every entry of one skill, side by side, in table order along +y, with the numbers behind
+them. The dropdown switches skills. Reads whichever table it is pointed at, so passing the
+candidate file is how you look at what filter.py rejected.
 
 No physics. These states were recorded under physics already; this writes qpos and runs
-forward kinematics, so a foot through the floor here is a defect in the recording, not
-in the playback.
+forward kinematics, so a foot through the floor here is a defect in the recording, not in
+the playback.
+
+Run
+
+1. Draw the accepted entries, then open the printed address.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.view
+
+2. Open on one skill, with more room between entries.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.view --skill jump --spacing 1.2
+
+3. Draw the candidates instead, rejected ones included.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.view --path data/selector/candidates.npz
 """
 
 from __future__ import annotations
@@ -61,7 +68,7 @@ class ViewCfg:
 
 
 def coloured(count: int) -> tuple[mujoco.MjModel, list[Slot]]:
-  """`count` copies of the G1 on a floor, painted so they can be seen through."""
+  """count copies of the G1 on a floor, painted so they can be seen through."""
   model, slots = build(count)
   for index in range(count):
     tint(model, f"e{index}/")
@@ -90,9 +97,22 @@ def tint(model: mujoco.MjModel, prefix: str) -> None:
 
 
 def markdown(skill: str, entries: tuple[Entry, ...]) -> str:
-  """The skill's rows, in the order they stand on screen."""
+  """The skill's rows as they stand on screen, with what each one was asked for.
+
+  The command column is the point of looking. A node is a moment the skill goes through
+  whatever it was told to do, so one pose appearing five times over with five different
+  commands is one node the clustering split by command, and --clusters is too high. Two
+  nodes with genuinely different commands, a left and a right kick, are two nodes and
+  should stay two.
+  """
   return "\n".join(
-    [f"**{skill}**, left to right along +y", "", *HEADER, *[e.row() for e in entries]]
+    [
+      f"**{skill}**, left to right along +y",
+      "",
+      HEADER[0] + " command |",
+      HEADER[1] + "---|",
+      *[f"{e.row()} {e.command_text()} |" for e in entries],
+    ]
   )
 
 

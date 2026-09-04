@@ -1,43 +1,37 @@
-"""Find the entry points of each skill from its own recorded rollouts.
+"""Find the candidate entry points of each skill, and measure them.
 
-Method
-------
+Second step of the pipeline: reads the rollouts record.py wrote, writes the candidate table
+filter.py judges. Measures, decides nothing. Every cluster it finds is written out,
+including the ones no bridge could use, because filter.py can only report why a candidate
+failed if the numbers behind the failure are in the file.
 
     1. Canonicalize. Drop ground position, drop yaw, rotate the velocities into the
-       heading frame. Two states that differ only by where on the floor they happened
-       become the same state.
-    2. Scale each channel by SCALE, so one unit means the same thing everywhere.
-    3. Cluster with k-medoids. Cluster centers are recorded states, never averages:
-       an averaged quaternion is not a pose the robot can hold.
-    4. Score each cluster and drop the ones rollouts do not reliably pass through, or
-       that no bridge could deliver the robot to.
+       heading frame. See state.py.
+    2. Scale each channel so one unit means the same thing everywhere.
+    3. Cluster with k-medoids. Cluster centers are recorded states, never averages: an
+       averaged quaternion is not a pose the robot can hold.
+    4. Measure each cluster: how many rollouts pass through it, how long they stay, how
+       wide it is, where in the skill it sits, and how far off the floor it is.
+    5. Measure what the robot can do, once, over every skill. See achievable.
 
-A cluster many rollouts pass through is a spot the skill has to go through to do its
-job. That is the whole criterion. Nothing here knows which skill it is looking at: no
-contacts, no gait, no clip landmarks, no per-skill thresholds.
-
-The one thing that criterion cannot see is whether the robot can be put there at all.
-Mid-flight states are real waists of a jump and no controller can deliver one, so a
-second filter measures each candidate against the floor. See ground.py.
-
-What the columns mean is in table.py.
+A cluster many rollouts pass through is a spot the skill has to go through to do its job,
+so it is a spot another skill could join it at. That is the whole idea. Nothing here knows
+which skill it is looking at. What the columns mean is in table.py.
 
 Run
----
 
-    1. Record the skills.
+1. Find the candidates, having recorded the skills first.
 
-        uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.record
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.build
 
-    2. Build the table.
+2. Ask for more spots per skill, or only one skill.
 
-        uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.build
-        uv run python -m ...selector.build --clusters 48 --min-coverage 0.1
-        uv run python -m ...selector.build --skills "('jump',)"
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.build --clusters 48
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.build --skills "('jump',)"
 
-    3. Look at what came out.
+3. Then accept or reject them.
 
-        uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.view
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.filter
 """
 
 from __future__ import annotations
@@ -51,87 +45,21 @@ import tyro
 
 import mjlab
 from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
-  ROOT_STATE_DIM,
   Dataset,
   load_dataset,
 )
 from mjlab.tasks.bridging.experiments.humanoid.selector.ground import Ground
+from mjlab.tasks.bridging.experiments.humanoid.selector.state import (
+  canonical,
+  channel_gap,
+  features,
+)
 from mjlab.tasks.bridging.experiments.humanoid.selector.table import (
+  CANDIDATES_PATH,
   ROLLOUTS_PATH,
-  TABLE_PATH,
   Entry,
   EntryTable,
 )
-from mjlab.utils.lab_api.math import (
-  quat_apply_inverse,
-  quat_conjugate,
-  quat_mul,
-  yaw_quat,
-)
-
-CHANNELS = ("root_z", "tilt", "lin_vel", "ang_vel", "joint_pos", "joint_vel")
-
-SCALE = (0.05, 0.05, 0.15, 0.30, 0.10, 1.50)
-"""Metres, radians, m/s, rad/s, radians, rad/s.
-
-The bridge's arrival tolerances, so a spread of 1.0 means the cluster is about as wide
-as a hand-over is allowed to be off. Copied rather than imported: the bridge splits arms
-from legs and needs joint names to do it, and a dataset does not record joint names.
-"""
-
-
-##
-# Turning states into something distances can be measured in.
-##
-
-
-def canonical(states: torch.Tensor) -> torch.Tensor:
-  """Drop where on the floor and which way round. Same layout in and out.
-
-  Ground position goes to zero and yaw is removed, so two walk states a metre apart
-  facing different ways come out identical. Both velocities are rotated with the pose,
-  or they would still point the way the robot happened to be facing when recorded.
-
-  This is also the layout the bridge is aimed in: whoever places the target picks the
-  ground position and the heading.
-  """
-  quat = states[:, 3:7]
-  heading = yaw_quat(quat)
-  out = states.clone()
-  out[:, 0:2] = 0.0
-  out[:, 3:7] = quat_mul(quat_conjugate(heading), quat)
-  out[:, 7:10] = quat_apply_inverse(heading, states[:, 7:10])
-  out[:, 10:ROOT_STATE_DIM] = quat_apply_inverse(heading, states[:, 10:ROOT_STATE_DIM])
-  return out
-
-
-def features(states: torch.Tensor) -> torch.Tensor:
-  """Canonical states as vectors whose euclidean distance is the clustering metric.
-
-  Each channel is divided by its scale and by the square root of its width, so a
-  29-number joint block does not outweigh a 3-number velocity just by being wider.
-
-  Tilt contributes the xyz of its quaternion, doubled, with w forced positive. For the
-  tilts a standing robot has, that is the tilt angle in radians, and forcing the sign
-  stops one rotation being written two ways.
-  """
-  num_joints = (states.shape[1] - ROOT_STATE_DIM) // 2
-  tilt = states[:, 3:7]
-  tilt = tilt * torch.where(tilt[:, :1] < 0.0, -1.0, 1.0)
-  blocks = [
-    states[:, 2:3],
-    2.0 * tilt[:, 1:4],
-    states[:, 7:10],
-    states[:, 10:ROOT_STATE_DIM],
-    states[:, ROOT_STATE_DIM : ROOT_STATE_DIM + num_joints],
-    states[:, ROOT_STATE_DIM + num_joints :],
-  ]
-  scaled = [
-    block / (scale * float(np.sqrt(block.shape[1])))
-    for block, scale in zip(blocks, SCALE, strict=True)
-  ]
-  return torch.cat(scaled, dim=-1)
-
 
 ##
 # Clustering.
@@ -143,21 +71,19 @@ def kmedoids(
 ) -> tuple[torch.Tensor, torch.Tensor]:
   """Cluster the rows. Returns the row index of each center, and every row's label.
 
-  Centers are rows, not averages. The bridge has to be able to aim at one, and an
-  averaged quaternion is not a pose.
+  Centers are rows, not averages: the bridge has to aim at one, and an averaged quaternion
+  is not a pose.
 
-  Seeded by farthest point sampling: start from the row nearest the middle of the
-  cloud, then repeatedly take the row furthest from everything picked so far. It is
-  deterministic, and it does not spend every seed in the dense part of the cloud the
-  way random seeding does. For a jump that dense part is standing still, and a seed
-  spent there is an entry point not found anywhere else.
+  Seeded by farthest point sampling, which is deterministic and does not spend every seed
+  in the dense part of the cloud the way random seeding does. For a jump that dense part is
+  standing still, and a seed spent there is an entry point not found anywhere else.
 
-  The update step picks, out of a random sample of each cluster, the row with the
-  smallest total distance to that sample. Sampling makes the step linear in cluster
-  size instead of quadratic, and the exact medoid is not worth a 10000 x 10000 matrix.
+  The update step picks, out of a random sample of each cluster, the row with the smallest
+  total distance to that sample. Sampling makes the step linear in cluster size instead of
+  quadratic, and the exact medoid is not worth a 10000 x 10000 matrix.
 
-  An empty cluster keeps its previous center rather than being reseeded. It means the
-  cloud holds fewer distinct spots than asked for, which is an answer.
+  An empty cluster keeps its previous center rather than being reseeded. It means the cloud
+  holds fewer distinct spots than asked for, which is an answer.
   """
   rng = np.random.default_rng(seed)
   count = min(clusters, feat.shape[0])
@@ -187,8 +113,77 @@ def kmedoids(
 
 
 ##
-# Scoring a cluster.
+# Measuring.
 ##
+
+
+def runs(trajectory: torch.Tensor, frame: torch.Tensor) -> tuple[torch.Tensor, ...]:
+  """Rows in time order, and how many more rows each one is followed by in its rollout.
+
+  Returns (order, available). Sorting is what makes "the row k ticks later" an index
+  offset: the recording is time-major, so rows of one rollout are strided rather than
+  adjacent.
+  """
+  width = int(frame.max().item()) + 1
+  order = torch.argsort(trajectory * width + frame)
+  path, step = trajectory[order], frame[order]
+  steps_by_one = (path[1:] == path[:-1]) & (step[1:] == step[:-1] + 1)
+  opens = torch.cat(
+    [torch.ones(1, dtype=torch.bool, device=steps_by_one.device), ~steps_by_one]
+  )
+  run = opens.long().cumsum(0) - 1
+  last = torch.bincount(run).cumsum(0) - 1
+  positions = torch.arange(order.numel(), device=order.device)
+  return order, last[run] - positions
+
+
+def achievable(
+  states: torch.Tensor,
+  trajectory: torch.Tensor,
+  frame: torch.Tensor,
+  fps: float,
+  spans_s: tuple[float, ...] = (0.3, 0.5, 0.7, 1.0, 1.2),
+  quantile: float = 0.99,
+  cap: int = 200_000,
+) -> np.ndarray:
+  """Fastest per-channel change per second the corpus achieved. (6,)
+
+  Take every pair of states a fixed time apart inside one rollout, measure how far apart
+  they are per channel, divide by the time between them, and keep the 99th percentile.
+
+  This is what turns a gap into a difficulty. Whether shedding 1 m/s in 0.7 s is a lot
+  depends on what a G1 can do, which the rollouts already answer, so an effort above 1
+  means the hand-over needs a faster change than any recorded skill performed.
+
+  Measured over every skill together: the bound is a property of the robot, and the bridge
+  that has to meet it is the same policy whichever skill it hands to.
+
+  Rate is assumed to scale with time, so one number per channel covers every window length.
+  Close enough over the range a bridge window spans, wrong over long ones where a body runs
+  out of room rather than out of acceleration.
+
+  spans_s is the bridge's window range. cap subsamples before the quantile, which is a cost
+  bound and not a statistical one at these sizes.
+  """
+  order, available = runs(trajectory, frame)
+  rows: list[torch.Tensor] = []
+  for seconds in spans_s:
+    steps = max(1, int(round(seconds * fps)))
+    usable = (available >= steps).nonzero().flatten()
+    if usable.numel() == 0:
+      continue
+    here, there = order[usable], order[usable + steps]
+    rows.append(channel_gap(states[here], states[there]) / (steps / fps))
+  if not rows:
+    raise SystemExit(
+      "No rollout is long enough to measure a rate over. Record more steps per episode."
+    )
+
+  gaps = torch.cat(rows)
+  if gaps.shape[0] > cap:
+    keep = torch.randperm(gaps.shape[0], device=gaps.device)[:cap]
+    gaps = gaps[keep]
+  return torch.quantile(gaps, quantile, dim=0).cpu().numpy().astype(np.float64)
 
 
 def progress_of(trajectory: torch.Tensor, frame: torch.Tensor) -> torch.Tensor:
@@ -201,8 +196,7 @@ def progress_of(trajectory: torch.Tensor, frame: torch.Tensor) -> torch.Tensor:
   a recording, so each environment is one rollout the length of the whole run, and this
   reads as time since recording started rather than phase within a skill. Coverage still
   says something there, since it counts environments that visit a spot; progress does
-  not, and `max_progress` filters on noise. Segmenting locomotion by gait cycle rather
-  than by episode is what would fix it.
+  not. Segmenting locomotion by gait cycle rather than by episode is what would fix it.
   """
   _, inverse = torch.unique(trajectory, return_inverse=True)
   width = int(inverse.max().item()) + 1
@@ -246,65 +240,30 @@ def dwell_steps(
 
 
 ##
-# Building the table.
+# Building the candidate table.
 ##
 
 
 @dataclass
 class BuildCfg:
-  """How the entry table is built."""
+  """How candidates are found."""
 
   path: Path = ROLLOUTS_PATH
   """Rollouts to read. One source per skill. Written by record.py."""
-  out: Path = TABLE_PATH
+  out: Path = CANDIDATES_PATH
 
   skills: tuple[str, ...] = ()
-  """Which sources to build entries for. Empty means all of them."""
+  """Which sources to look at. Empty means all of them."""
 
   clusters: int = 32
-  """Candidate spots per skill, before filtering. The filters drop whatever does not
-  survive, so this is an upper bound on the table, not its size.
+  """Candidate spots per skill. filter.py drops whatever does not survive, so this is an
+  upper bound on the final table, not its size.
 
   Measured on walk, run and jump. At 16 the jump's opening stand was not a cluster of
-  its own and the entries that survived had a spread of 5 to 6, which is a region rather
-  than a place. At 32 the stand comes out at 0.96 coverage and the spreads halve. Read
-  `spread` after changing it: a wide cluster holding a large `share` means raise this."""
-
-  min_coverage: float = 0.2
-  """Drop a spot fewer than this fraction of rollouts pass through.
-
-  Low on purpose. A skill that branches, kicking with either leg, sends about half its
-  rollouts down each branch, and both branches are real entry points."""
-
-  max_progress: float = 0.85
-  """Drop spots this far into the skill. Too little left to be worth entering at."""
-
-  clearance_range: tuple[float, float] = (-0.03, 0.05)
-  """Metres the lowest part of the robot may sit above the floor.
-
-  The upper bound is what rejects mid-flight. A bridge steers a body it is standing on;
-  it cannot put one on a chosen ballistic arc, so an airborne target is unreachable
-  however cleanly the skill passes through it.
-
-  The lower bound catches states written into the floor. A solver lets a foot sink a
-  little and no further, so a reading well below this is a defect worth seeing rather
-  than a state worth aiming at.
-
-  Both bounds measured, not chosen. Over the jump rollouts:
-
-      p0     -0.020
-      p50    -0.001     standing, sub-millimetre
-      p75    -0.001
-      p95    +0.130     airborne
-      p100   +0.253
-
-  Grounded and airborne are two separated groups with nothing between them, so anything
-  in the gap works as the upper bound. The lower one sits just under the deepest sink a
-  contact solver produced."""
-
-  min_dwell_s: float = 0.06
-  """Drop spots a rollout crosses in less time than this. Nothing can aim at a target
-  that is open for one tick."""
+  its own and the candidates that survived had a spread of 5 to 6, which is a region
+  rather than a place. At 32 the stand comes out at 0.96 coverage and the spreads halve.
+  Read spread after changing it: a wide cluster holding a large share means raise
+  this."""
 
   split: str = "train"
   """Which side of the dataset holdout to measure. The holdout exists for the bridge;
@@ -315,7 +274,7 @@ class BuildCfg:
 
 
 def build(cfg: BuildCfg) -> EntryTable:
-  """One entry table over every requested skill."""
+  """Every candidate of every requested skill, measured and unjudged."""
   data = load_dataset(cfg.path, cfg.device, cfg.split)
   ground = Ground()
   if ground.num_joints != data.num_joints:
@@ -323,23 +282,44 @@ def build(cfg: BuildCfg) -> EntryTable:
       f"The rollouts hold {data.num_joints}-joint states and this G1 has "
       f"{ground.num_joints}, so they were recorded against a different robot."
     )
+
+  everything = canonical(data.states)
+  rates = achievable(everything, data.trajectory, data.frame, data.fps)
+  print("[selector] achievable rates per second:")
+  for name, rate in zip(CHANNEL_REPORT, rates, strict=True):
+    print(f"[selector]   {name:<12} {rate:.3f}")
+
   wanted = cfg.skills or data.names
-  entries: list[Entry] = []
+  candidates: list[Entry] = []
   for skill in wanted:
-    entries += for_skill(data, skill, ground, cfg)
-  if not entries:
-    raise SystemExit(
-      "No entry points survived the filters. Lower --min-coverage or --min-dwell-s, "
-      "or check that the dataset holds more than one rollout per skill."
-    )
-  return EntryTable(entries=tuple(entries), fps=data.fps)
+    candidates += for_skill(data, everything, skill, ground, cfg)
+  return EntryTable(entries=tuple(candidates), fps=data.fps, rates=rates)
 
 
-def for_skill(data: Dataset, skill: str, ground: Ground, cfg: BuildCfg) -> list[Entry]:
-  """One skill's entry points, best first."""
+CHANNEL_REPORT = (
+  "root_z m/s",
+  "tilt rad/s",
+  "lin_vel m/s2",
+  "ang_vel rad/s2",
+  "joint rad/s",
+  "joint rad/s2",
+)
+"""What each achievable rate is, in the units it comes out in. A change in a velocity
+per second is an acceleration, which the channel names do not say."""
+
+
+def for_skill(
+  data: Dataset, everything: torch.Tensor, skill: str, ground: Ground, cfg: BuildCfg
+) -> list[Entry]:
+  """One skill's candidates, most held first."""
   rows = data.of((skill,))
-  states = canonical(data.states[rows])
+  states = everything[rows]
   trajectory, frame = data.trajectory[rows], data.frame[rows]
+  # What the skill was being asked for at each of these states. Carried onto the entry
+  # and never clustered on: a crouch is a crouch whatever distance it is crouching for,
+  # and splitting by command would make one node look like five rare ones
+  commands = data.commands_of(skill)
+  commands = None if commands is None else commands[rows]
 
   feat = features(states)
   centers, labels = kmedoids(feat, cfg.clusters, seed=cfg.seed)
@@ -355,32 +335,28 @@ def for_skill(data: Dataset, skill: str, ground: Ground, cfg: BuildCfg) -> list[
     if members.numel() == 0:
       continue
     center = int(centers[index])
-    coverage = int(torch.unique(trajectory[members]).numel()) / rollouts
+    pose = states[center].cpu().numpy().astype(np.float32)
     # The center's own progress, not the median over its members. A skill that comes
     # back to a pose puts both visits in one cluster, and the median of those is a
-    # moment nothing was ever at. `frame` and `progress` have to name the same tick,
-    # or max_progress filters on a number no state has
+    # moment nothing was ever at. frame and progress have to name the same tick
     here = float(progress[center])
     seconds = float(dwell[index])
-    if coverage < cfg.min_coverage or here > cfg.max_progress:
-      continue
-    if seconds < cfg.min_dwell_s:
-      continue
-    pose = states[center].cpu().numpy().astype(np.float32)
-    floor = ground.clearance(pose.astype(np.float64))
-    low, high = cfg.clearance_range
-    if not low <= floor <= high:
-      continue
+    coverage = int(torch.unique(trajectory[members]).numel()) / rollouts
     found.append(
       Entry(
         skill=skill,
         name=f"p{round(here * 100):02d}",
         state=pose,
+        command=(
+          np.zeros(0, dtype=np.float32)
+          if commands is None
+          else commands[center].cpu().numpy().astype(np.float32)
+        ),
         frame=int(frame[center]),
         progress=here,
         coverage=coverage,
         spread=float(torch.cdist(feat[members], feat[center : center + 1]).median()),
-        clearance=floor,
+        clearance=ground.clearance(pose.astype(np.float64)),
         dwell_s=seconds,
         hold_s=coverage * seconds,
         share=int(members.numel()) / int(rows.numel()),
@@ -388,9 +364,7 @@ def for_skill(data: Dataset, skill: str, ground: Ground, cfg: BuildCfg) -> list[
     )
 
   found.sort(key=lambda entry: entry.hold_s, reverse=True)
-  print(
-    f"[selector] {skill}: {count} clusters over {rollouts} rollouts, {len(found)} kept"
-  )
+  print(f"[selector] {skill}: {len(found)} candidates over {rollouts} rollouts")
   return rename(found)
 
 
@@ -399,6 +373,9 @@ def rename(entries: list[Entry]) -> list[Entry]:
 
   Two clusters can land on the same percentage. Suffixing beats renumbering: the name
   still says where in the skill the entry is, which is the only thing it is for.
+
+  Done here rather than in filter.py so a name means the same thing in both files, and
+  a rejection report can be read against the candidate table.
   """
   seen: dict[str, int] = {}
   out: list[Entry] = []
@@ -412,8 +389,11 @@ def rename(entries: list[Entry]) -> list[Entry]:
 
 def main(cfg: BuildCfg) -> None:
   table = build(cfg)
-  print("\n".join(table.lines()))
   table.save(cfg.out)
+  print(
+    "[selector] nothing has been judged yet. Run "
+    "`python -m ...selector.filter` to accept or reject these."
+  )
 
 
 if __name__ == "__main__":
