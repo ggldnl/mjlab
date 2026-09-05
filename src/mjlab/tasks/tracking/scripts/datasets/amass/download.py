@@ -9,7 +9,15 @@ of them. ACCAD and KIT are the cleanest for fundamental, single-skill clips:
 their files are named per motion (``B3 - walk1``, ``C3 - Run``, ``A7 - crouch``,
 ``jumps``, ...), so selecting walk / run / sprint / jump / crouch is a filename
 match. The result is one flat ``<skill>/`` folder of SMPL-X ``.npz`` files,
-ready for your retargeting script.
+ready for retargeting.
+
+The ``kick`` skill also reaches CMU, whose files are numbered rather than named:
+subjects 10 and 11 are its soccer session, six trials of running up to a ball and
+kicking it. Ask for it with ``--subsets CMU --skills "('kick',)"``.
+
+Retarget what lands here with
+``mjlab.tasks.tracking.scripts.datasets.gmr.retarget``, which turns SMPL-X into
+G1 joint angles on CPU.
 
 AMASS is license-gated; there is no open mirror (the HuggingFace mirrors are all
 robot-retargeted derivatives, not the agnostic source). You must:
@@ -65,6 +73,15 @@ SKILL_KEYWORDS: dict[str, tuple[str, ...]] = {
   "sprint": ("sprint", "dash"),
   "jump": ("jump", "hop", "leap"),
   "crouch": ("crouch", "squat", "kneel"),
+  "kick": ("kick", "soccer"),
+}
+
+# Skills whose clips are not named after the motion, matched on the path inside the tarball
+# instead. CMU numbers its files by subject and trial, and subjects 10 and 11 are the whole
+# of its soccer session: every trial there is a run up and a kick at a ball. ACCAD puts its
+# martial arts kicks in a folder whose name says so while the files do not.
+SKILL_PATHS: dict[str, tuple[str, ...]] = {
+  "kick": ("CMU/10/", "CMU/11/11_01", "Male2MartialArtsKicks"),
 }
 
 # Subsets that carry clean, well-named atomic locomotion clips.
@@ -115,11 +132,18 @@ def _download_subset(
   tmp.replace(dest)
 
 
-def _classify(filename: str, skills: tuple[str, ...]) -> str | None:
-  """Return the atomic skill a clip belongs to, or None if it matches none."""
-  name = filename.lower()
+def _classify(member_path: str, skills: tuple[str, ...]) -> str | None:
+  """Return the atomic skill a clip belongs to, or None if it matches none.
+
+  Two ways in: the file name says what the motion is, or the path does. The second is what
+  reaches the subsets that number their trials rather than naming them.
+  """
+  path = member_path.replace("\\", "/")
+  name = Path(path).name.lower()
   for skill in skills:
     if any(kw in name for kw in SKILL_KEYWORDS[skill]):
+      return skill
+    if any(part in path for part in SKILL_PATHS.get(skill, ())):
       return skill
   return None
 
@@ -131,7 +155,7 @@ def _curate(tarball: Path, output_dir: Path, skills: tuple[str, ...]) -> dict[st
     for member in tar.getmembers():
       if not member.isfile() or not member.name.endswith(".npz"):
         continue
-      skill = _classify(Path(member.name).name, skills)
+      skill = _classify(member.name, skills)
       if skill is None:
         continue
       src = tar.extractfile(member)

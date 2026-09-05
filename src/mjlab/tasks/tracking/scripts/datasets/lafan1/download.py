@@ -31,6 +31,9 @@ DATASET_URL = (
   "/resolve/main/g1/{name}.csv"
 )
 
+DEFAULT_DIR = Path("data") / "lafan1_g1"
+"""Where the performances are cached. Cropped clips go elsewhere, one directory per task."""
+
 # G1 CSVs published by the retargeting release. Keeping the manifest explicit
 # makes a default run reproducible and catches misspelled clip names early.
 MOTIONS: tuple[str, ...] = (
@@ -77,15 +80,16 @@ MOTIONS: tuple[str, ...] = (
 )
 
 
-def _download(name: str, output_dir: Path) -> bool:
-  """Download one performance unless it is already cached.
+def fetch(name: str, output_dir: Path = DEFAULT_DIR) -> Path:
+  """Download one performance unless it is already cached, and return where it landed.
 
-  Returns whether a download occurred.
+  Args:
+    name: Performance name, one of ``MOTIONS``, without the ``.csv`` suffix.
+    output_dir: Directory to cache the CSV in.
   """
   destination = output_dir / f"{name}.csv"
   if destination.exists():
-    print(f"  cached {destination.name}")
-    return False
+    return destination
 
   output_dir.mkdir(parents=True, exist_ok=True)
   partial = destination.with_suffix(".csv.part")
@@ -96,11 +100,11 @@ def _download(name: str, output_dir: Path) -> bool:
   except Exception as exc:
     partial.unlink(missing_ok=True)
     raise RuntimeError(f"Could not download {destination.name}: {exc}") from exc
-  return True
+  return destination
 
 
 def main(
-  output_dir: Path = Path("data/lafan1_g1"),
+  output_dir: Path = DEFAULT_DIR,
   motions: tuple[str, ...] = MOTIONS,
 ) -> None:
   """Download the selected LAFAN1 G1 CSV performances.
@@ -117,7 +121,13 @@ def main(
     )
 
   print(f"Downloading {len(motions)} LAFAN1 G1 performance(s) to {output_dir}")
-  downloaded = sum(_download(motion, output_dir) for motion in motions)
+  downloaded = 0
+  for motion in motions:
+    if (output_dir / f"{motion}.csv").exists():
+      print(f"  cached {motion}.csv")
+    else:
+      fetch(motion, output_dir)
+      downloaded += 1
   print(f"\nDone. Downloaded {downloaded}; {len(motions) - downloaded} already cached.")
 
 

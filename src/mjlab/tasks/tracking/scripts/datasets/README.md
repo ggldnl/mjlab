@@ -21,10 +21,29 @@ download ─▶ curate / crop ─▶ csv_to_npz ─▶ train
 | `openhe/download.py`         | openhe `g1-retargeted-motions` (HuggingFace) | per-skill NPZs | Already atomic; 23-DOF source remapped to 29-DOF G1. |
 | `phuma/download.py`          | PHUMA (HuggingFace) | per-skill NPZs | Already atomic, 29-DOF G1, physics-curated; large (~3.4 GB). |
 | `amass/download.py`          | AMASS (license-gated MPI portal) | SMPL-X `.npz` | Robot-agnostic; needs your own retargeting before `csv_to_npz`. |
+| `asap/download.py`           | ASAP `LeCAR-Lab/ASAP` (GitHub) | 23-DOF joblib `.pkl` | Short single-skill jumps; the bridging jump tasks convert them. |
 
 All paths default to CWD-relative dirs under `data/`; run them from the repo
 root with `uv run python src/mjlab/tasks/tracking/scripts/datasets/<dataset>/<script>.py`
 and the result will end up in `data/<dataset>`.
+
+## Fetching one clip from a task
+
+Every `download.py` also exposes `fetch(name, output_dir) -> Path`, which
+downloads one clip unless it is already cached and returns where it landed.
+Tasks that track a single clip call that instead of carrying their own copy of
+the URL, so there is one cache per dataset and one place to fix when a release
+moves. `MOTIONS` in each script is the list of names `fetch` accepts.
+
+```python
+from mjlab.tasks.tracking.scripts.datasets.lafan1 import download as lafan1
+
+csv = lafan1.fetch("fight1_subject2")
+```
+
+Converting is not shared. What a task does with a clip after it arrives is
+specific enough that at most a couple of tasks want the same thing, and those
+import each other directly.
 
 ## Which one do I want?
 
