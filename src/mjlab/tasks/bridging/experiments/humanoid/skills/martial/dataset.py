@@ -1,49 +1,57 @@
-"""Cut a strike out of a LAFAN1 fight performance and convert it to an mjlab motion.
+"""Cut a martial arts motion out of a LAFAN1 fight performance and convert it.
+
+One converter for every motion in this package. A motion is a name and a frame window into
+a performance, listed in MOTIONS below, and adding one is adding a line there.
 
 LAFAN1 (Harvey et al., SIGGRAPH 2020) has a fight category, and Unitree publishes the whole
 set retargeted to the 29 joint G1 as one CSV per performance: root position, root
 quaternion in xyzw, then the joint angles, at 30 Hz. That is the same file the tracking
-task's cropping tools read, so a strike here is a frame range into one of those
+task's cropping tools read, so a motion here is a frame range into one of those
 performances.
 
-Source CSVs are cached in data/lafan1_g1, the converted motion lands in
-data/lafan1_g1/front_kick, and both steps skip files already there.
+Source CSVs are cached in data/lafan1_g1 by the tracking task's LAFAN1 downloader, which
+this calls rather than fetching anything itself. Each converted motion lands in
+data/lafan1_g1/clips/<name>. Both steps skip files already there.
 
-What happens to the clip, in order:
+What happens to a clip, in order:
 
-    0. Download the performance, unless it is already cached.
+    0. Download the performance through datasets/lafan1/download.py, unless it is cached.
     1. Slice the frame window and scatter the CSV joint columns into the model's own joint
        order by name.
     2. Rotate and translate so the clip starts at the origin facing +x. The pelvis heading
-       is what is removed here, not the direction of travel, because a strike goes nowhere
-       and has no direction of travel.
+       is what is removed here, not the direction of travel, because these motions go
+       nowhere and have no direction of travel.
     3. Resample to the control rate and hold the first frame still for half a second, so
        the clip starts from a standstill the policy has to launch out of.
     4. Shift the root vertically so a planted foot sits at standing foot height.
     5. Replay through MuJoCo to log every body world pose and velocity, and record where
        the clip ends up.
 
-Check the frame interval using the tracking task's manual_crop.py.
+Check a frame interval using the tracking task's manual_crop.py.
 
 Run
 
-1. Convert the default window.
+1. Convert every motion in MOTIONS.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.martial.dataset
 
-2. Convert a different window, when the default lands on the wrong strike.
+2. Convert one of them.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset       --crop.start 1180 --crop.end 1300
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.martial.dataset --motion front_kick
 
-3. Pick a window by eye first.
+3. Convert one against a different window, when the one in MOTIONS lands on the wrong
+   moment.
 
-    uv run python src/mjlab/tasks/tracking/scripts/datasets/lafan1/interactive_crop.py       --data-dir data/lafan1_g1 --motion fight1_subject2
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.martial.dataset --motion front_kick --crop-start 1180 --crop-end 1300
+
+4. Pick a window by eye first.
+
+    uv run python src/mjlab/tasks/tracking/scripts/datasets/lafan1/interactive_crop.py --data-dir data/lafan1_g1 --motion fight1_subject2
 """
 
 from __future__ import annotations
 
 import json
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -57,7 +65,7 @@ from mjlab.asset_zoo.robots import get_g1_robot_cfg
 from mjlab.entity import Entity
 from mjlab.scene import Scene, SceneCfg
 from mjlab.sim.sim import Simulation, SimulationCfg
-from mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.dataset import (
   FOOT_BODY_NAMES,
   MAX_GROUND_PENETRATION,
   RawMotion,
@@ -68,6 +76,7 @@ from mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset import (
   standing_foot_height,
   velocities,
 )
+from mjlab.tasks.tracking.scripts.datasets.lafan1 import download as lafan1
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.lab_api.math import quat_apply, quat_inv, quat_mul, yaw_quat
 
@@ -108,18 +117,21 @@ CSV_JOINT_NAMES: tuple[str, ...] = (
 
 SOURCE_FPS = 30.0
 
-# Where the retargeted performances come from. Point --source-dir at a local copy if this
-# ever moves; nothing else here depends on the download
-LAFAN1_URL = (
-  "https://huggingface.co/datasets/lvhaidong/LAFAN1_Retargeting_Dataset"
-  "/resolve/main/g1/{name}.csv"
-)
+SOURCE_DIR = lafan1.DEFAULT_DIR
+"""Where the LAFAN1 downloader caches its performances.
 
-SOURCE_DIR = Path("data") / "lafan1_g1"
+The download is that script's job, not this one's, so every task that crops a performance
+reads the same copy and none of them carries a URL. Point --source-dir at a local copy if
+the release ever moves."""
+
 CLIP_DIR = SOURCE_DIR / "clips"
 """Where the converter puts its output, one directory per clip."""
 
-MOTION_DIR = CLIP_DIR / "front_kick"
+
+def motion_dir(name: str) -> Path:
+  """Where one motion's npz and manifest live."""
+  return CLIP_DIR / name
+
 
 # How long the reference stands still before the strike begins. Long enough that the policy
 # has to hold a stance and then break out of it, short enough not to spend the episode on it
@@ -128,7 +140,7 @@ STILL_HOLD_S = 0.5
 
 @dataclass(frozen=True)
 class Crop:
-  """One strike, as a frame window into a LAFAN1 performance.
+  """One motion, as a frame window into a LAFAN1 performance.
 
   Frames are 1-indexed and inclusive, matching the tracking task's cropping tools.
   """
@@ -138,29 +150,20 @@ class Crop:
   end: int
 
 
-# 121 frames, four seconds at 30 Hz: long enough to hold a stance, kick and recover, short
-# enough that the subject has not moved on to something else
-CLIP = Crop("fight1_subject2", start=1200, end=1320)
+MOTIONS: dict[str, Crop] = {
+  # 121 frames, four seconds at 30 Hz: long enough to hold a stance, kick and recover,
+  # short enough that the subject has not moved on to something else
+  "front_kick": Crop("fight1_subject2", start=1200, end=1320),
+  # 131 frames, four and a half seconds. Longer than the front kick because a combination
+  # is several strikes, and the window has to reach the end of the last one
+  "punch_combo": Crop("fight1_subject2", start=1600, end=1730),
+}
+"""Motion name to the window it is cut from.
 
-
-def download_clip(name: str, source_dir: Path) -> Path:
-  """Fetch one retargeted performance, caching it on disk."""
-  destination = source_dir / f"{name}.csv"
-  if destination.exists():
-    return destination
-
-  source_dir.mkdir(parents=True, exist_ok=True)
-  url = LAFAN1_URL.format(name=name)
-  print(f"  downloading {name}.csv")
-  try:
-    # Written to a temporary name first, so an interrupted download cannot leave a
-    # truncated file behind that later runs treat as cached
-    partial = destination.with_suffix(".csv.part")
-    urllib.request.urlretrieve(url, partial)
-    partial.replace(destination)
-  except Exception as exc:
-    raise RuntimeError(f"Could not download {url}: {exc}") from exc
-  return destination
+Add a motion by adding a line here. It gets a task, its own clip directory and a g1_<name>
+log directory, and nothing else has to be said because the environment is the same one for
+all of them.
+"""
 
 
 def load_csv(path: Path, crop: Crop, joint_names: list[str], device: str) -> RawMotion:
@@ -310,19 +313,18 @@ def convert_clip(
 
 
 def convert(
-  name: str,
-  crop: Crop,
-  output_dir: Path,
+  motions: dict[str, Crop],
+  clip_dir: Path,
   source_dir: Path,
   output_fps: float,
   hold_s: float,
   device: str,
 ) -> None:
-  """Convert one LAFAN1 window into an mjlab motion npz, next to a manifest.
+  """Convert LAFAN1 windows into mjlab motion npz files, one directory per motion.
 
-  This is the whole of a strike task's dataset script: bring up a one env scene, measure the
-  model's standing foot height, convert, and write the manifest the motion library reads.
-  Both strike tasks call it with a different window.
+  This is the whole of the package's dataset script: bring up a one env scene, measure the
+  model's standing foot height, and convert every motion asked for against it. The scene is
+  built once, so converting the whole table costs one startup rather than one each.
   """
   if device.startswith("cuda") and not torch.cuda.is_available():
     print("[WARN] CUDA unavailable, falling back to CPU.")
@@ -347,45 +349,73 @@ def convert(
   standing_height = standing_foot_height(robot, sim, scene)
   print(f"Standing foot height in mjlab's G1: {standing_height:.4f} m")
 
-  print(f"Converting {name} to {output_dir}:")
-  source = download_clip(crop.source, source_dir)
-  summary = convert_clip(
-    sim=sim,
-    scene=scene,
-    robot=robot,
-    joint_names=joint_names,
-    input_path=source,
-    crop=crop,
-    output_path=output_dir / f"{name}.npz",
-    output_fps=output_fps,
-    standing_height=standing_height,
-    hold_s=hold_s,
-  )
+  for name, crop in motions.items():
+    output_dir = clip_dir / name
+    print(f"Converting {name} to {output_dir}:")
+    summary = convert_clip(
+      sim=sim,
+      scene=scene,
+      robot=robot,
+      joint_names=joint_names,
+      input_path=lafan1.fetch(crop.source, source_dir),
+      crop=crop,
+      output_path=output_dir / f"{name}.npz",
+      output_fps=output_fps,
+      standing_height=standing_height,
+      hold_s=hold_s,
+    )
 
-  manifest_path = output_dir / "manifest.json"
-  manifest_path.write_text(json.dumps([summary], indent=2))
-  print(f"\nWrote {output_dir / (name + '.npz')} and {manifest_path}")
+    # One motion per directory, so the manifest is one entry and is rewritten whole
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps([summary], indent=2))
+    print(f"  wrote {output_dir / (name + '.npz')} and {manifest_path}")
 
 
 def main(
-  output_dir: Path = MOTION_DIR,
+  motion: str | None = None,
+  crop_source: str | None = None,
+  crop_start: int | None = None,
+  crop_end: int | None = None,
+  clip_dir: Path = CLIP_DIR,
   source_dir: Path = SOURCE_DIR,
-  crop: Crop = CLIP,
   output_fps: float = 50.0,
   hold_s: float = STILL_HOLD_S,
   device: str = "cuda:0",
 ) -> None:
-  """Convert the front kick window into an mjlab motion npz file.
+  """Convert the martial arts windows into mjlab motion npz files.
+
+  The three crop arguments override what MOTIONS says about one motion, for trying a
+  window out before writing it down. They need a motion, because there is one window per
+  motion and nothing to override without one.
 
   Args:
-    output_dir: Where the npz file and the manifest are written.
+    motion: Which entry of MOTIONS to convert. Every one of them when left out.
+    crop_source: Performance to cut from, instead of the one MOTIONS lists.
+    crop_start: First frame, instead of the one MOTIONS lists.
+    crop_end: Last frame, instead of the one MOTIONS lists.
+    clip_dir: Parent of the per motion output directories.
     source_dir: Where the downloaded LAFAN1 CSVs are kept.
-    crop: The frame window to cut. Move it if the default lands on the wrong strike.
     output_fps: Should match the env control rate, 1 / (timestep * decimation).
-    hold_s: How long the reference stands still before the kick.
+    hold_s: How long the reference stands still before the motion starts.
     device: Torch device for the replay.
   """
-  convert("front_kick", crop, output_dir, source_dir, output_fps, hold_s, device)
+  if motion is None:
+    if crop_source or crop_start or crop_end:
+      raise ValueError("A crop override needs a --motion to override")
+    selected = MOTIONS
+  else:
+    if motion not in MOTIONS:
+      raise ValueError(f"Unknown motion '{motion}'. Known: {', '.join(MOTIONS)}")
+    listed = MOTIONS[motion]
+    selected = {
+      motion: Crop(
+        source=crop_source or listed.source,
+        start=crop_start or listed.start,
+        end=crop_end or listed.end,
+      )
+    }
+
+  convert(selected, clip_dir, source_dir, output_fps, hold_s, device)
 
 
 if __name__ == "__main__":

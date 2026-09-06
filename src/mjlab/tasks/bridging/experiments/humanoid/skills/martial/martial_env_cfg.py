@@ -1,16 +1,16 @@
-"""The strike environment: track one crop of a LAFAN1 fight performance from a standstill.
+"""The martial arts environment: track one crop of a LAFAN1 fight performance.
 
 Same recipe as the jump: track a human clip frame by frame, start episodes anywhere in it,
 and terminate the moment tracking is lost. The clip is a strike instead of a jump, and it
 begins with half a second of held stance, so what the policy learns is to stand still and
 then break out of that stance fast enough to follow the reference.
 
-This module builds the environment for both strike tasks. One strike is one clip and one
-policy, so nothing here is conditioned on which strike it is: the punch combo is the same
+This module builds the environment for every motion in the package. One motion is one clip
+and one policy, so nothing here is conditioned on which motion it is: each task is the same
 environment pointed at a different motion directory.
 
-Two things are dropped from the jump's setup, both because they are about flight and this
-motion has none.
+Two things are dropped from the jump's setup, both because they are about flight and these
+motions have none.
 
     goal terms         a jump is asked to land somewhere and is paid for it. A strike goes
                        nowhere, so the only thing to say about where it ends up is that it
@@ -26,9 +26,9 @@ a strike, and the poses alone do not distinguish the two.
 
 Run
 
-1. Convert the clip.
+1. Convert the clips.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.martial.dataset
 
 2. Train.
 
@@ -58,12 +58,11 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
-from mjlab.tasks.bridging.experiments.humanoid.skills.front_kick.dataset import (
-  MOTION_DIR,
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous import mdp
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.mdp import (
+  JumpCommandCfg,
 )
-from mjlab.tasks.bridging.experiments.humanoid.skills.jump import mdp
-from mjlab.tasks.bridging.experiments.humanoid.skills.jump.mdp import JumpCommandCfg
-from mjlab.tasks.bridging.experiments.humanoid.skills.jump.motion_lib import (
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.motion_lib import (
   discover_motion_files,
 )
 from mjlab.terrains import TerrainEntityCfg
@@ -92,9 +91,9 @@ TRACKED_BODIES: tuple[str, ...] = (
   "right_wrist_yaw_link",
 )
 
-# Both hands and both feet, for both strikes. Which of the four is the striking limb is
+# Both hands and both feet, whatever the motion. Which of the four is the striking limb is
 # something the reference already says, frame by frame, so there is nothing to gain by
-# naming it here and a task specific config to maintain if it were
+# naming it here and a per motion config to maintain if it were
 STRIKE_BODIES: tuple[str, ...] = (
   "left_wrist_yaw_link",
   "right_wrist_yaw_link",
@@ -161,15 +160,15 @@ _STAGE_1 = 24_000
 _STAGE_2 = 72_000
 
 
-def g1_strike_env_cfg(
+def g1_martial_env_cfg(
   motion_dir: Path,
   motion_files: tuple[str, ...] | None = None,
   play: bool = False,
 ) -> ManagerBasedRlEnvCfg:
-  """Build a strike environment around one converted clip.
+  """Build a martial arts environment around one converted clip.
 
   Args:
-    motion_dir: Where that task's dataset script wrote its npz.
+    motion_dir: Where dataset.py wrote that motion's npz.
     motion_files: Converted npz clips. Defaults to everything in motion_dir, which for
       these tasks is the one clip.
     play: Start every episode at the beginning of the clip, which is the standstill, drop
@@ -415,8 +414,8 @@ def g1_strike_env_cfg(
       weight=-1.0,
       params={"sensor_name": "self_collision", "force_threshold": 10.0},
     ),
-    # A tenth of the jump's weight. The support foot pivots under both of these strikes,
-    # and that pivot is contact with a turning foot, which is what this measures
+    # A tenth of the jump's weight. The support foot pivots under these strikes, and that
+    # pivot is contact with a turning foot, which is what this measures
     "feet_slip": RewardTermCfg(
       func=mdp.feet_slip_penalty,
       weight=-0.02,
@@ -566,7 +565,7 @@ def g1_strike_env_cfg(
     ),
     # 0.005 * 4 gives 50 Hz control, the rate the clips are converted at
     decimation=4,
-    # Long enough for either clip plus its held opening. The motion ends the episode
+    # Long enough for any of the clips plus its held opening. The motion ends the episode
     # before this
     episode_length_s=6.0,
   )
@@ -584,11 +583,3 @@ def g1_strike_env_cfg(
     motion_cmd.sampling_mode = "start"
 
   return cfg
-
-
-def g1_front_kick_env_cfg(
-  motion_files: tuple[str, ...] | None = None,
-  play: bool = False,
-) -> ManagerBasedRlEnvCfg:
-  """The strike environment, pointed at the front kick's clip."""
-  return g1_strike_env_cfg(MOTION_DIR, motion_files, play)
