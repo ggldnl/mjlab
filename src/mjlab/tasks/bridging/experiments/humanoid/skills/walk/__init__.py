@@ -2,8 +2,7 @@
 
 The registered config is the stock one, unmodified. Only the experiment name changes, so
 the checkpoints land under g1_walk. If walking ever has to differ from mjlab's (e.g. a
-narrower command range), that change belongs here in a wrapper around unitree_g1_flat_env_cfg,
-the way run/run_env_cfg.py wraps it for speed.
+narrower command range), that change belongs here in a wrapper around unitree_g1_flat_env_cfg.
 
 Run
 

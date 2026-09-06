@@ -7,8 +7,8 @@
     jump_continuous     goal conditioned jump. Tracks clips to learn it, reads only the goal to
                         run it. Both phases are one task.
     passing             a standing shove of a football at a commanded launch velocity
-    kick                a proper kick to the ball. A human kick shapes the reward while it learns
-                        and is annealed away, leaving a policy paid only for where the ball goes.
+    kick                a football kick, tracked from a published human clip with a ball
+                        placed on the swing. The reference is never annealed.
     push                walk into a heavy crate and drive it at a commanded velocity
     martial             one task per martial arts motion, each tracking a crop of a LAFAN1 fight
                         performance from a standstill.
@@ -24,24 +24,32 @@ interchangeable.
 """
 
 from mjlab.tasks.bridging.experiments.humanoid.skills.jump import JUMP_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous import (
+
+# Imported for the registration its package does on import, not for the name: the task stays
+# trainable and playable, it is only out of the pool below. See the note under SKILLS
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous import (  # noqa: F401
   JUMP_CONTINUOUS_TASK_ID,
 )
 from mjlab.tasks.bridging.experiments.humanoid.skills.kick import KICK_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.martial import MARTIAL_TASK_IDS
 from mjlab.tasks.bridging.experiments.humanoid.skills.passing import PASS_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.push import PUSH_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.skills.run import RUN_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.walk import WALK_TASK_ID
 
 SKILLS: dict[str, str] = {
+
+  # Parkour
   "walk": WALK_TASK_ID,
-  "run": RUN_TASK_ID,
+  # "climb": CLIMB_TASK_ID
   "jump": JUMP_TASK_ID,
   # "jump_continuous": JUMP_CONTINUOUS_TASK_ID,
+
+  # Football
+  # "walk": WALK_TASK_ID  # Used in both demos
   "pass": PASS_TASK_ID,
   "kick": KICK_TASK_ID,
-  "push": PUSH_TASK_ID,
+
+  # Martial arts
   **MARTIAL_TASK_IDS,
 }
 """

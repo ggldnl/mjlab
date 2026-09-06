@@ -54,7 +54,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -166,8 +166,21 @@ all of them.
 """
 
 
-def load_csv(path: Path, crop: Crop, joint_names: list[str], device: str) -> RawMotion:
-  """Read one window of a performance into the model's joint order."""
+def load_csv(
+  path: Path,
+  crop: Crop,
+  joint_names: list[str],
+  device: str,
+  input_fps: float = SOURCE_FPS,
+) -> RawMotion:
+  """Read one window of a performance into the model's joint order.
+
+  input_fps is the rate the CSV was written at. LAFAN1's retargeted set is 30 Hz and that
+  is the default, but the column layout is not LAFAN1's, it is Unitree's, so a clip
+  retargeted from anywhere else reads here too and may well be at another rate. Getting it
+  wrong does not fail, it stretches the motion: the resample below reads this as the input
+  rate, so a 50 Hz clip declared as 30 comes out five thirds too slow.
+  """
   rows = np.loadtxt(
     path,
     delimiter=",",
@@ -191,7 +204,7 @@ def load_csv(path: Path, crop: Crop, joint_names: list[str], device: str) -> Raw
     joint_pos[:, joint_names.index(name)] = motion[:, 7 + column]
 
   return RawMotion(
-    root_pos=root_pos, root_quat=root_quat, joint_pos=joint_pos, fps=SOURCE_FPS
+    root_pos=root_pos, root_quat=root_quat, joint_pos=joint_pos, fps=input_fps
   )
 
 
@@ -251,8 +264,11 @@ def convert_clip(
   output_fps: float,
   standing_height: float,
   hold_s: float,
+  input_fps: float = SOURCE_FPS,
 ) -> dict[str, Any]:
-  motion = canonicalize(load_csv(input_path, crop, joint_names, str(sim.device)))
+  motion = canonicalize(
+    load_csv(input_path, crop, joint_names, str(sim.device), input_fps)
+  )
   motion = prepend_hold(resample(motion, output_fps), hold_s)
   root_lin_vel, root_ang_vel, joint_vel = velocities(motion)
 
@@ -319,12 +335,19 @@ def convert(
   output_fps: float,
   hold_s: float,
   device: str,
+  input_fps: float = SOURCE_FPS,
+  fetch: Callable[[str, Path], Path] = lafan1.fetch,
 ) -> None:
   """Convert LAFAN1 windows into mjlab motion npz files, one directory per motion.
 
   This is the whole of the package's dataset script: bring up a one env scene, measure the
   model's standing foot height, and convert every motion asked for against it. The scene is
   built once, so converting the whole table costs one startup rather than one each.
+
+  input_fps and fetch are the two seams a task with a different source uses. The columns of
+  a Unitree CSV are the same wherever it came from, so the only things that change are the
+  rate it was written at and where the file comes from. The kick retargets its own clip and
+  passes both; every motion in this package takes the defaults and is unaffected.
   """
   if device.startswith("cuda") and not torch.cuda.is_available():
     print("[WARN] CUDA unavailable, falling back to CPU.")
@@ -357,12 +380,13 @@ def convert(
       scene=scene,
       robot=robot,
       joint_names=joint_names,
-      input_path=lafan1.fetch(crop.source, source_dir),
+      input_path=fetch(crop.source, source_dir),
       crop=crop,
       output_path=output_dir / f"{name}.npz",
       output_fps=output_fps,
       standing_height=standing_height,
       hold_s=hold_s,
+      input_fps=input_fps,
     )
 
     # One motion per directory, so the manifest is one entry and is rewritten whole
