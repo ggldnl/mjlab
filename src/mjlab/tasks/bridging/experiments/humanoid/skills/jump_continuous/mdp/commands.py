@@ -29,7 +29,7 @@ import numpy as np
 import torch
 
 from mjlab.managers import CommandTerm, CommandTermCfg
-from mjlab.tasks.bridging.experiments.humanoid.skills.jump.motion_lib import (
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.motion_lib import (
   MotionLibrary,
 )
 from mjlab.utils.lab_api.math import (
@@ -463,6 +463,13 @@ class JumpCommand(CommandTerm):
     Every clip can serve every distance in principle. The one whose own distance is closest
     needs the least stretching, and less stretching means a reference closer to something a
     human actually did.
+
+    The miss is rounded before it is compared, and without that the second key never runs.
+    Any distance two clips can both reach exactly leaves two residuals that differ only in
+    the last bits of the division, so the tie was broken on float noise and the stretch had
+    no say. At 1.55 m that picked level 4 shortened to 0.85 over level 3 stretched to 1.008,
+    which is the opposite of what this is documented to do, and it made the goal-only command
+    in goal_command.py disagree with this one about the same distance.
     """
     lo, hi = self.cfg.scale_range
     best: tuple[float, float, int, float] | None = None
@@ -471,7 +478,7 @@ class JumpCommand(CommandTerm):
         continue
       scale = float(np.clip(distance / base, lo, hi))
       # Reachability first, then how little the clip had to be distorted
-      candidate = (abs(scale * base - distance), abs(scale - 1.0), i, scale)
+      candidate = (round(abs(scale * base - distance), 4), abs(scale - 1.0), i, scale)
       if best is None or candidate[:2] < best[:2]:
         best = candidate
     if best is None:

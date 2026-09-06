@@ -1,20 +1,20 @@
-"""A goal conditioned jump for the Unitree G1, learned the ASAP way.
+"""A single clip jump for the Unitree G1, tracked end to end.
 
-ASAP (RSS 2025, https://agile.human2humanoid.com/) gets a G1 to jump by tracking a
-retargeted human jump frame by frame: reference state initialization, a dense per frame
-tracking reward, and termination the moment tracking is lost.
+ASAP's stage one: reference state initialization over the whole clip, a dense
+per frame tracking reward, and termination the moment tracking is lost.
+The clip is jump_forward_level3, which travels 1.54 m.
 
-The clips ship with the repo, already retargeted to a 23 DoF G1. Five of them are forward
-jumps of increasing length, which is what turns a single skill tracker into a goal
-conditioned one: the policy sees the target displacement, and each episode stretches its
-clip so the reachable distances are continuous.
+The difference from skills/jump_continuous is what the policy is asked for. That one covers
+a range of distances, this one jumps the one distance the clip jumps: the policy reads the
+clip at inference, the way the front kick and the punch combo do.
 
 Run
 
-1. Fetch and convert the clips. Writes to data/asap/motions.
+1. Convert the clips. Same dataset as the continuous jump, same output directory, nothing
+   extra to fetch. Writes to data/asap/motions.
 
     uv run --with joblib python -m \
-      mjlab.tasks.bridging.experiments.humanoid.skills.jump.dataset
+      mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.dataset
 
 2. Train.
 
@@ -27,68 +27,28 @@ Run
 
 from __future__ import annotations
 
-from mjlab.rl import (
-  RslRlModelCfg,
-  RslRlOnPolicyRunnerCfg,
-  RslRlPpoAlgorithmCfg,
-)
+from dataclasses import replace
+
+from mjlab.rl import RslRlOnPolicyRunnerCfg
 from mjlab.tasks.bridging.experiments.humanoid.skills.jump.jump_env_cfg import (
   g1_jump_env_cfg,
+)
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous import (
+  jump_ppo_runner_cfg as tracking_ppo_runner_cfg,
 )
 from mjlab.tasks.registry import register_mjlab_task
 
 JUMP_TASK_ID = "Mjlab-G1-Jump"
 
 
-def jump_ppo_runner_cfg(
-  experiment_name: str = "g1_jump",
-) -> RslRlOnPolicyRunnerCfg:
-  """PPO for the jump. Close to mjlab's tracking config, since this is a tracking task.
+def jump_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """The continuous jump's PPO config, phase one of it, under this experiment's own name.
 
-  Two deliberate differences:
-
-    init_std 0.6            1.0 is a lot of per-joint noise every step at this action
-                            scale, and the airborne part of the motion has no time to
-                            recover from it
-    num_learning_epochs 4   fewer chances per iteration for the KL schedule to ratchet
-    desired_kl 0.015        the learning rate down to its 1e-5 floor, where a run looks
-                            plateaued but is only crawling
+  Nothing about the algorithm changes, because nothing about the problem does: the same
+  tracking objective on the same robot. It runs shorter for the same reason the front kick
+  does, which is that there is no goal range to cover, only one clip to follow.
   """
-  return RslRlOnPolicyRunnerCfg(
-    actor=RslRlModelCfg(
-      hidden_dims=(512, 256, 128),
-      activation="elu",
-      obs_normalization=True,
-      distribution_cfg={
-        "class_name": "GaussianDistribution",
-        "init_std": 0.6,
-        "std_type": "scalar",
-      },
-    ),
-    critic=RslRlModelCfg(
-      hidden_dims=(512, 256, 128),
-      activation="elu",
-      obs_normalization=True,
-    ),
-    algorithm=RslRlPpoAlgorithmCfg(
-      value_loss_coef=1.0,
-      use_clipped_value_loss=True,
-      clip_param=0.2,
-      entropy_coef=0.005,
-      num_learning_epochs=4,
-      num_mini_batches=4,
-      learning_rate=1.0e-3,
-      schedule="adaptive",
-      gamma=0.99,
-      lam=0.95,
-      desired_kl=0.015,
-      max_grad_norm=1.0,
-    ),
-    experiment_name=experiment_name,
-    save_interval=200,
-    num_steps_per_env=24,
-    max_iterations=15_000,
-  )
+  return replace(tracking_ppo_runner_cfg("g1_jump"), max_iterations=10_000)
 
 
 register_mjlab_task(

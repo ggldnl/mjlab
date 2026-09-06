@@ -27,7 +27,7 @@ back out of the ground.
 
 Run
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.jump.entry
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.entry
 """
 
 from __future__ import annotations
@@ -41,11 +41,13 @@ import torch
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
-from mjlab.tasks.bridging.experiments.humanoid.skills.jump import JUMP_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.skills.jump.jump_env_cfg import (
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous import (
+  JUMP_CONTINUOUS_TASK_ID,
+)
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.jump_continuous_env_cfg import (
   JumpCommandCfg,
 )
-from mjlab.tasks.bridging.experiments.humanoid.skills.jump.mdp.commands import (
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.mdp.commands import (
   JumpCommand,
 )
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
@@ -97,7 +99,7 @@ def run_mode(
   reads its config at reset and caches nothing, so mutating would probably work, but a
   policy comparison that silently shares state between arms is not worth the seconds saved.
   """
-  env_cfg = load_env_cfg(JUMP_TASK_ID, play=True)
+  env_cfg = load_env_cfg(JUMP_CONTINUOUS_TASK_ID, play=True)
   env_cfg.scene.num_envs = num_envs
   # An episode has to end when the clip does, or nothing is ever scored. Play sets this to
   # effectively infinite so a viewer can watch one jump forever
@@ -112,9 +114,9 @@ def run_mode(
   motion_cfg.entry_offset = entry_offset
 
   env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
-  agent_cfg = load_rl_cfg(JUMP_TASK_ID)
+  agent_cfg = load_rl_cfg(JUMP_CONTINUOUS_TASK_ID)
   wrapped = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
-  runner_cls = load_runner_cls(JUMP_TASK_ID) or MjlabOnPolicyRunner
+  runner_cls = load_runner_cls(JUMP_CONTINUOUS_TASK_ID) or MjlabOnPolicyRunner
   runner = runner_cls(wrapped, asdict(agent_cfg), device=device)
   runner.load(
     str(checkpoint), load_cfg={"actor": True}, strict=True, map_location=device
@@ -193,7 +195,7 @@ def run_mode(
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("--checkpoint", type=Path, default=None)
-  parser.add_argument("--experiment", type=str, default="g1_jump")
+  parser.add_argument("--experiment", type=str, default="g1_jump_continuous")
   parser.add_argument("--num-envs", type=int, default=256)
   parser.add_argument("--device", type=str, default="cuda:0")
   args = parser.parse_args()

@@ -100,7 +100,7 @@ class MotionLibrary:
         "Missing motion files: "
         + ", ".join(missing)
         + "\nRun: uv run --with joblib python -m mjlab.tasks.bridging.experiments"
-        ".humanoid.skills.jump.dataset"
+        ".humanoid.skills.jump_continuous.dataset"
       )
 
     self.device = device
