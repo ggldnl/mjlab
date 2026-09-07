@@ -9,7 +9,9 @@ Columns:
     state      pose to aim at, (13 + 2J), canonical frame. See state.py
     command    what the skill was being asked for while it was in this state. Width is
                per skill, empty for a skill that takes none
-    frame      control step inside the skill's episode, for setting the policy phase
+    frame      which frame of its own reference the skill was reading, for resuming a
+               tracker where the state came from. Steps since the episode reset for a skill
+               with no reference, which is the same number for those and nothing to resume
     progress   0 at the episode start, 1 at the end
     coverage   fraction of the skill's rollouts that pass through this spot
     spread     radius of the spot. 1.0 is one arrival tolerance wide
@@ -91,6 +93,11 @@ class Entry:
   Out of the comparison for the same reason as state. Widths differ per skill, so two
   entries of different skills are not comparable on this and nothing tries."""
   frame: int
+  """Which frame of its own reference the skill was reading here.
+
+  What a tracker is resumed at, and it is not the step count: those reset into a sampled
+  frame of the clip, so a state recorded 53 steps into an episode can be anywhere in the
+  motion. A skill with no reference has nothing to resume and carries its step count."""
   progress: float
   coverage: float
   spread: float

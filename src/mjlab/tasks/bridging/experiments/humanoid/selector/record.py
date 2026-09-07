@@ -9,6 +9,13 @@ an episode rather than its first frame. Without that the dataset fills with one 
 standing pose per failure: mjlab resets the instant an environment terminates, and the step
 after a fall is a robot at its default pose.
 
+Every row carries two clocks. `frame` is control steps since its episode reset, which orders
+a rollout and measures a dwell. `phase` is which frame of its own reference the policy was
+reading, which is what a tracker is resumed at. For a skill with no reference they are the
+same number. For a tracker they are unrelated, because training resets into a sampled frame
+of the clip: a state recorded 25 steps into an episode can be anywhere in the motion, and
+this recording has them at frames 27 to 183.
+
 Run
 
 1. Record the default skills.
@@ -120,6 +127,7 @@ def collect(cfg: RecordCfg) -> Path:
   env_ids: list[np.ndarray] = []
   trajectory_ids: list[np.ndarray] = []
   frames: list[np.ndarray] = []
+  phases: list[np.ndarray] = []
   sources: list[np.ndarray] = []
   goals: list[np.ndarray] = []
   fps = 0.0
@@ -148,13 +156,14 @@ def collect(cfg: RecordCfg) -> Path:
       cfg.checkpoints[index] if index < len(cfg.checkpoints) else None,
       hint=f" Train it with `uv run train {task}`, or name one in `checkpoints`.",
     )
-    rows, envs, trajectories, ages, commands = dataset.record(
+    rows, envs, trajectories, ages, clip_frames, commands = dataset.record(
       task, env_cfg, checkpoint, cfg, name
     )
     states.append(rows)
     env_ids.append(envs)
     trajectory_ids.append(trajectories)
     frames.append(ages)
+    phases.append(clip_frames)
     sources.append(np.full(len(rows), index, dtype=np.int16))
     goals.append(commands)
     rollouts = len(np.unique(trajectories))
@@ -163,7 +172,16 @@ def collect(cfg: RecordCfg) -> Path:
       print(f"[selector]   {line}")
 
   return dataset.write(
-    cfg.path, states, env_ids, trajectory_ids, frames, sources, cfg.skills, fps, goals
+    cfg.path,
+    states,
+    env_ids,
+    trajectory_ids,
+    frames,
+    sources,
+    cfg.skills,
+    fps,
+    goals,
+    phases,
   )
 
 

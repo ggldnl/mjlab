@@ -143,6 +143,7 @@ def achievable(
   spans_s: tuple[float, ...] = (0.3, 0.5, 0.7, 1.0, 1.2),
   quantile: float = 0.99,
   cap: int = 200_000,
+  seed: int = 0,
 ) -> np.ndarray:
   """Fastest per-channel change per second the corpus achieved. (6,)
 
@@ -161,7 +162,8 @@ def achievable(
   out of room rather than out of acceleration.
 
   spans_s is the bridge's window range. cap subsamples before the quantile, which is a cost
-  bound and not a statistical one at these sizes.
+  bound and not a statistical one at these sizes. seed makes that subsample repeatable:
+  query.py divides by what comes out of here, so an unseeded draw moves every effort score.
   """
   order, available = runs(trajectory, frame)
   rows: list[torch.Tensor] = []
@@ -179,7 +181,9 @@ def achievable(
 
   gaps = torch.cat(rows)
   if gaps.shape[0] > cap:
-    keep = torch.randperm(gaps.shape[0], device=gaps.device)[:cap]
+    draw = torch.Generator(device=gaps.device)
+    draw.manual_seed(seed)
+    keep = torch.randperm(gaps.shape[0], device=gaps.device, generator=draw)[:cap]
     gaps = gaps[keep]
   return torch.quantile(gaps, quantile, dim=0).cpu().numpy().astype(np.float64)
 
@@ -277,9 +281,9 @@ class BuildCfg:
 
   device: str = "cuda:0"
 
-  # TODO we should centralize the seed across the whole package: mjlab.tasks.bridging.humanoid
-  #   or am I overengineering it?
   seed: int = 0
+  """Every draw this file makes: the medoid update's sample, and the subsample
+  achievable takes before its quantile. Nothing else here is random."""
 
 
 def build(cfg: BuildCfg) -> EntryTable:
@@ -293,7 +297,7 @@ def build(cfg: BuildCfg) -> EntryTable:
     )
 
   everything = canonical(data.states)
-  rates = achievable(everything, data.trajectory, data.frame, data.fps)
+  rates = achievable(everything, data.trajectory, data.frame, data.fps, seed=cfg.seed)
   print("[selector] achievable rates per second:")
   for name, rate in zip(CHANNEL_REPORT, rates, strict=True):
     print(f"[selector]   {name:<12} {rate:.3f}")
@@ -324,6 +328,13 @@ def for_skill(
   rows = data.of((skill,))
   states = everything[rows]
   trajectory, frame = data.trajectory[rows], data.frame[rows]
+  # Two different clocks, and the entry needs both. `frame` counts control steps since the
+  # episode reset, which is what orders a rollout and measures a dwell. `phase` is which
+  # frame of its own reference the policy was reading, which is the only thing a tracker can
+  # be resumed at. They agree for a skill with no reference and they are unrelated for a
+  # tracker: training resets into a sampled frame of the clip, so the step count says nothing
+  # about where in the clip a state came from
+  phase = data.phase[rows] if data.phase is not None else frame
   # What the skill was being asked for at each of these states. Carried onto the entry
   # and never clustered on: a crouch is a crouch whatever distance it is crouching for,
   # and splitting by command would make one node look like five rare ones
@@ -342,7 +353,6 @@ def for_skill(
 
   # For each cluster
   for index in range(count):
-
     # Take the members
     members = (labels == index).nonzero().flatten()
     if members.numel() == 0:
@@ -353,7 +363,7 @@ def for_skill(
 
     # The center's own progress, not the median over its members. A skill that comes
     # back to a pose puts both visits in one cluster, and the median of those is a
-    # moment nothing was ever at. frame and progress have to name the same tick
+    # moment nothing was ever at. phase and progress have to name the same tick
     here = float(progress[center])
     seconds = float(dwell[index])
     coverage = int(torch.unique(trajectory[members]).numel()) / rollouts
@@ -367,7 +377,7 @@ def for_skill(
           if commands is None
           else commands[center].cpu().numpy().astype(np.float32)
         ),
-        frame=int(frame[center]),
+        frame=int(phase[center]),
         progress=here,
         coverage=coverage,
         spread=float(torch.cdist(feat[members], feat[center : center + 1]).median()),
