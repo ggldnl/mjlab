@@ -12,6 +12,9 @@
     push                walk into a heavy crate and drive it at a commanded velocity
     martial             one task per martial arts motion, each tracking a crop of a LAFAN1 fight
                         performance from a standstill.
+    climb               onto a box, across it and down the far side. Tracks an OmniRetarget
+                        clip that was solved against that box, so the obstacle ships with
+                        the motion rather than being placed beside it
 
 Run
 
@@ -23,6 +26,11 @@ scene carries different observations from one that does not, so their checkpoint
 interchangeable.
 """
 
+# Imported for the registration its package does on import, not for the name: the task is
+# trainable and playable, it is only out of the pool below until it has a checkpoint
+from mjlab.tasks.bridging.experiments.humanoid.skills.climb import (  # noqa: F401
+  CLIMB_TASK_ID,
+)
 from mjlab.tasks.bridging.experiments.humanoid.skills.jump import JUMP_TASK_ID
 
 # Imported for the registration its package does on import, not for the name: the task stays
@@ -40,7 +48,7 @@ SKILLS: dict[str, str] = {
 
   # Parkour
   "walk": WALK_TASK_ID,
-  # "climb": CLIMB_TASK_ID
+  "climb": CLIMB_TASK_ID
   "jump": JUMP_TASK_ID,
   # "jump_continuous": JUMP_CONTINUOUS_TASK_ID,
 
