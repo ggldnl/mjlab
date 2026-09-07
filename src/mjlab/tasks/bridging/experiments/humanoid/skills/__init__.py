@@ -45,18 +45,15 @@ from mjlab.tasks.bridging.experiments.humanoid.skills.push import PUSH_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.walk import WALK_TASK_ID
 
 SKILLS: dict[str, str] = {
-
   # Parkour
   "walk": WALK_TASK_ID,
   "climb": CLIMB_TASK_ID,
   "jump": JUMP_TASK_ID,
   # "jump_continuous": JUMP_CONTINUOUS_TASK_ID,
-
   # Football
   # "walk": WALK_TASK_ID  # Used in both demos
   "pass": PASS_TASK_ID,
   "kick": KICK_TASK_ID,
-
   # Martial arts
   **MARTIAL_TASK_IDS,
 }
