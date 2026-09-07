@@ -48,7 +48,7 @@ SKILLS: dict[str, str] = {
 
   # Parkour
   "walk": WALK_TASK_ID,
-  "climb": CLIMB_TASK_ID
+  "climb": CLIMB_TASK_ID,
   "jump": JUMP_TASK_ID,
   # "jump_continuous": JUMP_CONTINUOUS_TASK_ID,
 
