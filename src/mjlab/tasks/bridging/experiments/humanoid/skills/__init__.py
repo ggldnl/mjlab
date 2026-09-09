@@ -41,7 +41,11 @@ from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous import (  
 from mjlab.tasks.bridging.experiments.humanoid.skills.kick import KICK_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.martial import MARTIAL_TASK_IDS
 from mjlab.tasks.bridging.experiments.humanoid.skills.passing import PASS_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.skills.push import PUSH_TASK_ID
+
+# Same as jump_continuous: imported so the task registers, kept out of the pool below
+from mjlab.tasks.bridging.experiments.humanoid.skills.push import (  # noqa: F401
+  PUSH_TASK_ID,
+)
 from mjlab.tasks.bridging.experiments.humanoid.skills.walk import WALK_TASK_ID
 
 SKILLS: dict[str, str] = {

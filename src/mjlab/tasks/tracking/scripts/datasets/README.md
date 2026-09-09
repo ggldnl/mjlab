@@ -22,6 +22,7 @@ download ─▶ curate / crop ─▶ csv_to_npz ─▶ train
 | `phuma/download.py`          | PHUMA (HuggingFace) | per-skill NPZs | Already atomic, 29-DOF G1, physics-curated; large (~3.4 GB). |
 | `amass/download.py`          | AMASS (license-gated MPI portal) | SMPL-X `.npz` | Robot-agnostic; needs your own retargeting before `csv_to_npz`. |
 | `asap/download.py`           | ASAP `LeCAR-Lab/ASAP` (GitHub) | 23-DOF joblib `.pkl` | Short single-skill jumps; the bridging jump tasks convert them. |
+| `omniretarget/download.py`   | OmniRetarget (HuggingFace) | 29-DOF `.npz` + obstacle URDF/OBJ | Robot-terrain climbs; the box each clip was solved against ships with it. |
 
 All paths default to CWD-relative dirs under `data/`; run them from the repo
 root with `uv run python src/mjlab/tasks/tracking/scripts/datasets/<dataset>/<script>.py`

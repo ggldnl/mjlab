@@ -81,9 +81,18 @@ def get_box_spec(
 """
 
   rgba = " ".join(str(c) for c in color)
+  # The body sits at its own origin and the geom is centred on it, so the entity's pose is
+  # the box's centre and nothing else has to know its height.
+  #
+  # It used to be lifted by half a height here as well, so that a box left at the default
+  # pose rested on the ground. That double counts against `init_state`, which already lifts
+  # it: a static box has no freejoint, so mjlab wraps it in a mocap body and the lift inside
+  # the wrapper is added to the wrapper's own pose, leaving the box hovering half its height
+  # off the floor. A free box never showed it, because its freejoint makes the pose come
+  # from qpos and the offset in here is overwritten
   xml = f"""<mujoco>
   <worldbody>
-    <body name="box" pos="0 0 {sz}">{body}
+    <body name="box">{body}
       <geom name="box_collision" type="box" size="{sx} {sy} {sz}"
             condim="3" friction="{friction} 0.005 0.0001" priority="{priority}"
             rgba="{rgba}"/>

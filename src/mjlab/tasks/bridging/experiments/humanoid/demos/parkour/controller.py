@@ -1,82 +1,118 @@
-"""What decides which skill runs next, and when the switch fires.
+"""What decides which skill runs, where the robot has to be before it starts, and when.
 
-Two halves, kept apart on purpose:
+Three things, kept apart:
 
-    RULES     which skill an obstacle asks for. A table, resolved and printed before the
-              robot moves, and the only place a skill choice is made
-    Runner    when to hand over, to which state, over how long a window. The phase machine
+    RULES        what an obstacle asks for: which skill, and how to work out the pose the
+                 robot has to be in before that skill will work. A table
+    Controller   reads the scene, steers the walk onto that pose, fires the switch, and
+                 tells each skill what it is looking at
+    Bridge       gets the robot from wherever the walk left it to the pose. See bridge.py
 
-The split is the point of the demo. A rule reads two numbers off an obstacle and names a
-skill, so the whole decision is a table somebody can read, disagree with and edit; the
-runner never chooses a skill, it only carries out what the table said. Which is what makes
-the controller auditable in the sense worth claiming: not that it is simple, but that the
-choice and the execution cannot be confused for one another.
+The controller sees everything and the skills see what it hands them. It reads obstacle
+poses and sizes straight off the scene, solves an approach for each one, and points the
+climb's obstacle observation at the box in play. A skill knows how it has to be spoken to
+and nothing about courses.
 
-Nothing here decides where a skill can be joined. That is measured, off the selector's entry
-table, and asked for per hand-over with `nearest`. The rule says vault, the selector says
-which vault state is easiest to reach from where the robot is at that instant, and the
-bridge goes there.
+Getting the robot in front of the face
+--------------------------------------
 
-Four phases per obstacle, and two of them are bridges:
+This is the whole difficulty and it is not a tuned offset.
 
-    cruise     the locomotion skill drives, down the lane
-    bridge     out, to the traversal skill's entry, landing at the take-off point
-    traverse   the traversal skill drives, over the box
-    bridge     back, to the locomotion skill's entry, so the robot resumes running
+A hurdle is easy: stand `hurdle_takeoff` back from the near face along the hurdle's own
+normal, facing it, and jump.
 
-The return bridge is the half `tests.stage` has no need of, because a couple ends after one
-hand-over. On a course it is worth as much as the outbound one: a robot that clears a wall
-and cannot get back to running has not cleared anything, it has stopped on the far side.
+A box is not. The climb was retargeted from a human motion together with its obstacle, and
+the two are one rigid thing: the clip is only physical against that box at that pose. So the
+pose the robot has to arrive in is not a distance somebody chose, it is whatever puts the
+real obstacle exactly where the reference expects its own.
+
+That cannot be read off the manifest, for two reasons that both bite. The manifest measures
+the box against the robot at frame zero, and a hand-over resumes the clip a second into it,
+by which point the reference has walked. And `anchor_to_robot` takes a direction of travel
+rather than a heading, and a clip's pelvis sits twelve to twenty degrees off its own line of
+travel through a run-up. So `Controller.place` anchors, measures where the clip's box
+actually landed, corrects, and anchors again, and it reports back the three angles that
+follow from that: the pose to arrive in, the heading to hold there, and the heading the
+anchor was given. They are all different and conflating any two is the bug it exists to
+prevent.
+
+One thing follows that is easy to get wrong, and was. The pose to arrive in depends on
+which entry the hand-over resumes at, because the reference is a moving body and where its
+obstacle sits relative to it changes down the clip. So the entry has to be chosen before the
+pose is solved, and `ready` chooses it first and solves everything else at its frame. Solved
+at the table's first row instead, which is what this used to do, the robot is walked to the
+spot one entry needs and then handed the state of another: a pose the skill really passes
+through, standing somewhere it never passes through it. The climb has one entry and hid it;
+the jump has six and does not.
+
+Held short of it, and that is not a detail. A crossing has to cover ground, so the walk
+cannot drive at the pose it wants the robot to end up in: parked on it the bridge is asked
+for a window of zero and walked through it the window comes out negative, which is a switch
+that can never fire again rather than one that fires late. `Controller.stand_off` is the
+distance to hold, and it is the distance a crossing covers over the middle of the window the
+bridge trained on.
+
+Arrive turned five degrees and the reference climbs a box five degrees off the real one, so
+the switch also waits on alignment. `approach.yaw_tolerance` is the climb's own
+APPROACH_YAW_RANGE, which is the spread its reference state initialization was trained
+across: firing outside it hands the policy a start it never saw.
+
+Four phases per obstacle, two of them bridges:
+
+    cruise     the walk drives, steered onto the approach line and held short of it
+    bridge     out, to the traversal skill's entry, at the commanded pose
+    traverse   the traversal skill drives, over or onto the obstacle
+    bridge     back, to the walk's entry, pointed down the lane
+
+The demo ends when the robot is on the floor, which is what a trip over a hurdle and a fall
+off a box both look like.
 
 Run
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.demos.parkour.controller
-    uv run python -m ...demos.parkour.controller --seed 3 --count 6
-
-    # the plan alone, no simulation, no checkpoints
-    uv run python -m ...demos.parkour.controller --dry True
-
-    # headless
-    uv run python -m ...demos.parkour.controller --viewer none
+See run.py.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable
 
+import numpy as np
 import torch
-import tyro
 
-import mjlab
 from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.arena import (
-  course_env_cfg,
+  Focus,
+  command_name,
   obstacle_names,
 )
+from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.bridge import (
+  SLACK,
+  Bridge,
+  quat_from_yaw,
+)
 from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.course import (
+  BOX,
+  HURDLE,
   Course,
   Obstacle,
-)
-from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.course import (
-  generate as generate_course,
+  Settings,
+  climb_box,
 )
 from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.pool import SkillPool
-from mjlab.tasks.bridging.experiments.humanoid.selector import Reach, nearest
-from mjlab.tasks.bridging.experiments.humanoid.tests.actors import JUMP, RUN, WALK
+from mjlab.tasks.bridging.experiments.humanoid.selector import Reach
+from mjlab.tasks.bridging.experiments.humanoid.skills.climb import CLIMB_TASK_ID
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.mdp.commands import (
+  JumpCommand,
+)
+from mjlab.tasks.bridging.experiments.humanoid.tests.actors import JUMP, WALK
 from mjlab.tasks.bridging.experiments.humanoid.tests.stage import (
-  ARRIVE_SLACK,
   BRIDGE_GROUP,
-  DEFAULT_DURATION_S,
-  PROBE_S,
   ROBOT,
   Actor,
-  Aimed,
-  aim,
-  crossing_time,
-  defaults,
-  facing,
+  crossing,
   fresh_obs,
   state,
 )
@@ -85,29 +121,72 @@ from mjlab.tasks.bridging.experiments.humanoid.tests.stage import (
 # The roster.
 ##
 
-STEP = Actor("step", "Mjlab-G1-Step")
-VAULT = Actor("vault", "Mjlab-G1-Vault")
-CLIMB = Actor("climb", "Mjlab-G1-Climb")
-"""The three traversal skills this demo needs and the repository does not have yet.
+MOTION = "motion"
+"""What a clip tracker calls its reference command, before the arena namespaces it."""
 
-Declared here rather than in `tests.actors`, which is where a skill's quirks belong, because
-that module imports each skill's task id from the skill's own package and those packages do
-not exist. Moving these four lines across is the last step of adding one, not the first.
 
-An `Actor` is a declaration and costs nothing to write down, so the demo is complete and
-fails at the moment it reaches for a checkpoint, naming the one it could not find. That is
-the right failure: a scaffold that cannot be built until every skill is trained cannot be
-used to decide which skills to train.
-"""
+def anchor_for(skill: str):
+  """Pin one clip tracker's reference, at the command name the arena gave it.
 
-CRUISE_SKILL = RUN
-"""What drives between obstacles. The run rather than the walk, because the interesting
-hand-over is the one that has to shed real momentum, and a demo cruising at walking pace
-never asks the bridge for anything."""
+  `tests.actors.anchor_clip` looks the term up as `motion`, which is right anywhere one
+  tracker is loaded and wrong here: the jump and the climb both call their reference that,
+  so the arena registers them apart and this resolves the name that skill actually got. See
+  `arena.PRIVATE_COMMANDS`.
+  """
+  term_name = command_name(skill, MOTION)
 
-ROSTER: tuple[Actor, ...] = (WALK, RUN, JUMP, STEP, VAULT, CLIMB)
-"""Everything the demo loads. The walk is in it and unused by the default rules, so a course
-can be cruised at walking pace by changing one constant rather than by editing the roster."""
+  def enter(env, pos, heading, frame: int = 0, values=None) -> None:
+    del values
+    command = env.command_manager.get_term(term_name)
+    env_ids = torch.arange(env.num_envs, device=env.device)
+    command.anchor_to_robot(env_ids, start_frame=frame, at_pos=pos, at_quat=heading)
+
+  return enter
+
+
+def rewind(env: ManagerBasedRlEnv, skill: str, frame: int) -> bool:
+  """Put a clip tracker's reference back to the frame the hand-over aims at.
+
+  A reference plays whether or not anything is reading it: `_update_command` advances
+  `time_steps` every step of the environment, and the bridge takes about a second to cross.
+  So a clip pinned when the switch fires has run a second on by the time the skill it belongs
+  to starts driving, and the policy takes over chasing a reference sixty frames ahead of the
+  robot. For the climb that is the difference between a reference standing in front of the
+  box and one already on top of it, which is as survivable as it sounds.
+
+  Rewinding rather than re-anchoring, and that is the point. Anchoring again at hand-over
+  would pin the clip to wherever the robot actually arrived, erasing the arrival error the
+  bridge is measured on and dragging the climb's own obstacle off the real one. The placement
+  is right already; only the clock is wrong, so only the clock is put back.
+  """
+  try:
+    command = env.command_manager.get_term(command_name(skill, MOTION))
+  except (KeyError, ValueError):
+    return False
+  if not isinstance(command, JumpCommand):
+    return False
+  command.time_steps[:] = frame
+  command.motion_done[:] = False
+  return True
+
+
+JUMP_SKILL = Actor(JUMP.name, JUMP.task, enter=anchor_for(JUMP.name))
+"""The jump, with its reference pinned at the command the arena gave it rather than at
+`motion`. Otherwise as declared in `tests.actors`."""
+
+CLIMB = Actor("climb", CLIMB_TASK_ID, enter=anchor_for("climb"))
+"""The climb. A clip tracker like the jump, and the one that makes the placement matter: its
+reference carries an obstacle, so pinning it anywhere but the solved approach pose puts a
+phantom box beside the real one and the policy climbs the phantom.
+
+Declared here rather than in `tests.actors` only because the demo is where it is used."""
+
+CRUISE_SKILL = WALK
+"""What drives between obstacles. The walk, because it is the skill that turns while going
+forward, and every obstacle sits on its own approach line."""
+
+ROSTER: tuple[Actor, ...] = (WALK, JUMP_SKILL, CLIMB)
+"""Everything the demo loads. The bridge is appended by the pool."""
 
 
 ##
@@ -115,63 +194,92 @@ can be cruised at walking pace by changing one constant rather than by editing t
 ##
 
 
+def wrap(angle: torch.Tensor) -> torch.Tensor:
+  """An angle folded into (-pi, pi]."""
+  return torch.atan2(torch.sin(angle), torch.cos(angle))
+
+
+def rotate(vec: torch.Tensor, yaw: torch.Tensor) -> torch.Tensor:
+  """`(N, 2)` turned by `(N,)` radians about z."""
+  cos, sin = torch.cos(yaw), torch.sin(yaw)
+  return torch.stack(
+    [vec[:, 0] * cos - vec[:, 1] * sin, vec[:, 0] * sin + vec[:, 1] * cos], dim=-1
+  )
+
+
+def yaw_of(quat: torch.Tensor) -> torch.Tensor:
+  """The yaw of a quaternion, `(N, 4)` wxyz -> `(N,)`."""
+  return 2.0 * torch.atan2(quat[:, 3], quat[:, 0])
+
+
+Approach = Callable[
+  ["Controller", Obstacle, torch.Tensor, torch.Tensor],
+  tuple[torch.Tensor, torch.Tensor],
+]
+"""What a rule uses to work out where the robot has to stand: given the obstacle's world
+position and yaw, the pose to arrive in."""
+
+
+def approach_box(
+  controller: Controller, obstacle: Obstacle, pos: torch.Tensor, yaw: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+  """A first guess at where the robot stands to climb this box.
+
+  A guess and nothing more, because the answer is not a distance anybody can choose. The
+  clip carries its own obstacle, rigid with the motion, so the pose that works is whatever
+  puts that obstacle on this one, and `Controller.place` solves for it. This only has to
+  start the solve somewhere sensible: in front of the near face, square on.
+
+  Inverting the manifest here instead would be wrong twice over. The manifest measures the
+  box against the robot at frame zero, and a hand-over resumes the clip a second in, by which
+  point the reference has walked; and the anchor takes a direction of travel rather than a
+  heading, so the angle would be off by the pelvis twist as well.
+  """
+  del obstacle
+  box = controller.climb_box
+  offset = torch.tensor(
+    [box.pos[0], box.pos[1]], device=pos.device, dtype=pos.dtype
+  ).expand(pos.shape[0], 2)
+  robot_yaw = wrap(yaw - box.yaw)
+  return pos[:, 0:2] - rotate(offset, robot_yaw), robot_yaw
+
+
+def approach_hurdle(
+  controller: Controller, obstacle: Obstacle, pos: torch.Tensor, yaw: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+  """Square on to the hurdle's near face, one take-off distance back from it."""
+  back = obstacle.length / 2.0 + controller.settings.approach.hurdle_takeoff
+  offset = torch.tensor([back, 0.0], device=pos.device, dtype=pos.dtype).expand(
+    pos.shape[0], 2
+  )
+  return pos[:, 0:2] - rotate(offset, yaw), yaw
+
+
 @dataclass(frozen=True)
 class Rule:
-  """One row of the decision table: an obstacle this shape asks for that skill."""
+  """One row of the decision table: an obstacle of this kind asks for that skill."""
 
+  kind: str
   skill: str
-  height: tuple[float, float]
-  """Metres, low inclusive, high exclusive."""
-  depth: tuple[float, float]
-  """Metres, same convention."""
-  takeoff: float
-  """How far before the near face the skill needs the robot when it takes over, in metres.
-
-  The one number here the bridge actually consumes: it is where the crossing has to land, so
-  it decides the window rather than merely describing the skill. Too short and the robot is
-  handed the skill already under the box; too long and the skill covers the difference by
-  locomoting, which is the leaving skill's job and not its own."""
+  approach: Approach
+  """How to work out the pose the robot has to arrive in."""
   why: str
-  """Why this shape asks for this skill. Printed with the plan."""
-
-  def covers(self, obstacle: Obstacle) -> bool:
-    return (
-      self.height[0] <= obstacle.height < self.height[1]
-      and self.depth[0] <= obstacle.depth < self.depth[1]
-    )
 
   def row(self) -> str:
-    return (
-      f"| {self.skill} | {self.height[0]:.2f}-{self.height[1]:.2f} "
-      f"| {self.depth[0]:.2f}-{self.depth[1]:.2f} | {self.takeoff:.2f} | {self.why} |"
-    )
+    return f"| {self.kind} | {self.skill} | {self.why} |"
 
 
 RULES: tuple[Rule, ...] = (
-  Rule("jump", (0.0, 0.45), (0.80, 99.0), 1.20, "low and deep, so leap the span"),
-  Rule(
-    "step", (0.0, 0.45), (0.00, 0.80), 0.55, "low and shallow, one stride clears it"
-  ),
-  Rule("vault", (0.45, 0.80), (0.00, 0.90), 0.75, "hip height, a hand down and over"),
-  Rule("climb", (0.80, 1.45), (0.00, 1.20), 0.60, "above hip, get on top then off"),
+  Rule(BOX, "climb", approach_box, "a block, so get on top and down the far side"),
+  Rule(HURDLE, "jump", approach_hurdle, "a bar, so clear it in one"),
 )
-"""The decision table. First match wins, so order is meaningful: the two low rules are
-separated by depth alone and the deep one is asked first.
+"""The decision table. First match wins.
 
-Height and depth and nothing else. Not the family name, though the course carries one,
-because a rule reading a label would be a rule agreeing with the generator by construction
-and would tell you nothing about whether the robot can read the world. These read what a
-perception stack would have to produce.
+An obstacle no rule covers is not quietly rounded into the nearest skill: `plan` reports it
+and the demo refuses to start, which is the honest behaviour and also the interesting one.
+It is what a missing skill looks like from the outside."""
 
-Bands rather than thresholds so a gap in the table is visible as a gap. An obstacle no rule
-covers is not quietly rounded into the nearest skill: `plan` reports it and the demo refuses
-to start, which is the honest behaviour and also the interesting one."""
-
-
-RULE_HEADER = (
-  "| skill | height | depth | takeoff | why |",
-  "|---|---|---|---|---|",
-)
+RULE_HEADER = ("| kind | skill | why |", "|---|---|---|")
 
 
 @dataclass(frozen=True)
@@ -184,28 +292,19 @@ class Step:
 
   def row(self) -> str:
     named = self.rule.skill if self.rule else "NO RULE"
-    why = self.rule.why if self.rule else "nothing in the table covers this shape"
     return (
-      f"| {self.index} | {self.obstacle.family} | {self.obstacle.height:.2f} "
-      f"| {self.obstacle.depth:.2f} | {named} | {why} |"
+      f"| {self.index} | {self.obstacle.kind} | {self.obstacle.height:.2f} "
+      f"| {math.degrees(self.obstacle.yaw):+.0f} | {named} |"
     )
 
 
-PLAN_HEADER = (
-  "| # | obstacle | height | depth | skill | why |",
-  "|---|---|---|---|---|---|",
-)
+PLAN_HEADER = ("| # | kind | height | yaw | skill |", "|---|---|---|---|---|")
 
 
 def plan(course: Course, rules: tuple[Rule, ...] = RULES) -> tuple[Step, ...]:
-  """Resolve every obstacle to a skill, before anything is built.
-
-  Runs on the course alone. No environment, no checkpoints, no selector: this is the
-  symbolic half, and keeping it callable on its own is what lets `--dry` answer whether a
-  course is solvable in the time it takes to print a table.
-  """
+  """Resolve every obstacle to a skill, before anything is built."""
   return tuple(
-    Step(index=i, obstacle=o, rule=next((r for r in rules if r.covers(o)), None))
+    Step(index=i, obstacle=o, rule=next((r for r in rules if r.kind == o.kind), None))
     for i, o in enumerate(course)
   )
 
@@ -216,55 +315,18 @@ def unsolved(steps: tuple[Step, ...]) -> tuple[Step, ...]:
 
 
 def plan_lines(course: Course, steps: tuple[Step, ...]) -> list[str]:
-  """The rules, then the plan they produce. What to print before a run."""
+  """The rules, the course, then the plan they produce."""
   out = ["rules:", *RULE_HEADER, *(rule.row() for rule in RULES), ""]
   out += [*course.lines(), ""]
   out += ["plan:", *PLAN_HEADER, *(step.row() for step in steps)]
   blocked = unsolved(steps)
   if blocked:
-    out.append("")
-    out.append(
-      f"no plan: {len(blocked)} obstacle(s) no rule covers, at "
-      f"{', '.join(f'{s.obstacle.height:.2f} m' for s in blocked)}. Add a rule, or a skill."
-    )
+    out += [
+      "",
+      f"no plan: {len(blocked)} obstacle(s) no rule covers, of kind "
+      f"{', '.join(sorted({s.obstacle.kind for s in blocked}))}. Add a rule, or a skill.",
+    ]
   return out
-
-
-##
-# Reading the world.
-##
-
-
-def obstacle_pos(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
-  """Where one obstacle actually is, in world coordinates. (N, 3).
-
-  Read off the scene rather than off the course, so a controller cannot be passing because
-  it was handed the answer at build time. With `arena.lay_out_course` jittering, the course
-  is a description of what was asked for and this is what is there.
-  """
-  box: Entity = env.scene[name]
-  return box.data.root_link_pos_w
-
-
-def takeoff_spot(
-  env: ManagerBasedRlEnv, name: str, obstacle: Obstacle, takeoff: float
-) -> torch.Tensor:
-  """Where the traversal skill needs the robot standing when it takes over. (N, 3).
-
-  On the lane, one take-off distance short of the near face. The same shape as
-  `Actor.arrive`, and used the same way: handed to `aim` so the crossing is commanded to
-  land there instead of wherever a decelerating body would drift to.
-
-  Commanded here, where `tests.stage` leaves it off. That module measured the two placements
-  against a ball, whose box is eight centimetres deep and sits under a foot the robot can
-  shuffle: there, the bridge's own tracking error and the ballistic model's error traded off
-  evenly and neither won. A take-off point does not trade off. Landing it late puts the
-  robot under the box rather than in front of it, and no amount of good posture recovers a
-  vault begun from the wrong side of a wall.
-  """
-  spot = obstacle_pos(env, name).clone()
-  spot[:, 0] -= obstacle.depth / 2.0 + takeoff
-  return spot
 
 
 ##
@@ -274,20 +336,16 @@ def takeoff_spot(
 
 @dataclass(frozen=True)
 class Decision:
-  """One hand-over, and everything that went into it. The audit trail.
-
-  Written when the switch fires, so it records what was decided rather than what happened.
-  How it turned out is the arrival line printed at the hand-over.
-  """
+  """One hand-over, and everything that went into it. The audit trail."""
 
   tick: int
   leaving: str
   entering: str
-  why: str
   entry: str
   effort: float
   binding: str
   duration_s: float
+  why: str
 
   def row(self) -> str:
     return (
@@ -308,224 +366,415 @@ DECISION_HEADER = (
 
 CRUISE, BRIDGE, TRAVERSE = 0, 1, 2
 
-SETTLE_M = 1.2
-"""Metres past an obstacle's far face before the return bridge opens.
+SETTLE_M = 1.0
+"""Metres past an obstacle's far face, along its own axis, before the return bridge opens.
 
 Far enough that the traversal skill has landed and put a foot down. Opening the moment the
-box is behind the robot would aim the return bridge at a body still in the air, whose state
-is not one any locomotion entry sits near."""
+obstacle is behind would aim the return bridge at a body still in the air, whose state is
+not one any walking entry sits near."""
 
-TRAVERSE_PATIENCE = 200
-"""Control steps a traversal gets before the run gives up on it.
-
-A skill that never reaches the far side has failed, and a demo that waits forever for it
-reads as a hang rather than as the result it is."""
-
-FALL_HEIGHT = 0.4
-"""Root height below which the robot is called down, in metres. Nothing resets it: a fall is
-the result of the demo, so the run says so and stops."""
+TRAVERSE_PATIENCE = 300
+"""Control steps a traversal gets before the run gives up on it. A climb is slow, and a
+skill that never reaches the far side has failed rather than hung."""
 
 
-class Runner:
-  """Drive a course: cruise, bridge out, traverse, bridge back, repeat."""
+class Controller:
+  """Reads the scene, decides, and drives the course."""
 
   def __init__(
     self,
     env: ManagerBasedRlEnv,
     pool: SkillPool,
+    bridge: Bridge,
     course: Course,
     steps: tuple[Step, ...],
-    commanded: bool = True,
+    focus: Focus,
   ) -> None:
-    self.env, self.pool, self.course, self.steps = env, pool, course, steps
-    self.commanded = commanded
+    self.env, self.pool, self.bridge = env, pool, bridge
+    self.course, self.steps, self.focus = course, steps, focus
+    self.settings: Settings = course.settings
     self.robot: Entity = env.scene[ROBOT]
     self.names = obstacle_names(course)
-
-    command = env.command_manager.get_term("bridge")
-    assert isinstance(command, Aimed)
-    self.command = command
-
-    self.knobs: dict[str, dict[str, float]] = {
-      name: defaults(pool.actor(name)) for name in pool.skills
-    }
-    """What each skill is currently being told. `condition` reads it, and only for whoever
-    is driving: two skills can share a command term, which the walk and the run do, and a
-    term written by both at once holds whichever wrote last."""
+    self.climb_box = climb_box()
+    """The obstacle the climb was trained against. `approach_box` inverts it."""
 
     self.phase = CRUISE
     self.index = 0
     self.tick = 0
     self.cruising = CRUISE_SKILL.name
     self.entering = self.cruising
-    """Who the open bridge is handing to. Read while `phase` is BRIDGE and stale otherwise."""
     self.traverse_until = 0
+    self.entering_frame = 0
+    """The clip frame the open bridge is aiming at. See `rewind`."""
     self.decisions: list[Decision] = []
     self.cleared: list[int] = []
     self.done = False
     self.fell = False
 
-    self.enter(pool.actor(self.cruising))
+    self.pool[self.cruising].enter(env, *self.here_pose())
 
   ##
-  # Whoever is driving.
+  # Reading the world.
   ##
 
-  @property
-  def driving(self) -> str:
-    """Whoever owns the world right now, by name. What the viewer shows."""
-    if self.phase == BRIDGE:
-      return BRIDGE_GROUP
-    return self.cruising if self.phase == CRUISE else self.entering
+  def here(self) -> torch.Tensor:
+    """The robot's full state, the layout the bridge's target uses."""
+    return state(self.robot)
+
+  def here_pose(self) -> tuple[torch.Tensor, torch.Tensor]:
+    """Where the robot is and which way it faces, for placing a skill at a reset."""
+    here = self.here()
+    return here[:, 0:3], here[:, 3:7]
+
+  def obstacle_pose(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """One obstacle's world position and yaw, read off the scene.
+
+    Off the scene rather than off the course, so the controller cannot be passing because it
+    was handed the answer at build time.
+    """
+    box: Entity = self.env.scene[self.names[index]]
+    return box.data.root_link_pos_w, yaw_of(box.data.root_link_quat_w)
 
   @property
   def step(self) -> Step | None:
     """The obstacle being worked on, or None once the course is finished."""
     return self.steps[self.index] if self.index < len(self.steps) else None
 
-  def enter(self, actor: Actor, pos=None, heading=None, frame: int = 0) -> None:
-    """Hand the world to a skill that is about to take over.
+  def reach_for(self, skill: str) -> Reach | None:
+    """The entry of that skill a hand-over would aim at from where the robot is right now.
 
-    Defaults to where the robot is, which is right for a skill starting from a reset. `aim`
-    is what passes a placement, because it knows where the crossing will land and a
-    reference pinned to where the robot is now would slide onto the arrival and erase the
-    error the hand-over is being measured on.
+    Asked every step, because the answer moves: `nearest` ranks the entries by the rate of
+    change each demands of a body currently doing this, so an entry out of reach mid-stride
+    is within it a moment later. Which is the whole point of the selector, and the reason
+    nothing here may cache it.
     """
-    if actor.enter is None:
-      return
-    here = state(self.robot)
-    actor.enter(
-      self.env,
-      here[:, 0:3] if pos is None else pos,
-      here[:, 3:7] if heading is None else heading,
+    if not self.pool[skill].entries:
+      return None
+    return self.pool[skill].reach(as_numpy(self.here()), self.bridge.duration_range[1])
+
+  def frame_of(self, skill: str) -> int:
+    """The frame a hand-over into that skill would resume at, from here.
+
+    The entry `nearest` picks now, not the first row of the table, and that distinction is
+    the bug this replaced. The approach pose depends on the frame, because the reference is
+    a moving body and where its obstacle sits relative to it changes down the clip. Solved
+    at the first row and then aimed at whichever row the ranking chose, the robot is walked
+    to the spot one entry needs and handed the state of another: the target is a pose the
+    skill really passes through, standing somewhere the skill never passes through it.
+
+    It hid for as long as it did because the climb has one entry, where the two agree. The
+    jump has six, spread over the frames a clip travels through, and there they do not.
+    """
+    reach = self.reach_for(skill)
+    return reach.entry.frame if reach is not None else 0
+
+  def place(
+    self,
+    skill: str,
+    frame: int,
+    want_xy: torch.Tensor,
+    want_yaw: torch.Tensor,
+    obstacle: tuple[torch.Tensor, torch.Tensor] | None = None,
+  ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Pin a clip tracker's reference, then report the pose the robot has to arrive in.
+
+    Three numbers come back: where the robot must stand, the heading it must hold there, and
+    the heading that was handed to the anchor. They are three different angles and conflating
+    any two of them is the bug this method exists to prevent.
+
+    `anchor_to_robot` reads its quaternion as the clip's *direction of travel*, not as the
+    robot's heading, and its own docstring says so: a clip is canonicalized to travel along
+    its +x while the pelvis spends the run-up twelve to twenty degrees off that. So the
+    heading to steer at and to aim the bridge's target at is not what goes to the anchor. It
+    is what the reference itself holds at the entry frame, which is read back here rather
+    than predicted.
+
+    `obstacle` turns this from a placement into a solve, and the climb needs it. Its
+    reference carries a box, rigid with the motion, and what has to line up is that box
+    against the real one rather than the robot against anything. Anchoring maps the pose
+    given here to the clip's placement affinely, so correcting the angle and then the
+    position lands it exactly; the loop runs twice because the angle correction moves the
+    position too.
+    """
+    command = self.env.command_manager.get_term(command_name(skill, MOTION))
+    assert isinstance(command, JumpCommand)
+    env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+    origin = self.env.scene.env_origins
+    at_xy, at_yaw = want_xy.clone(), want_yaw.clone()
+
+    # Anchor, measure, correct, anchor again, and always end on an anchor. That is why this
+    # is a loop and not two statements: correcting the pose without re-anchoring leaves the
+    # placement one correction stale, and the clip's box lands a few centimetres off the real
+    # one every single time
+    for _ in range(3 if obstacle is not None else 1):
+      at_pos = torch.cat([at_xy, origin[:, 2:3]], dim=-1)
+      command.anchor_to_robot(
+        env_ids, start_frame=frame, at_pos=at_pos, at_quat=quat_from_yaw(at_yaw)
+      )
+      if obstacle is None:
+        break
+      # Where the clip's own box has ended up, from the anchor the call just wrote
+      pos, yaw = obstacle
+      box = self.climb_box
+      clip_xy = torch.tensor(
+        [box.pos[0], box.pos[1]], device=at_xy.device, dtype=at_xy.dtype
+      ).expand(at_xy.shape[0], 2)
+      here_xy = (
+        rotate(clip_xy, command.anchor_yaw) + command.anchor_pos + origin[:, 0:2]
+      )
+      off_yaw = wrap(yaw - (box.yaw + command.anchor_yaw))
+      off_xy = pos[:, 0:2] - here_xy
+      if float(off_xy.norm(dim=-1).max()) < 1e-4 and float(off_yaw.abs().max()) < 1e-4:
+        break
+      at_yaw = at_yaw + off_yaw
+      at_xy = at_xy + off_xy
+
+    return command.body_pos_w[:, 0, 0:2], yaw_of(command.body_quat_w[:, 0]), at_yaw
+
+  def approach_pose(
+    self, step: Step, frame: int | None = None
+  ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Where the robot has to be, and facing where, before that skill will work."""
+    return self.aim_for(step, frame)[0:2]
+
+  def aim_for(
+    self, step: Step, frame: int | None = None
+  ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    """The arrival pose, the heading to hand the anchor, and the frame it was solved at.
+
+    `frame` is the entry the hand-over will resume at, and everything this returns is
+    conditional on it. None asks `frame_of` for the one the ranking would pick now, which is
+    what steering wants; the switch passes the frame of the reach it has actually chosen, so
+    the pose and the state it is going to aim at come from the same entry.
+    """
+    assert step.rule is not None
+    pos, yaw = self.obstacle_pose(step.index)
+    frame = self.frame_of(step.rule.skill) if frame is None else frame
+    want_xy, want_yaw = step.rule.approach(self, step.obstacle, pos, yaw)
+    at_xy, at_yaw, anchor = self.place(
+      step.rule.skill,
       frame,
-      self.knobs.get(actor.name) or defaults(actor),
+      want_xy,
+      want_yaw,
+      obstacle=(pos, yaw) if step.obstacle.kind == BOX else None,
     )
+    return at_xy, at_yaw, anchor, frame
 
-  def condition(self) -> None:
-    """Write the driving skill's settings into whatever it reads, every step.
+  def offsets(
+    self, step: Step, frame: int | None = None
+  ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """How far the robot is from the approach pose: along it, across it, and in heading."""
+    xy, yaw = self.approach_pose(step, frame)
+    here = self.here()
+    delta = xy - here[:, 0:2]
+    along = delta[:, 0] * torch.cos(yaw) + delta[:, 1] * torch.sin(yaw)
+    across = -delta[:, 0] * torch.sin(yaw) + delta[:, 1] * torch.cos(yaw)
+    return along, across, wrap(yaw_of(here[:, 3:7]) - yaw)
 
-    Only the driver's. A skill's conditioning is applied while it owns the world and at no
-    other time, which is what lets the walk and the run share one velocity term without
-    writing over each other.
+  def stand_off(self, skill: str) -> float:
+    """How far short of the approach pose the walk holds station, in metres.
+
+    A crossing has to cross something. Parked on the pose the bridge is asked for a window
+    of zero, which is not one it trained on, and walked through it the window comes out
+    negative and the switch can never fire again. The demo deadlocked exactly there: 0.16 m
+    past the spot with the solve reading -1.5 s, for as long as it was left running.
+
+    So the walk aims to stop the distance a crossing covers over the middle of the trained
+    window. At the hold point the robot is stopped, so that crossing averages the entry's
+    speed with zero and covers half of it: the distance is half the entry's speed times the
+    middle of the range, and the window comes out mid range by construction rather than by a
+    number somebody tuned.
+
+    Off the entry's speed and nothing else. Averaging in the robot's own does not converge,
+    because a robot stepping in place still has a root velocity swinging through most of a
+    stride, so the term never falls to zero and the hold point never settles. Measured with
+    it in: 0.38 m held against the 0.07 m a crossing into the climb's entry covers, and a
+    solve reading 3.75 s against a range topping out at 1.20.
+
+    Forward speed only. The crossing travels along one line and the walk closes the rest
+    sideways, which is what `lateral_gain` is for.
     """
-    if self.phase == BRIDGE:
+    reach = self.reach_for(skill)
+    if reach is None:
+      return 0.0
+    low, high = self.bridge.duration_range
+    return 0.25 * max(float(reach.entry.state[7]), 0.0) * (low + high)
+
+  ##
+  # Steering the walk.
+  ##
+
+  def steer(self) -> None:
+    """Point the walk at the next approach pose, and square it up as it arrives.
+
+    Two objectives and one heading command, blended by distance. Far out the walk is aimed
+    at the approach point, which is what actually closes the gap. Close in it is aimed at the
+    obstacle's own heading, which is what the traversal skill needs, and the sideways command
+    takes over the last of the cross-track error.
+
+    Aiming at a point rather than driving the cross-track error to zero is what keeps it
+    stable. Steering on the error alone asks the robot to face the line rather than converge
+    on it, and a walk correcting hard while the switch is pending arrives turning.
+
+    Forward speed is regulated rather than held. Held at `approach_speed` the walk crosses
+    the whole band the switch can fire in inside about twenty control steps, and if the
+    heading has not settled by then it walks through and parks past the spot, where no
+    window can land a crossing on the pose and nothing recovers. Regulated onto
+    `stand_off`, it converges to holding the distance a crossing needs and waits there for
+    as long as the alignment takes.
+    """
+    if self.phase != CRUISE:
       return
-    actor = self.pool.actor(self.driving)
-    if actor.condition is not None:
-      actor.condition(self.env, self.knobs[actor.name])
-
-  ##
-  # Choosing.
-  ##
-
-  def reach(self, skill: str, seconds: float) -> Reach:
-    """The entry of `skill` easiest to reach from where the robot is now.
-
-    Asked every step while a switch is pending, so what the bridge aims at is whatever is
-    easiest at the instant it fires rather than whatever was easiest when the approach
-    began.
-    """
-    here = state(self.robot)[0].detach().cpu().numpy()
-    return nearest(self.pool.table, skill, here, seconds)[0]
-
-  def window(self, reach: Reach, solved: float | None) -> float:
-    """How long the bridge gets, in seconds.
-
-    A window solved from the geometry wins, because it is the one that lands the crossing
-    where the entering skill needs the robot. Otherwise the entry's own floor: effort scales
-    with 1/seconds, so PROBE_S * effort is the window at which this entry costs exactly one,
-    a change as fast as any recorded skill performed. That is a floor and not a set point,
-    hence the max against the default.
-
-    Clamped to what the bridge trained on either way. Outside that range it is being asked a
-    question it was never shown.
-    """
-    low, high = self.command.cfg.duration_s_range
-    if solved is not None:
-      return float(min(max(solved, low), high))
-    return float(min(max(PROBE_S * reach.effort, DEFAULT_DURATION_S, low), high))
-
-  ##
-  # The switches.
-  ##
-
-  def approach(self) -> tuple[Reach, float] | None:
-    """Whether to start crossing to the traversal skill on this step.
-
-    Solved rather than waited for. `crossing_time` says how long a window would have to be
-    to land the robot at the take-off point, and the switch fires as soon as that is a
-    window the bridge was trained on. A fixed window could only wait for the world to drift
-    into agreement with it, which on a course means the robot walks past its own take-off
-    point whenever the approach did not happen to line up.
-
-    The residual keeps that honest. A crossing travels along one line, so a duration decides
-    how far and never which way, and a take-off point off that line stays off it. Firing on
-    the duration alone would hand over on time to the wrong place.
-    """
+    walk = self.pool[self.cruising]
+    cfg = self.settings.walk
     step = self.step
     if step is None or step.rule is None:
-      return None
-    seconds_needed = self.command.cfg.duration_s_range[1]
-    reach = self.reach(step.rule.skill, seconds_needed)
+      walk.tell(forward=cfg.cruise_speed, lateral=0.0, heading=0.0)
+      return
 
-    here = state(self.robot)
-    entry = torch.as_tensor(
-      reach.entry.state[None], dtype=torch.float32, device=self.env.device
+    xy, yaw = self.approach_pose(step)
+    here = self.here()
+    delta = xy - here[:, 0:2]
+    distance = float(delta.norm(dim=-1).mean())
+    bearing = float(torch.atan2(delta[:, 1], delta[:, 0]).mean())
+    face = float(yaw.mean())
+
+    # 1 far from the approach point, 0 on it. Blends the heading from "go there" to "face
+    # the way the skill needs", and fades the sideways correction in as it does
+    blend = min(max(distance / max(cfg.blend_radius, 1e-6), 0.0), 1.0)
+    heading = face + blend * float(wrap(torch.tensor([bearing - face]))[0])
+
+    along, across, _ = self.offsets(step)
+    lateral = float(
+      torch.clamp(
+        cfg.lateral_gain * across, -cfg.lateral_limit, cfg.lateral_limit
+      ).mean()
     )
-    target = facing(entry, here)
-    want = takeoff_spot(
-      self.env, self.names[step.index], step.obstacle, step.rule.takeoff
-    )[:, 0:2]
+    # Onto the hold point, not onto the pose. Far out the gain saturates and this is the
+    # cruise it always was; close in it slows, and past the hold point it steps back
+    forward = float(
+      torch.clamp(
+        cfg.approach_gain * (along - self.stand_off(step.rule.skill)),
+        -cfg.reverse_limit,
+        cfg.approach_speed,
+      ).mean()
+    )
+    walk.tell(forward=forward, lateral=lateral * (1.0 - blend), heading=heading)
 
-    seconds, residual = crossing_time(here, target, want)
-    low, high = self.command.cfg.duration_s_range
-    fits = (seconds >= low) & (seconds <= high) & (residual <= ARRIVE_SLACK)
+  ##
+  # The switch.
+  ##
+
+  def ready(self, step: Step) -> tuple[Reach, float] | None:
+    """Whether to start crossing on this step, and over what window.
+
+    Three questions, all of which have to answer yes.
+
+    Aligned, because the traversal skill's reference is rigid with the obstacle and arriving
+    turned puts the two out of register. Squarely on the line, for the same reason. And
+    reachable: `Bridge.solve` says how long a window would have to be to land the robot on
+    the approach pose, and the switch fires as soon as that is a window the bridge was
+    trained on. A fixed window could only wait for the world to drift into agreement with
+    it, which on a course means walking past the spot whenever the approach did not happen
+    to line up.
+    """
+    assert step.rule is not None
+    # The entry first, because everything below is conditional on it. Which entry a
+    # hand-over would use decides where the robot has to stand for it, so an alignment
+    # measured against some other entry's pose is measured against the wrong line
+    reach = self.reach_for(step.rule.skill)
+    if reach is None:
+      return None
+
+    tolerance = self.settings.approach
+    _, across, turn = self.offsets(step, reach.entry.frame)
+    if float(turn.abs().max()) > tolerance.yaw_tolerance:
+      return None
+    if float(across.abs().max()) > tolerance.lateral_tolerance:
+      return None
+
+    low, high = self.bridge.duration_range
+    here = self.here()
+    xy, yaw = self.approach_pose(step, reach.entry.frame)
+    target = self.bridge.target_state(reach, xy, yaw)
+    seconds, residual = self.bridge.solve(here, target, xy)
+    fits = (seconds >= low) & (seconds <= high) & (residual <= SLACK)
     if not bool(fits.all()):
       return None
     return reach, float(seconds.min())
 
-  def past(self) -> bool:
-    """Whether the robot is clear of the obstacle it just traversed."""
-    step = self.step
-    if step is None:
+  def past(self, step: Step) -> bool:
+    """Whether the robot is clear of the obstacle it just traversed.
+
+    Measured along the obstacle's own axis, not along the lane, because an obstacle turned
+    forty degrees is one the robot leaves in a different direction from the one it arrived
+    in.
+    """
+    pos, yaw = self.obstacle_pose(step.index)
+    here = self.here()
+    delta = here[:, 0:2] - pos[:, 0:2]
+    along = delta[:, 0] * torch.cos(yaw) + delta[:, 1] * torch.sin(yaw)
+    return bool((along > step.obstacle.length / 2.0 + SETTLE_M).all())
+
+  def down(self) -> bool:
+    """Whether the robot is on the floor.
+
+    Two checks, because either alone misses a case. A robot face down on top of a box is
+    well above the floor threshold, and one sitting in a heap on the ground is still
+    upright. Height catches the fall, tilt catches the sprawl.
+    """
+    here = self.here()
+    if float(here[:, 2].min()) < self.settings.end.fall_height:
       return True
-    far = (
-      obstacle_pos(self.env, self.names[step.index])[:, 0] + step.obstacle.depth / 2.0
-    )
-    return bool((state(self.robot)[:, 0] > far + SETTLE_M).all())
+    # The body's own z axis against the world's. A quaternion's rotation of (0,0,1) has
+    # z component 1 - 2(x^2 + y^2), which is the cosine of the lean
+    quat = here[:, 3:7]
+    lean = 1.0 - 2.0 * (quat[:, 1] ** 2 + quat[:, 2] ** 2)
+    return bool(float(lean.min()) < math.cos(self.settings.end.tip_angle))
 
   ##
   # The transitions.
   ##
 
-  def cross(self, entering: Actor, reach: Reach, duration_s: float, why: str, arrive):
-    """Aim the bridge at one state off the entering skill's table and start the clock."""
-    self.phase, self.entering = BRIDGE, entering.name
-    here = state(self.robot)
-    aim(
-      self.env,
-      self.command,
-      entering,
-      torch.as_tensor(
-        reach.entry.state[None], dtype=torch.float32, device=self.env.device
-      ),
-      here,
+  def cross(
+    self,
+    entering: str,
+    reach: Reach,
+    at_xy: torch.Tensor,
+    at_yaw: torch.Tensor,
+    duration_s: float,
+    why: str,
+    anchor_yaw: torch.Tensor | None = None,
+  ):
+    """Aim the bridge at a pose and hand it the world.
+
+    `anchor_yaw` is the heading the entering skill's clip is pinned with, which is its
+    direction of travel and not the heading the robot arrives holding. None means the two are
+    the same, which is true of a skill with no clip to pin.
+    """
+    leaving = self.driving
+    self.phase, self.entering = BRIDGE, entering
+    self.entering_frame = reach.entry.frame
+    self.bridge.aim(
+      self.pool[entering],
+      reach,
+      self.here(),
+      at_xy,
+      at_yaw,
       duration_s,
-      reach.entry.frame,
-      arrive,
-      self.knobs.get(entering.name),
+      anchor_yaw=at_yaw if anchor_yaw is None else anchor_yaw,
+      frame=reach.entry.frame,
     )
     self.decisions.append(
       Decision(
         tick=self.tick,
-        leaving=self.cruising if entering.name != self.cruising else self.entering,
-        entering=entering.name,
-        why=why,
+        leaving=leaving,
+        entering=entering,
         entry=reach.entry.name,
         effort=reach.effort,
         binding=reach.binding,
         duration_s=duration_s,
+        why=why,
       )
     )
     print(f"  {self.decisions[-1].row()}")
@@ -533,6 +782,14 @@ class Runner:
 
   def hand_over(self):
     """The window closed. Whoever it was aimed at takes over."""
+    gap, angle, worst = self.bridge.arrival(self.here())
+    print(
+      f"  arrived: {gap:.3f} m, {math.degrees(angle):.1f} degrees and {worst:.2f} rad "
+      f"at the worst joint off the pose {self.entering} was promised"
+    )
+    # The clip has been playing throughout the crossing. Put it back before its own skill
+    # reads it, or the policy starts a second into a motion the robot has not begun
+    rewind(self.env, self.entering, self.entering_frame)
     if self.entering == self.cruising:
       self.phase = CRUISE
       self.index += 1
@@ -542,169 +799,93 @@ class Runner:
       self.traverse_until = self.tick + TRAVERSE_PATIENCE
     return fresh_obs(self.env)
 
+  def resume(self, step: Step):
+    """Back to the walk, pointed down the lane."""
+    self.cleared.append(step.index)
+    walk = self.pool[self.cruising]
+    here = self.here()
+    reach = walk.reach(here[0].detach().cpu().numpy(), self.bridge.duration_range[1])
+    lane = torch.zeros(here.shape[0], device=here.device)
+    duration = self.bridge.window(reach)
+    # Where a body carrying this momentum would end up over that window. The walk can
+    # start anywhere, so nothing demands a spot here and the ballistic placement is the
+    # one the bridge trained against
+    target = self.bridge.target_state(reach, here[:, 0:2], lane)
+    return self.cross(
+      self.cruising,
+      reach,
+      crossing(here, target, duration),
+      lane,
+      duration,
+      "obstacle behind, back to the lane",
+    )
+
   ##
   # The loop.
   ##
 
+  @property
+  def driving(self) -> str:
+    """Whoever owns the world right now, by name. What the viewer shows."""
+    if self.phase == BRIDGE:
+      return BRIDGE_GROUP
+    return self.cruising if self.phase == CRUISE else self.entering
+
   @torch.no_grad()
   def __call__(self, obs):
-    self.condition()
-    self.fell = bool((state(self.robot)[:, 2] < FALL_HEIGHT).any())
-    if self.fell:
-      self.done = True
+    # Which obstacle the skills are told about, before anything reads an observation
+    step = self.step
+    if step is not None:
+      self.focus.index = step.index
+
+    self.steer()
+    if self.phase != BRIDGE:
+      self.pool[self.driving].condition(self.env)
+
+    if not self.done and self.down():
+      self.fell, self.done = True, True
 
     if not self.done:
-      if self.phase == CRUISE:
-        found = self.approach()
+      if self.phase == CRUISE and step is not None and step.rule is not None:
+        found = self.ready(step)
         if found is not None:
           reach, solved = found
-          step = self.step
-          assert step is not None and step.rule is not None
-          rule = step.rule
-          # Bound as defaults rather than captured, so the closure holds this obstacle
-          # rather than whichever one `self.index` has reached by the time it is called.
-          # `commanded` decides whether there is a callable at all: `aim` reads None as
-          # "predict where the crossing lands", and one returning None is not that
-          spot = (
-            (
-              lambda env, n=self.names[step.index], o=step.obstacle, t=rule.takeoff: (
-                takeoff_spot(env, n, o, t)
-              )
-            )
-            if self.commanded
-            else None
-          )
+          # Solved at the frame the reach actually resumes from. `ready` measured the
+          # alignment against this same pose, so the robot was let through the gate for the
+          # entry it is about to be handed rather than for whichever one the table lists
+          # first
+          xy, yaw, anchor, _ = self.aim_for(step, reach.entry.frame)
           obs = self.cross(
-            self.pool.actor(rule.skill),
+            step.rule.skill,
             reach,
-            self.window(reach, solved),
-            rule.why,
-            spot,
+            xy,
+            yaw,
+            self.bridge.window(reach, solved),
+            step.rule.why,
+            anchor_yaw=anchor,
           )
-      elif self.phase == BRIDGE:
-        if bool((self.command.step >= self.command.deadline).all()):
-          obs = self.hand_over()
-      elif self.phase == TRAVERSE:
-        if self.past() or self.tick >= self.traverse_until:
-          step = self.step
-          assert step is not None
-          self.cleared.append(step.index)
-          reach = self.reach(self.cruising, DEFAULT_DURATION_S)
-          obs = self.cross(
-            self.pool.actor(self.cruising),
-            reach,
-            self.window(reach, None),
-            "obstacle behind, back to the lane",
-            None,
-          )
+      elif self.phase == BRIDGE and self.bridge.done:
+        obs = self.hand_over()
+      elif self.phase == TRAVERSE and step is not None:
+        if self.past(step) or self.tick >= self.traverse_until:
+          obs = self.resume(step)
 
     self.tick += 1
-    return self.pool[self.driving](obs)
+    return self.pool[self.driving](obs) if self.phase != BRIDGE else self.bridge(obs)
 
   def report(self) -> list[str]:
-    """What the run decided and how far it got. The audit trail, after the fact."""
-    out = ["", "decisions:", *DECISION_HEADER, *(d.row() for d in self.decisions)]
-    out.append("")
-    out.append(
+    """What the run decided and how far it got."""
+    return [
+      "",
+      "decisions:",
+      *DECISION_HEADER,
+      *(d.row() for d in self.decisions),
+      "",
       f"cleared {len(self.cleared)} of {len(self.steps)} obstacles in {self.tick} steps"
-      + (", then fell" if self.fell else "")
-    )
-    return out
+      + (", then went down" if self.fell else ""),
+    ]
 
 
-##
-# Running it.
-##
-
-
-@dataclass(frozen=True)
-class Config:
-  seed: int = 0
-  """Which course to draw."""
-  count: int = 5
-  """How many obstacles."""
-  jitter: float = 0.0
-  """Metres each obstacle may slide along the lane, per environment. See arena."""
-  commanded: bool = True
-  """Command the take-off point, rather than letting the crossing land where a decelerating
-  body would. See `takeoff_spot` for why this is on here and off in tests.stage."""
-  dry: bool = False
-  """Print the plan and stop. No simulation and no checkpoints."""
-  viewer: Literal["viser", "none"] = "viser"
-  patience: int = 4000
-  """Control steps before a headless run gives up."""
-  device: str | None = None
-  seed_torch: int = 0
-  scored: str | None = None
-  """A skill whose reward terms the arena carries, so a hand-over into it can be scored."""
-
-
-def main(cfg: Config) -> None:
-  import mjlab.tasks  # noqa: F401  (populates the task registry)
-
-  course = generate_course(seed=cfg.seed, count=cfg.count)
-  steps = plan(course)
-  for line in plan_lines(course, steps):
-    print(line)
-  blocked = unsolved(steps)
-  if blocked:
-    raise SystemExit(
-      "\nRefusing to start: the table does not cover every obstacle on this course."
-    )
-  if cfg.dry:
-    return
-
-  torch.manual_seed(cfg.seed_torch)
-  device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
-
-  # Before the simulation, because a missing checkpoint is the one thing this demo cannot
-  # work around and finding out after the arena is up costs a minute per attempt
-  for name, path in SkillPool.resolve(ROSTER).items():
-    print(f"{name:<8} {path}")
-
-  env = ManagerBasedRlEnv(
-    cfg=course_env_cfg(ROSTER, course, scored=cfg.scored, jitter=cfg.jitter),
-    device=device,
-  )
-  pool = SkillPool.load(ROSTER, env, device)
-  for line in pool.lines():
-    print(line)
-
-  env.reset()
-  runner = Runner(env, pool, course, steps, commanded=cfg.commanded)
-  print("")
-  print(f"running: {' '.join(DECISION_HEADER)}")
-
-  if cfg.viewer == "none":
-    obs = env.get_observations()
-    for _ in range(cfg.patience):
-      if runner.done:
-        break
-      obs, _, _, _, _ = env.step(runner(obs))
-    else:
-      print(f"\ngave up after {cfg.patience} steps in the '{runner.driving}' phase")
-    for line in runner.report():
-      print(line)
-    env.close()
-    return
-
-  import viser
-
-  from mjlab.rl import RslRlVecEnvWrapper
-  from mjlab.tasks.registry import load_rl_cfg
-  from mjlab.viewer import ViserPlayViewer
-
-  server = viser.ViserServer(label=f"parkour seed {cfg.seed}")
-  wrapped = RslRlVecEnvWrapper(
-    env, clip_actions=load_rl_cfg(CRUISE_SKILL.task).clip_actions
-  )
-  ViserPlayViewer(
-    wrapped, runner, viser_server=server, info_provider=lambda _: runner.driving
-  ).run()
-  for line in runner.report():
-    print(line)
-  wrapped.close()
-
-
-if __name__ == "__main__":
-  main(tyro.cli(Config, config=mjlab.TYRO_FLAGS))
+def as_numpy(here: torch.Tensor) -> np.ndarray:
+  """One environment's state, the shape the selector's query wants."""
+  return here[0].detach().cpu().numpy()

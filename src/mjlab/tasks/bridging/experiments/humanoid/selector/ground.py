@@ -2,8 +2,10 @@
 
 Answers one question: how far off the ground is the lowest part of the robot in this state.
 Grounded states read about zero, airborne ones tens of centimetres, and a state written
-into the floor reads negative. build.py stores it as the clearance column and filter.py
-rejects on it; view.py uses it to draw.
+into the floor reads negative. build.py stores it as the clearance column, where it is a
+diagnostic: a window whose entries read well above zero is a window reaching into a part of
+the skill the robot spends airborne, which is a reason to move the window and not a reason
+for code to drop a row.
 
 That number is what separates a spot the bridge could deliver the robot to from one it
 could not. A mid-flight state is a real place the skill goes through, and no bridge can put

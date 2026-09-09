@@ -82,6 +82,32 @@ class RslRlPpoAlgorithmCfg:
 
 
 @dataclass
+class RslRlDistillationAlgorithmCfg:
+  """Config for supervised distillation of a trained teacher into a student.
+
+  The student acts, the teacher labels the states the student visits, and the loss is
+  regression onto the teacher's action. That is DAgger rather than behaviour cloning, and
+  the difference is the whole point: a student trained on the teacher's own rollouts is
+  never shown the states its own mistakes lead to.
+  """
+
+  num_learning_epochs: int = 1
+  """Passes over each batch. One is usual: the data is on-policy and thrown away."""
+  gradient_length: int = 15
+  """Steps to accumulate before an optimizer step."""
+  learning_rate: float = 1e-3
+  """The learning rate."""
+  max_grad_norm: float | None = None
+  """Gradient clipping, or None for none."""
+  loss_type: Literal["mse", "huber"] = "mse"
+  """Regression loss against the teacher's action."""
+  optimizer: Literal["adam", "adamw", "sgd", "rmsprop"] = "adam"
+  """The optimizer to use."""
+  class_name: str = "Distillation"
+  """Algorithm class name resolved by RSL-RL."""
+
+
+@dataclass
 class RslRlBaseRunnerCfg:
   seed: int = 42
   """The seed for the experiment. Default is 42."""
@@ -143,3 +169,74 @@ class RslRlOnPolicyRunnerCfg(RslRlBaseRunnerCfg):
   """The critic configuration."""
   algorithm: RslRlPpoAlgorithmCfg = field(default_factory=RslRlPpoAlgorithmCfg)
   """The algorithm configuration."""
+
+
+@dataclass
+class RslRlTeacherStudentRunnerCfg(RslRlBaseRunnerCfg):
+  """One run, two phases: learn something with privileged observations, then distil it.
+
+  For a skill whose observation is only learnable with information it will not have at
+  inference. A motion tracker is the case this was written for: the reference makes the task
+  learnable and is not available once the policy has to act on a goal alone.
+
+  Phase one is ordinary PPO, with the actor reading `teacher_obs_group` instead of "actor".
+  Phase two freezes that actor as a teacher and regresses a student, reading "actor", onto
+  it over the student's own rollouts. The split is `tracking_iterations` of the run's
+  `max_iterations`; the rest is distillation.
+
+  The environment exposes both observations at once, so nothing is recorded and replayed and
+  the teacher never leaves the process. The student's group is "actor" because the student is
+  what gets deployed: `play`, and anything else that loads a policy for inference, asks for
+  an actor and gets the student without knowing any of this happened.
+  """
+
+  class_name: str = "MjlabTeacherStudentRunner"
+  """The runner class name."""
+
+  actor: RslRlModelCfg = field(
+    default_factory=lambda: RslRlModelCfg(
+      distribution_cfg={
+        "class_name": "GaussianDistribution",
+        "init_std": 0.1,
+        "std_type": "scalar",
+      }
+    )
+  )
+  """The student, and the policy that gets deployed. Called actor because that is what it
+  is by the end, and what every inference path asks for.
+
+  A small init_std, unlike a policy trained by a gradient. Phase two is regression, and the
+  exploration a policy gradient needs is here just noise on the states being labelled."""
+
+  critic: RslRlModelCfg = field(default_factory=RslRlModelCfg)
+  """Phase one's critic. Unused in phase two, which has no value function."""
+
+  teacher: RslRlModelCfg = field(
+    default_factory=lambda: RslRlModelCfg(
+      distribution_cfg={
+        "class_name": "GaussianDistribution",
+        "init_std": 1.0,
+        "std_type": "scalar",
+      }
+    )
+  )
+  """Phase one's actor, and phase two's frozen teacher. One config for both, because they
+  are the same network: phase two takes the weights directly rather than through a file."""
+
+  algorithm: RslRlPpoAlgorithmCfg = field(default_factory=RslRlPpoAlgorithmCfg)
+  """Phase one."""
+
+  distillation: RslRlDistillationAlgorithmCfg = field(
+    default_factory=RslRlDistillationAlgorithmCfg
+  )
+  """Phase two."""
+
+  teacher_obs_group: str = "teacher"
+  """Which environment observation group the teacher reads. The student reads "actor"."""
+
+  tracking_iterations: int = 10_000
+  """How many of `max_iterations` go to phase one. The remainder go to phase two.
+
+  Phase two is much cheaper than phase one: it is supervised, its target is a function the
+  teacher already computes, and it converges in a fraction of the iterations a policy
+  gradient needs. Splitting one budget rather than configuring two keeps the total honest."""

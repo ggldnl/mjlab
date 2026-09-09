@@ -31,6 +31,10 @@ Plus four columns:
                 whose frames differ by k are a start and a target one robot got between in
                 k control ticks, which is the only kind of window the bridge trains on.
                 Dataset.segments turns the two columns into that index
+    phase       which frame of its own reference the policy was reading. Equal to frame for
+                a skill with no reference, and nothing like it for a tracker: those reset
+                into a sampled frame of the clip, so an episode's first step is frame 0 at
+                whatever phase the sampler drew. See clip_phase
     goal        every command term value at that step, side by side. What the skill was
                 being asked for while it was in that state.
 
@@ -119,6 +123,28 @@ def commanded(env: ManagerBasedRlEnv) -> torch.Tensor:
   return torch.cat(present, dim=-1)
 
 
+def clip_phase(env: ManagerBasedRlEnv) -> torch.Tensor | None:
+  """Which frame of its own reference each environment is reading. (N,), or None.
+
+  None for a skill with no reference, which is every skill trained by reward rather than by
+  imitation. Those have no clip to be at a frame of, and the step count since their episode
+  started is the only answer there is.
+
+  For a tracker it is the whole answer, and it is not the step count. Training resets into a
+  sampled frame of the clip, so two rollouts one step old are at two different frames, and
+  the step count says nothing about which. Anything that wants to put a tracker back where a
+  recorded state came from needs this and cannot derive it.
+
+  Found by duck typing rather than by name, because the term is called "motion" in these
+  tasks and there is no interface saying so.
+  """
+  for name in env.command_manager.active_terms:
+    steps = getattr(env.command_manager.get_term(name), "time_steps", None)
+    if isinstance(steps, torch.Tensor):
+      return steps
+  return None
+
+
 def control_rate(env_cfg: ManagerBasedRlEnvCfg) -> float:
   """Hz. A deadline is counted in control steps, so a dataset has to know this."""
   return 1.0 / (env_cfg.sim.mujoco.timestep * env_cfg.decimation)
@@ -153,11 +179,12 @@ def record(
   checkpoint: Path,
   cfg: RolloutCfg,
   label: str,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
   """Drive one trained policy in one environment, recording every control step.
 
   Returns the states, the environment and physical trajectory each row came from, how many
-  steps into that trajectory it was, and what it was commanded to do at the time.
+  steps into that trajectory it was, which frame of its reference it was reading, and what
+  it was commanded to do at the time.
 
   The caller configures env_cfg first, and that is the only difference between sources: a
   skill wants its own environment untouched, a tracker wants the same environment with a
@@ -191,6 +218,7 @@ def record(
   trajectory = torch.arange(cfg.num_envs, dtype=torch.long, device=cfg.device)
   rows: list[torch.Tensor] = []
   ages: list[torch.Tensor] = []
+  phases: list[torch.Tensor] = []
   trajectories: list[torch.Tensor] = []
   goals: list[torch.Tensor] = []
   keep: list[torch.Tensor] = []
@@ -212,6 +240,12 @@ def record(
     here[:, 0:2] -= origin
     rows.append(here)
     ages.append(age.clone())
+    # Read after the step for the same reason the command is, and it matters more here: the
+    # environment advances the clip after the physics, so this is the frame the policy will
+    # read alongside this very state when it picks its next action. That is the pair a
+    # hand-over reproduces, a robot in this state with the reference on this frame
+    clip = clip_phase(env)
+    phases.append(age.clone() if clip is None else clip.clone())
     trajectories.append(trajectory.clone())
     # Read after the step, so this is the command the policy was following when it
     # produced the state, not one drawn for the episode about to start
@@ -223,6 +257,7 @@ def record(
   env.close()
   states = torch.stack(rows, dim=0).flatten(0, 1)
   frames = torch.stack(ages, dim=0).flatten(0, 1)
+  clip_frames = torch.stack(phases, dim=0).flatten(0, 1)
   trajectory_ids = torch.stack(trajectories, dim=0).flatten(0, 1)
   commands = torch.stack(goals, dim=0).flatten(0, 1)
   valid = torch.stack(keep, dim=0).flatten(0, 1)
@@ -234,6 +269,7 @@ def record(
     env_id.to(torch.int16).cpu().numpy(),
     trajectory_ids[valid].to(torch.int32).cpu().numpy(),
     frames[valid].to(torch.int32).cpu().numpy(),
+    clip_frames[valid].to(torch.int32).cpu().numpy(),
     commands[valid].cpu().numpy().astype(np.float32),
   )
 
@@ -248,6 +284,7 @@ def write(
   names: tuple[str, ...],
   fps: float,
   goals: list[np.ndarray] | None = None,
+  phases: list[np.ndarray] | None = None,
 ) -> Path:
   """One npz, in the layout load_dataset expects.
 
@@ -269,6 +306,8 @@ def write(
     "skill_names": np.asarray(names),
     "fps": np.asarray(fps),
   }
+  if phases is not None:
+    columns["phase"] = np.concatenate(phases)
   if goals is not None:
     width = max(g.shape[1] for g in goals)
     columns["goal"] = np.concatenate(
@@ -301,6 +340,11 @@ class Dataset:
   `commands_of`, which trims the padding off."""
   goal_dim: tuple[int, ...] = ()
   """(S,) how much of `goal` is real, per source. The rest is padding."""
+  phase: torch.Tensor | None = None
+  """(N,) which frame of its own reference each row was recorded at.
+
+  None for a dataset written before the column. Equal to `frame` for a skill with no
+  reference. See clip_phase for why a tracker needs its own column."""
 
   def commands_of(self, skill: str) -> torch.Tensor | None:
     """The command column for one source, padding removed. (N, G_skill).
@@ -501,6 +545,9 @@ def load_dataset(
     fps=float(raw["fps"]),
     goal=torch.from_numpy(raw["goal"]).to(device)[mask] if "goal" in raw else None,
     goal_dim=tuple(int(v) for v in raw["goal_dim"]) if "goal_dim" in raw else (),
+    phase=torch.from_numpy(raw["phase"]).to(device).long()[mask]
+    if "phase" in raw
+    else None,
   )
   print(f"[dataset] {loaded.states.shape[0]} states in '{split}' from {loaded.names}")
   return loaded

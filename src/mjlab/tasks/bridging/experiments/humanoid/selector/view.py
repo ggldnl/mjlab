@@ -1,8 +1,26 @@
-"""Look at the entry points of a skill.
+"""Look at the entry states of a skill, laid out the way the skill passes through them.
 
-Every entry of one skill, side by side, in table order along +y, with the numbers behind
-them. The dropdown switches skills. Reads whichever table it is pointed at, so passing the
-candidate file is how you look at what filter.py rejected.
+Every entry of one skill in one line along its own direction of travel, earliest first, each
+one as far along as the skill really got in the time between their frames. So a window reads
+as a stretch of rollout rather than as a row of unrelated poses: the robot stands here, and
+a third of a second and half a metre later it is crouching there. The dropdown switches
+skills, and each skill has its own sequence.
+
+The spacing is measured, not chosen. It comes from EntryTable.trail, which integrates the
+root velocities the states themselves carry over the frames between them, because the
+recorded ground position is not in a state and would not compose across two medoids if it
+were. Nothing here spaces entries evenly, and that is the point: even spacing says every
+entry is the same distance on from the last, which is false for every skill that accelerates
+through its window.
+
+Which leaves one thing to watch for. A window the skill stands still through, and the jump
+opens with thirty frames of exactly that, comes back with several entries on the same tile.
+They are drawn on top of each other because that is where they are. --gap prises them apart
+by eye, and the table keeps the real distances.
+
+This is how a window gets checked. A window is a guess about which part of a skill is worth
+entering, and the way to find out it was wrong is to see a robot mid-flight, or with a hand
+where a box should be, or six copies of the same standing pose in the same place.
 
 No physics. These states were recorded under physics already; this writes qpos and runs
 forward kinematics, so a foot through the floor here is a defect in the recording, not in
@@ -10,23 +28,19 @@ the playback.
 
 Run
 
-1. Draw the accepted entries, then open the printed address.
+1. Draw the entry states, then open the printed address.
 
     uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.view
 
-2. Open on one skill, with more room between entries.
+2. Open on one skill, with a metre of daylight inserted between entries.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.view --skill jump --spacing 1.2
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.view --skill jump --gap 1.0
 
-3. Draw the candidates instead, rejected ones included.
-
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.view --path data/selector/candidates.npz
+3. Move a window in selector/__init__.py, re-run selector.build, reload the page.
 """
 
-# TODO we have nothing to control in the viewer. The nodes depend on the conditioning signal
-#   so it would be nice to show how the nodes change with respect to that signal
-# TODO the markdown should go, it shows nothing important except for names. What do the names
-#   even mean? They are something like p50, p03, ... are those percentages, percentiles, ...?
+# TODO we have nothing to control in the viewer. The entry states of a conditioned skill
+#   depend on the conditioning signal, so it would be nice to show how they move with it
 
 from __future__ import annotations
 
@@ -50,7 +64,6 @@ from mjlab.tasks.bridging.experiments.humanoid.selector.ground import (
   show,
 )
 from mjlab.tasks.bridging.experiments.humanoid.selector.table import (
-  HEADER,
   TABLE_PATH,
   Entry,
   EntryTable,
@@ -67,8 +80,12 @@ class ViewCfg:
   path: Path = TABLE_PATH
   skill: str = ""
   """Which skill to open on. Empty means the first in the table."""
-  spacing: float = 1.0
-  """Metres between entries."""
+  gap: float = 0.0
+  """Extra metres inserted between consecutive entries, on top of the measured trail.
+
+  Zero is the truth and the default. Anything else is a legibility knob for a window the
+  skill barely moves through, where the real answer is several robots standing in the same
+  place. The table reports the measured distances whatever this is set to."""
   port: int = 8080
 
 
@@ -101,25 +118,42 @@ def tint(model: mujoco.MjModel, prefix: str) -> None:
     model.geom_rgba[geom] = COLOR
 
 
-def markdown(skill: str, entries: tuple[Entry, ...]) -> str:
-  """The skill's rows as they stand on screen, with what each one was asked for.
+def markdown(skill: str, entries: tuple[Entry, ...], trail: np.ndarray) -> str:
+  """One line per entry, in the order they stand on screen.
 
-  The command column is the point of looking. A node is a moment the skill goes through
-  whatever it was told to do, so one pose appearing five times over with five different
-  commands is one node the clustering split by command, and --clusters is too high. Two
-  nodes with genuinely different commands, a left and a right kick, are two nodes and
-  should stay two.
+  Frame and seconds say where in the skill each robot is, which is what a window is being
+  judged on. step is how far the skill travelled since the entry before it, so a run of
+  zeros is a stretch the robot stood still through and a growing column is a skill
+  accelerating. spread says how much the rollouts disagreed there: a large one next to a
+  pose that looks odd means the medoid came out of a cloud with no middle.
   """
-  # TODO this markdown is awful. It takes a lot of space and shows nothing important
+  steps = np.zeros(len(entries))
+  steps[1:] = np.linalg.norm(np.diff(trail[:, 0:2], axis=0), axis=-1)
   return "\n".join(
     [
-      f"**{skill}**, left to right along +y",
+      f"**{skill}**, earliest frame first along +x, {steps.sum():.2f} m end to end",
       "",
-      HEADER[0] + " command |",
-      HEADER[1] + "---|",
-      *[f"{e.row()} {e.command_text()} |" for e in entries],
+      "| entry | frame | s | step m | spread | clearance |",
+      "|---|---|---|---|---|---|",
+      *[
+        f"| {e.name} | {e.frame} | {e.seconds:.2f} | {step:.2f} | {e.spread:.2f} "
+        f"| {e.clearance:+.3f} |"
+        for e, step in zip(entries, steps, strict=True)
+      ],
     ]
   )
+
+
+def placed(count: int, trail: np.ndarray, gap: float) -> np.ndarray:
+  """The trail as ground shifts to draw at, padded and centred. (N, 3).
+
+  Centred on the middle of its own extent rather than on the first entry, so the camera sits
+  in front of the whole sequence whichever skill is picked and however long its window is.
+  """
+  out = trail.copy()
+  out[:, 0] += gap * np.arange(count)
+  out[:, 0:2] -= 0.5 * (out[:, 0:2].min(axis=0) + out[:, 0:2].max(axis=0))
+  return out
 
 
 def serve(cfg: ViewCfg) -> None:
@@ -152,7 +186,9 @@ def serve(cfg: ViewCfg) -> None:
 
   @server.on_client_connect
   def _(client: viser.ClientHandle) -> None:
-    client.camera.position = (4.0, 0.0, 2.0)
+    # Off to the side, because the sequence runs along +x now. Seen from in front, every
+    # robot but the nearest is hidden behind the one ahead of it
+    client.camera.position = (1.0, -5.0, 2.0)
     client.camera.look_at = (0.0, 0.0, 0.8)
 
   picker = server.gui.add_dropdown("Skill", list(table.skills), initial_value=opening)
@@ -161,7 +197,8 @@ def serve(cfg: ViewCfg) -> None:
 
   def draw() -> None:
     entries = table.of(picker.value)
-    middle = (len(entries) - 1) / 2.0
+    trail = table.trail(picker.value)
+    shifts = placed(len(entries), trail, cfg.gap)
     for handle in labels:
       handle.remove()
     labels.clear()
@@ -170,18 +207,17 @@ def serve(cfg: ViewCfg) -> None:
         show(mj_data.qpos, where, parked, UNDERGROUND)
         continue
       state = entries[index].state.astype(np.float64)
-      shift = np.array([0.0, (index - middle) * cfg.spacing, 0.0])
-      show(mj_data.qpos, where, state, shift)
+      show(mj_data.qpos, where, state, shifts[index])
       labels.append(
         server.scene.add_label(
           f"/entry{index}",
           text=entries[index].name,
-          position=(0.0, shift[1], state[2] + 0.6),
+          position=(shifts[index][0], shifts[index][1], state[2] + 0.6),
         )
       )
     mujoco.mj_kinematics(model, mj_data)
     scene.update_from_mjdata(mj_data)
-    readout.content = markdown(picker.value, entries)
+    readout.content = markdown(picker.value, entries, trail)
 
   @picker.on_update
   def _(_) -> None:

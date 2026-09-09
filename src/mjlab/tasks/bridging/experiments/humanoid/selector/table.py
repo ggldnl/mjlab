@@ -1,29 +1,41 @@
-"""The entry table: where a skill can be started from, and how reliable each spot is.
+"""The entry table: the states each skill can be entered at.
 
-    rollouts.npz     what record.py wrote, the input to all of it
-    candidates.npz   every cluster build.py found, measured, unjudged
-    entries.npz      the ones filter.py accepted
+    rollouts.npz   what record.py wrote, the input
+    entries.npz    what build.py wrote, what everything else reads
 
 Columns:
 
     state      pose to aim at, (13 + 2J), canonical frame. See state.py
-    command    what the skill was being asked for while it was in this state. Width is
-               per skill, empty for a skill that takes none
-    frame      which frame of its own reference the skill was reading, for resuming a
-               tracker where the state came from. Steps since the episode reset for a skill
-               with no reference, which is the same number for those and nothing to resume
-    progress   0 at the episode start, 1 at the end
-    coverage   fraction of the skill's rollouts that pass through this spot
-    spread     radius of the spot. 1.0 is one arrival tolerance wide
+    command    what the skill was being asked for here. Width is per skill, empty for a
+               skill that takes none
+    frame      the skill's own clock at this state. What a tracker gets resumed at, and
+               step count for a skill with no reference, which resumes nothing
+    seconds    frame in seconds. Where this sits in the skill
+    coverage   fraction of the skill's rollouts that reach this slice of the window
+    spread     how much those rollouts disagree here. 1.0 is one arrival tolerance wide
     clearance  metres between the lowest part of the robot and the floor. About zero
                standing, positive in the air. See ground.py
-    dwell_s    seconds a rollout stays inside it, median
-    hold_s     coverage * dwell_s. Expected seconds a rollout spends here
-    share      fraction of the skill's recorded states inside it
 
-Rows are sorted by hold_s, biggest first: the spot a rollout is most likely to be in, for
-longest. That is a measurement, not a recommendation. Which entry is best depends on where
-the outgoing skill left the robot, and only the bridge knows that.
+Rows are in frame order, earliest first, which is the order along the window they were
+taken from. Nothing here ranks them: which one to enter at depends on where the outgoing
+skill left the robot, and only query.py is told that.
+
+Being in frame order means they are also in place order, and `trail` says by how much: the
+ground each entry is further on than the one before it, reconstructed from the velocities
+the states carry. That is what lets a whole window be drawn as the sequence a rollout would
+pass through rather than as a row of unrelated poses.
+
+coverage, spread and clearance are diagnostics. Nothing reads them to decide anything. A
+wide spread means the rollouts disagreed where the window put a state, and a clearance
+well above zero means the window reached into a part of the skill the robot spends
+airborne. Both are reasons to move the window in selector/__init__.py, not reasons for
+code to drop a row.
+
+Read coverage against the clip length rather than on its own. A tracker resets into a
+sampled frame of its own clip, so a 455 frame clip spreads its rollouts over 455 starts
+and a slice near the opening is reached by a few percent of them, while a 212 frame clip
+reaches a third. Low coverage on a long clip says the recording is thin there, not that
+the skill avoids the spot.
 """
 
 from __future__ import annotations
@@ -37,28 +49,20 @@ import numpy as np
 ROLLOUTS_PATH = Path("data") / "selector" / "rollouts.npz"
 """What record.py writes and build.py reads. The selector's own, not the bridge's."""
 
-CANDIDATES_PATH = Path("data") / "selector" / "candidates.npz"
-"""What build.py writes and filter.py reads. Every cluster, judged by nothing."""
-
 TABLE_PATH = Path("data") / "selector" / "entries.npz"
-"""What filter.py writes and everything else reads. The accepted entries."""
+"""What build.py writes and everything else reads."""
 
-COLUMNS = (
-  "progress",
-  "coverage",
-  "spread",
-  "clearance",
-  "dwell_s",
-  "hold_s",
-  "share",
-)
+COLUMNS = ("seconds", "coverage", "spread", "clearance")
 """Scalar columns, in the order they are printed. See the module docstring."""
+
+BUILD_HINT = (
+  "Build one with `uv run python -m "
+  "mjlab.tasks.bridging.experiments.humanoid.selector.build`."
+)
 
 
 def _command(raw, index: int) -> np.ndarray:
-  """One entry's command, padding removed. Empty for a file written before the column."""
-  if "command" not in raw:
-    return np.zeros(0, dtype=np.float32)
+  """One entry's command, padding removed."""
   return raw["command"][index][: int(raw["command_dim"][index])]
 
 
@@ -67,7 +71,7 @@ def _padded(commands: list[np.ndarray]) -> np.ndarray:
 
   Skills take different numbers of command values, and one row per entry is the layout
   everything else indexes by, so the narrow ones are padded rather than kept apart.
-  `command_dim` says how much of each row is real.
+  command_dim says how much of each row is real.
   """
   width = max((c.size for c in commands), default=0)
   if width == 0:
@@ -77,49 +81,46 @@ def _padded(commands: list[np.ndarray]) -> np.ndarray:
 
 @dataclass(frozen=True)
 class Entry:
-  """One place a skill can be entered."""
+  """One state a skill can be entered at."""
 
   skill: str
   name: str
-  """Progress through the skill, as a percentage. Unique within a skill."""
+  """The frame, zero padded. Unique within a skill: the window is cut into disjoint
+  slices and each state comes from one of them."""
   state: np.ndarray = field(compare=False)
   """(13 + 2J,) float32, canonical frame.
 
-  Out of the comparison, or == between two entries raises: numpy answers elementwise
-  and a dataclass wants one bool."""
+  Out of the comparison, or == between two entries raises: numpy answers elementwise and
+  a dataclass wants one bool."""
   command: np.ndarray = field(compare=False)
   """(G,) what the skill was being asked for here. Empty for a skill with no command.
 
   Out of the comparison for the same reason as state. Widths differ per skill, so two
   entries of different skills are not comparable on this and nothing tries."""
   frame: int
-  """Which frame of its own reference the skill was reading here.
+  """The skill's own clock here. What a tracker gets resumed at.
 
-  What a tracker is resumed at, and it is not the step count: those reset into a sampled
-  frame of the clip, so a state recorded 53 steps into an episode can be anywhere in the
-  motion. A skill with no reference has nothing to resume and carries its step count."""
-  progress: float
+  Not the step count for a tracker: training resets into a sampled frame of the clip, so
+  a state recorded 53 steps into an episode can be anywhere in the motion."""
+  seconds: float
   coverage: float
   spread: float
   clearance: float
-  dwell_s: float
-  hold_s: float
-  share: float
 
   @property
   def why(self) -> str:
-    """Why this is an entry point, in one line. The measurement, not a justification."""
+    """What this state is, in one line."""
     return (
-      f"{self.coverage:.0%} of rollouts pass through, {self.dwell_s:.2f} s each, "
-      f"{self.progress:.0%} of the way in"
+      f"frame {self.frame}, {self.seconds:.2f} s into the skill, "
+      f"{self.coverage:.0%} of rollouts reach it, spread {self.spread:.2f}"
     )
 
   def command_text(self, most: int = 6) -> str:
     """The command as one short string. "none" for a skill that takes none.
 
     Truncated, because a tracking skill's command is mostly the reference it is chasing
-    and that is dozens of numbers. Enough to tell two nodes apart at a glance, which is
-    what it is for; the whole vector is in `command`.
+    and that is dozens of numbers. Enough to tell two entries apart at a glance; the
+    whole vector is in command.
     """
     if self.command.size == 0:
       return "none"
@@ -131,22 +132,20 @@ class Entry:
   def row(self) -> str:
     """One markdown table row."""
     return (
-      f"| {self.name} | {self.frame} | {self.progress:.2f} | {self.coverage:.2f} "
-      f"| {self.spread:.2f} | {self.clearance:+.3f} | {self.dwell_s:.2f} "
-      f"| {self.hold_s:.2f} | {self.share:.2f} |"
+      f"| {self.name} | {self.frame} | {self.seconds:.2f} | {self.coverage:.2f} "
+      f"| {self.spread:.2f} | {self.clearance:+.3f} |"
     )
 
 
 HEADER = (
-  "| entry | frame | progress | coverage | spread | clearance | dwell_s | hold_s "
-  "| share |",
-  "|---|---|---|---|---|---|---|---|---|",
+  "| entry | frame | seconds | coverage | spread | clearance |",
+  "|---|---|---|---|---|---|",
 )
 
 
 @dataclass
 class EntryTable:
-  """Every skill's entry points, in one file."""
+  """Every skill's entry states, in one file."""
 
   entries: tuple[Entry, ...]
   fps: float
@@ -154,8 +153,8 @@ class EntryTable:
   """(6,) fastest per-channel change per second the corpus achieved, in CHANNELS order.
 
   A property of the robot rather than of any one skill, so it is measured over every
-  recorded state and carried by whichever file is being read. query.py divides by it to
-  turn a gap into an effort. See build.achievable.
+  recorded state and carried by the file. query.py divides by it to turn a gap into an
+  effort. See build.achievable.
   """
 
   @property
@@ -168,14 +167,44 @@ class EntryTable:
     return tuple(seen)
 
   def of(self, skill: str) -> tuple[Entry, ...]:
-    """One skill's entries, best first. Raises if the skill was never built."""
+    """One skill's entries, earliest frame first. Raises if it has none."""
     found = tuple(e for e in self.entries if e.skill == skill)
     if not found:
       raise SystemExit(
-        f"No entry points for '{skill}'. This table holds {', '.join(self.skills)}. "
-        f"Build it with `--skills \"('{skill}',)\"`."
+        f"No entry states for '{skill}'. This table holds {', '.join(self.skills)}. "
+        f"Give '{skill}' a window in selector/__init__.py, then re-run selector.build."
       )
     return found
+
+  def trail(self, skill: str) -> np.ndarray:
+    """Where one skill's entries stand relative to each other, on the ground. (N, 3) metres.
+
+    The entries of a skill are moments of one timeline, so they belong in a line rather than
+    side by side: the robot is at the first one and then, a fraction of a second later and
+    some distance further on, at the second. This says how much further on.
+
+    Reconstructed rather than recorded, because the recorded ground position is not in a
+    state. canonical() drops it, and it would not compose if it were there: two medoids come
+    out of two rollouts and the tiles they stood on have nothing to do with each other. What
+    does compose is the velocity each one carries, so the gap between two entries is the mean
+    of their two root velocities over the time between their frames. That is the same model
+    the bridge places its targets with, see stage.crossing.
+
+    Straight, because canonical() drops heading too and every entry comes out pointing along
+    +x. Right for a run-up and wrong for a skill that turns through its window, which none of
+    these do.
+
+    First entry at the origin, height left alone: that is in the state. A window the skill
+    stands still through comes back all zeros, which is the truth about it rather than a
+    defect, and the reason selector.view has a gap knob to prise those apart by eye.
+    """
+    entries = self.of(skill)
+    out = np.zeros((len(entries), 3))
+    for index in range(1, len(entries)):
+      seconds = (entries[index].frame - entries[index - 1].frame) / self.fps
+      speed = 0.5 * (entries[index - 1].state[7:9] + entries[index].state[7:9])
+      out[index, 0:2] = out[index - 1, 0:2] + speed * seconds
+    return out
 
   def lines(self, skill: str | None = None) -> list[str]:
     """The table as markdown. One skill, or all of them."""
@@ -193,11 +222,14 @@ class EntryTable:
   @staticmethod
   def load(path: Path = TABLE_PATH) -> EntryTable:
     if not path.exists():
-      raise SystemExit(
-        f"No entry table at {path}. Build one with `uv run python -m "
-        f"mjlab.tasks.bridging.experiments.humanoid.selector.build`."
-      )
+      raise SystemExit(f"No entry table at {path}. {BUILD_HINT}")
     raw = np.load(path, allow_pickle=False)
+    missing = [column for column in COLUMNS if column not in raw]
+    if missing:
+      raise SystemExit(
+        f"{path} has no {', '.join(missing)} column, so an older selector wrote it. "
+        f"{BUILD_HINT}"
+      )
     entries = tuple(
       Entry(
         skill=str(raw["skill"][i]),
@@ -205,13 +237,10 @@ class EntryTable:
         state=raw["states"][i],
         command=_command(raw, i),
         frame=int(raw["frame"][i]),
-        progress=float(raw["progress"][i]),
+        seconds=float(raw["seconds"][i]),
         coverage=float(raw["coverage"][i]),
         spread=float(raw["spread"][i]),
         clearance=float(raw["clearance"][i]),
-        dwell_s=float(raw["dwell_s"][i]),
-        hold_s=float(raw["hold_s"][i]),
-        share=float(raw["share"][i]),
       )
       for i in range(raw["states"].shape[0])
     )

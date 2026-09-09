@@ -20,10 +20,15 @@ trigger that disagreed with the skill about what "in reach" means is worse than 
 
 Which of the two an entering skill is decides what a transition to it measures. The pass,
 the kick and the push are about the world: a good arrival with the ball in the wrong place
-is still a failure, so those couples measure the bridge and the trigger together. The jump,
-the front kick and the punch combo have nothing on the floor and can happen anywhere, so a
-transition to one of them measures only whether the robot arrived in the state the entry
-frame asks for.
+is still a failure, so those couples measure the bridge and the placement together. The
+jump, the front kick and the punch combo have nothing on the floor and can happen anywhere,
+so a transition to one of them measures only whether the robot arrived in the state the
+entry frame asks for.
+
+The kick is the one that needs both halves at once, and it is why `Actor.arrive` takes a
+frame. Its window is fifty frames of walking at the ball, so an entry is a point on a
+run-up rather than a stance, and where the robot has to stand depends on how much of that
+run-up is left. See `arrive_at_kick`.
 """
 
 from __future__ import annotations
@@ -34,18 +39,13 @@ import torch
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.managers.event_manager import EventTermCfg
-from mjlab.tasks.bridging.experiments.humanoid.skills.front_kick import (
-  FRONT_KICK_TASK_ID,
-)
 from mjlab.tasks.bridging.experiments.humanoid.skills.jump import JUMP_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.skills.jump.mdp.commands import (
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.mdp.commands import (
   JumpCommand,
 )
 from mjlab.tasks.bridging.experiments.humanoid.skills.kick import KICK_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.kick import mdp as kick_mdp
-from mjlab.tasks.bridging.experiments.humanoid.skills.kick.kick_env_cfg import (
-  BALL_FORWARD_RANGE as KICK_FORWARD_RANGE,
-)
+from mjlab.tasks.bridging.experiments.humanoid.skills.martial import MARTIAL_TASK_IDS
 from mjlab.tasks.bridging.experiments.humanoid.skills.passing import PASS_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.passing import mdp as pass_mdp
 from mjlab.tasks.bridging.experiments.humanoid.skills.passing.pass_env_cfg import (
@@ -55,9 +55,6 @@ from mjlab.tasks.bridging.experiments.humanoid.skills.passing.pass_env_cfg impor
   BALL_LATERAL_RANGE,
   COMMAND_SPEED_RANGE,
 )
-from mjlab.tasks.bridging.experiments.humanoid.skills.punch_combo import (
-  PUNCH_COMBO_TASK_ID,
-)
 from mjlab.tasks.bridging.experiments.humanoid.skills.push import PUSH_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.push import mdp as push_mdp
 from mjlab.tasks.bridging.experiments.humanoid.skills.push.push_env_cfg import (
@@ -65,19 +62,23 @@ from mjlab.tasks.bridging.experiments.humanoid.skills.push.push_env_cfg import (
   BOX_LATERAL_RANGE,
   BOX_YAW_RANGE,
 )
-from mjlab.tasks.bridging.experiments.humanoid.skills.run import RUN_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.walk import WALK_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.tests.stage import Actor, Knob
 from mjlab.tasks.velocity.mdp import UniformVelocityCommand
-from mjlab.utils.lab_api.math import quat_apply, quat_apply_inverse, yaw_quat
+from mjlab.utils.lab_api.math import (
+  quat_apply,
+  quat_apply_inverse,
+  quat_from_euler_xyz,
+  yaw_quat,
+)
 
 ROBOT = "robot"
 
 Ready = Callable[["ManagerBasedRlEnv", torch.Tensor], torch.Tensor]
 """What `Actor.ready` takes. Named so the factories below can say what they return."""
 
-Arrive = Callable[["ManagerBasedRlEnv"], torch.Tensor]
-"""Likewise for `Actor.arrive`."""
+Arrive = Callable[["ManagerBasedRlEnv", int], torch.Tensor]
+"""Likewise for `Actor.arrive`. The int is the entry frame being aimed at."""
 
 APPROACH_RANGE = (2.5, 4.0)
 """How far ahead an object is put, in metres, on whatever line its own skill measures from.
@@ -130,52 +131,6 @@ def _reaches(
 
 
 ##
-# The jump: a reference to place, no object, no precondition. Fires on the button.
-##
-
-JUMP_DISTANCE = 1.55
-"""How far the jump is asked to go, in metres. Fixed rather than sampled, so the profiled
-rollout and the clip the skill gets at the transition are the same jump."""
-
-
-def anchor_jump(
-  env: ManagerBasedRlEnv, pos: torch.Tensor, heading: torch.Tensor
-) -> None:
-  """Pin the jump's clip so it travels along `heading` and opens at `pos`.
-
-  The jump is a motion tracker: it follows a clip anchored somewhere in the world. In its
-  own environment that anchor is the origin, because its reset teleports the robot onto the
-  clip's first frame. Here the robot is wherever the previous skill left it, so the clip has
-  to come to the robot.
-
-  `pos` is where the robot is going to be, not where it is. Anchoring to the robot's actual
-  pose at hand-over slides the clip onto whatever the bridge managed, which erases the
-  arrival error instead of making the skill cope with it.
-
-  Placement and nothing else. This used to also return the state the clip holds at the entry
-  frame, for the harness to aim the bridge at, and that was wrong: the clip is a retargeted
-  human motion, so at frame 90 it stands with 3.8 cm of foot through the floor, descending
-  at twice the rate the policy tracking it descends. The state to arrive in comes from the
-  jump's shortlist, which is states the policy was measured starting from and scored on.
-
-  The clip starts at its first frame, because that is the condition the shortlist was
-  measured under: the selector restarts a skill as if a new episode began, and a new episode
-  of a tracker opens on frame zero. Anchoring part way in would ask the jump to take over
-  mid-clip from a state that was only ever checked against its opening.
-
-  `set_goal`, not `apply_goals`. The latter is the same assignment plus a snap of the robot
-  onto the clip's opening frame, which is right when an evaluation restarts this skill from
-  scratch and catastrophic here: it teleports the robot away mid-transition, and from the
-  outside that looks like the bridge losing a robot that was taken from it.
-  """
-  env_ids = torch.arange(env.num_envs, device=env.device)
-  command = env.command_manager.get_term("motion")
-  assert isinstance(command, JumpCommand)
-  command.set_goal(env_ids, *command.solve_goal(JUMP_DISTANCE))
-  command.anchor_to_robot(env_ids, start_frame=0, at_pos=pos, at_quat=heading)
-
-
-##
 # The ball skills and the push: an object to meet, and a precondition that says when.
 ##
 
@@ -183,11 +138,15 @@ def anchor_jump(
 def _ball_in_reach(forward_range: tuple[float, float]) -> Ready:
   """A precondition that fires when the ball reaches a given box in front of the foot.
 
-  A factory rather than one function, because the pass and the kick measure the same
-  geometry against different numbers: the pass strikes a ball at a quarter of a metre and
-  the kick swings at one at half. A single trigger sized to one of them fires at the wrong
-  moment for the other, and getting that wrong does not look like a mistimed switch, it
-  looks like the entering skill being unable to do its job.
+  A factory rather than one function, because a ball skill's box is its own: the pass
+  strikes at a quarter of a metre and a skill that swings at one would strike at half. A
+  trigger sized to one fires at the wrong moment for the other, and getting that wrong does
+  not look like a mistimed switch, it looks like the entering skill being unable to do its
+  job.
+
+  The pass is the only caller. The kick has a ball too and does not use this: it strikes on
+  a run-up rather than from a stand, so what it needs is not a moment when the ball is in a
+  box but a place to be standing when it takes over. See `arrive_at_kick`.
   """
 
   def ready(env: ManagerBasedRlEnv, at: torch.Tensor) -> torch.Tensor:
@@ -230,7 +189,11 @@ def _arrive_at_ball(forward_range: tuple[float, float]) -> Arrive:
   is measured along is the one the robot is already facing.
   """
 
-  def arrive(env: ManagerBasedRlEnv) -> torch.Tensor:
+  def arrive(env: ManagerBasedRlEnv, frame: int) -> torch.Tensor:
+    # The frame does not enter into it. The pass wants the ball a quarter of a metre in
+    # front of the striking foot and that is the same demand at every entry: its window is
+    # a standing shove, not an approach. The kick's is the other case, see arrive_at_kick
+    del frame
     robot = env.scene[ROBOT]
     ball = env.scene[pass_mdp.BALL]
     middle = 0.5 * (forward_range[0] + forward_range[1])
@@ -260,8 +223,38 @@ def box_in_reach(env: ManagerBasedRlEnv, at: torch.Tensor) -> torch.Tensor:
   return _reaches(delta, BOX_FORWARD_RANGE, BOX_LATERAL_RANGE)
 
 
+def arrive_at_box(env: ManagerBasedRlEnv, frame: int) -> torch.Tensor:
+  """Where the root has to stand for the crate to sit at the middle of the push's box.
+
+  The inverse of `box_in_reach`, the way `_arrive_at_ball` is the inverse of
+  `_ball_in_reach`: that one asks whether a predicted arrival happens to put the crate in
+  the right place, this one solves for the arrival that does. Same numbers, opposite
+  direction, centre to centre because the push's own placement measures that way.
+
+  The frame does not enter into it. The push's window is a stance it opens from and holds,
+  not an approach, so every entry wants the robot in the same place.
+
+  Declaring it is what puts the target on the crate rather than wherever the walk's momentum
+  was heading, and it is the same call that draws the line of entry states while the walk
+  closes in, and that prints the standing error at the hand-over. One answer, used three
+  times, which is the point of there being only one.
+  """
+  del frame
+  robot = env.scene[ROBOT]
+  box = env.scene[push_mdp.BOX]
+  ahead = torch.zeros_like(robot.data.root_link_pos_w)
+  ahead[:, 0] = 0.5 * (BOX_FORWARD_RANGE[0] + BOX_FORWARD_RANGE[1])
+  return box.data.root_link_pos_w - quat_apply(
+    yaw_quat(robot.data.root_link_quat_w), ahead
+  )
+
+
 def clear_pass_phase(
-  env: ManagerBasedRlEnv, pos: torch.Tensor, heading: torch.Tensor
+  env: ManagerBasedRlEnv,
+  pos: torch.Tensor,
+  heading: torch.Tensor,
+  frame: int = 0,
+  values: dict[str, float] | None = None,
 ) -> None:
   """Clear the ball skill's episode state as it takes over. No reference, so no target.
 
@@ -275,10 +268,11 @@ def clear_pass_phase(
   Harmless on the first transition of a session and wrong on every one after, which is the
   worst way for a bug to behave.
 
-  Shared, because the kick inherits the pass's phase tracker along with the rest of its
-  environment. If that ever stops being true this splits in two.
+  Named for the pass because that is where it lives. A second ball skill inherits the same
+  phase tracker along with the rest of the environment, and if that ever stops being true
+  this splits in two.
   """
-  del pos, heading
+  del pos, heading, frame, values
   pass_mdp.reset_pass_phase(env, torch.arange(env.num_envs, device=env.device))
 
 
@@ -297,8 +291,8 @@ PLACE_BALL = _place(
   forward_range=APPROACH_RANGE,
   lateral_range=BALL_LATERAL_RANGE,
 )
-"""One placement for both ball skills. Where the ball *starts* is the same problem either
-way, a few metres out on the striking foot's line, and only where it has to end up when the
+"""One placement for any ball skill. Where the ball starts is the same problem either way,
+a few metres out on the striking foot's line, and only where it has to end up when the
 switch fires differs. That difference lives in the trigger."""
 
 PLACE_BOX = _place(
@@ -325,7 +319,13 @@ from walking pace inside its window, and every extra metre per second is 0.33 s 
 budget at the 3 m/s^2 a body sustains."""
 
 
-def enter_run(env: ManagerBasedRlEnv, pos: torch.Tensor, heading: torch.Tensor) -> None:
+def enter_run(
+  env: ManagerBasedRlEnv,
+  pos: torch.Tensor,
+  heading: torch.Tensor,
+  frame: int = 0,
+  values: dict[str, float] | None = None,
+) -> None:
   """Pin the twist to a straight run.
 
   Unlike every other skill here the run has no command of its own: it reads the same twist
@@ -339,7 +339,7 @@ def enter_run(env: ManagerBasedRlEnv, pos: torch.Tensor, heading: torch.Tensor) 
   the term zeroes the command it was just given on the next step, or world-framed, in which
   case it rewrites it from a stale copy.
   """
-  del pos, heading
+  del pos, heading, frame, values
   twist = env.command_manager.get_term("twist")
   assert isinstance(twist, UniformVelocityCommand)
   twist.vel_command_b[:, 0] = RUN_SPEED
@@ -357,26 +357,113 @@ def enter_run(env: ManagerBasedRlEnv, pos: torch.Tensor, heading: torch.Tensor) 
 
 
 def anchor_clip(
-  env: ManagerBasedRlEnv, pos: torch.Tensor, heading: torch.Tensor
+  env: ManagerBasedRlEnv,
+  pos: torch.Tensor,
+  heading: torch.Tensor,
+  frame: int = 0,
+  values: dict[str, float] | None = None,
 ) -> None:
   """Pin a single-clip tracker's reference so it plays from its opening at `pos`, facing
   `heading`.
 
-  `anchor_jump` without the goal. The jump carries five clips and a distance to pick among
-  them, so it has to be told which jump before it can be told where. The front kick and the
-  punch combo carry one clip each at a pinned scale, so there is nothing to choose and
+  Every tracker here: the jump, the front kick and the punch combo. Each carries one clip at
+  a pinned scale, has no goal to be conditioned on, and reads the reference every step, so
   placement is the whole of taking over.
 
-  These two are the cleanest test the bridge gets. A ball or a crate makes a hand-over about
+  The jump is one of them again. It used to deploy the distilled student of the continuous
+  jump, which reads a goal and its own body and no reference at all, so a distance had to be
+  written and the frame had nowhere to go. What it deploys now is Mjlab-G1-Jump: one clip,
+  jump_forward_level3, 1.54 m every time, tracked at inference the way the other two are.
+  Nothing to tell it, and a frame that means something again.
+
+  These are the cleanest test the bridge gets. A ball or a crate makes a hand-over about
   where the robot ends up in the world, and a good arrival with the object in the wrong
-  place still fails. Here nothing is on the floor and a strike can happen anywhere, so all
-  that is left is whether the robot arrived in the pose and at the velocities the entry
-  frame asks for. Which is what the bridge is actually for.
+  place still fails. Here nothing is on the floor and a jump or a strike can happen
+  anywhere, so all that is left is whether the robot arrived in the pose and at the
+  velocities the entry frame asks for. Which is what the bridge is actually for.
+
+  `frame` is the frame of the clip the entry was recorded at, and the clip resumes there:
+  `anchor_to_robot` winds `time_steps` to it, so the first step after the hand-over reads
+  the reference at that frame and the next one carries on from it. The clip frame, not the
+  step count: these policies reset into a sampled frame of their clip, so a state recorded
+  50 steps into an episode is nowhere in particular. The selector records both and the
+  entry carries this one. The front kick
+  opens on half a second of held stance, so frame zero would stand still for that half
+  second after the bridge had already delivered the robot into the kick; the jump opens on a
+  stand and a settle, and entering at zero would replay the whole run-up to a crouch the
+  bridge has already put the robot in.
   """
+  del values
   env_ids = torch.arange(env.num_envs, device=env.device)
   command = env.command_manager.get_term("motion")
   assert isinstance(command, JumpCommand)
-  command.anchor_to_robot(env_ids, start_frame=0, at_pos=pos, at_quat=heading)
+  command.anchor_to_robot(env_ids, start_frame=frame, at_pos=pos, at_quat=heading)
+
+
+##
+# The kick: a tracker whose window is a run-up, and a ball it has to arrive relative to.
+##
+
+
+def arrive_at_kick(env: ManagerBasedRlEnv, frame: int) -> torch.Tensor:
+  """Where the root has to be at `frame` for the clip's swing to pass through the real ball.
+
+  The kick is the one skill here whose target cannot be predicted from momentum. Its clip
+  runs in for a metre and strikes, the ball sits at the point the converter measured the
+  sole closing on it fastest, and both of those are fixed relative to each other inside the
+  clip. So the ball decides where the robot has to be, and the ballistic placement, which
+  puts the target wherever the robot's own momentum would carry it, aims the kick at empty
+  floor. Declaring this is what stops that.
+
+  It is `JumpCommand.anchor_to_robot` read backwards, and deliberately built out of that
+  method's own pieces so the two cannot disagree. Anchoring turns the clip by
+  `anchor_yaw_for` and then slides it until the root at the entry frame sits on the target,
+  which carries the clip's ball to
+
+      target + R(anchor_yaw) * (ball_clip - clip_root(frame))
+
+  and this solves that for the target given where the ball actually is.
+
+  Which makes the answer depend on the frame, unlike every other `arrive` here. The window
+  is fifty frames of walking at the ball, about a metre of it, so entering early means
+  standing a metre back and entering late means standing a stride back. That dependence is
+  the whole reason `Actor.arrive` is handed a frame.
+
+  Heading now, not at arrival, matching `_arrive_at_ball`: the bridge is asked to hold the
+  heading the robot already has, and the clip is anchored along that same heading.
+  """
+  command = kick_mdp.command(env)
+  robot = env.scene[ROBOT]
+  ball = env.scene[kick_mdp.BALL]
+
+  turn = command.anchor_yaw_for(yaw_quat(robot.data.root_link_quat_w))
+  zero = torch.zeros_like(turn)
+  ahead = command.ball_target - command.clip_root_at(frame)
+
+  out = robot.data.root_link_pos_w.clone()
+  out[:, 0:2] = (
+    ball.data.root_link_pos_w[:, 0:2]
+    - quat_apply(quat_from_euler_xyz(zero, zero, turn), ahead)[:, 0:2]
+  )
+  return out
+
+
+def enter_kick(
+  env: ManagerBasedRlEnv,
+  pos: torch.Tensor,
+  heading: torch.Tensor,
+  frame: int = 0,
+  values: dict[str, float] | None = None,
+) -> None:
+  """Anchor the kick's clip, and clear what it has latched about the ball.
+
+  Both halves are needed and neither is optional. The clip has to be placed, like any
+  tracker's, and the strike latches have to be cleared, like the pass's: `ball_contact` is
+  an observation the policy reads, so a kick taking over with it set from a previous
+  hand-over opens believing it has already struck.
+  """
+  anchor_clip(env, pos, heading, frame, values)
+  kick_mdp.reset_kick_phase(env)
 
 
 ##
@@ -465,22 +552,9 @@ def _launch_controls(speed_range: tuple[float, float]) -> tuple[Knob, ...]:
 
 
 WALK = Actor("walk", WALK_TASK_ID, controls=TWIST_CONTROLS, condition=_twist)
-RUN = Actor(
-  "run",
-  RUN_TASK_ID,
-  enter=enter_run,
-  # The same three controls, defaulted to a run rather than a walk
-  controls=tuple(
-    knob._replace(initial=RUN_SPEED, high=max(knob.high, RUN_SPEED))
-    if knob.name == "forward"
-    else knob
-    for knob in TWIST_CONTROLS
-  ),
-  condition=_twist,
-)
-JUMP = Actor("jump", JUMP_TASK_ID, enter=anchor_jump)
-FRONT_KICK = Actor("front_kick", FRONT_KICK_TASK_ID, enter=anchor_clip)
-PUNCH_COMBO = Actor("punch_combo", PUNCH_COMBO_TASK_ID, enter=anchor_clip)
+JUMP = Actor("jump", JUMP_TASK_ID, enter=anchor_clip)
+FRONT_KICK = Actor("front_kick", MARTIAL_TASK_IDS["front_kick"], enter=anchor_clip)
+PUNCH_COMBO = Actor("punch_combo", MARTIAL_TASK_IDS["punch_combo"], enter=anchor_clip)
 PASS = Actor(
   "pass",
   PASS_TASK_ID,
@@ -494,14 +568,26 @@ PASS = Actor(
 KICK = Actor(
   "kick",
   KICK_TASK_ID,
-  enter=clear_pass_phase,
-  ready=_ball_in_reach(KICK_FORWARD_RANGE),
+  enter=enter_kick,
   place=PLACE_BALL,
-  arrive=_arrive_at_ball(KICK_FORWARD_RANGE),
-  controls=_launch_controls(COMMAND_SPEED_RANGE),
-  condition=_launch,
-  # Two sites on the striking foot, which its observation reads position and velocity off.
-  # Without them the kick's own observation cannot be built in this arena at all
-  robot=kick_mdp.add_strike_sites,
+  arrive=arrive_at_kick,
 )
-PUSH = Actor("push", PUSH_TASK_ID, ready=box_in_reach, place=PLACE_BOX)
+"""The football kick. A tracker, so it anchors a clip, and a ball skill, so it has to arrive
+somewhere in particular, which no other actor here is both of.
+
+No `ready`. The pass fires on its ball reaching a box because the pass strikes from a stand
+and the only question is when the ball arrives. The kick answers that question the other
+way round: `arrive_at_kick` says where the robot has to be for the swing to meet the ball,
+and the switch solves the window rather than waiting for a moment. What is left for the
+operator is when to commit, which is the button.
+
+No controls either. The clip is the whole instruction: where the ball goes, how hard and in
+which direction are facts dataset.py measured out of it, not a command to be set."""
+
+PUSH = Actor(
+  "push",
+  PUSH_TASK_ID,
+  ready=box_in_reach,
+  place=PLACE_BOX,
+  arrive=arrive_at_box,
+)

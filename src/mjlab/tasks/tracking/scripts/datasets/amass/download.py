@@ -55,6 +55,8 @@ from pathlib import Path
 import tyro
 from tqdm import tqdm
 
+import mjlab
+
 LOGIN_URL = "https://download.is.tue.mpg.de/login.php"
 DOWNLOAD_URL = "https://download.is.tue.mpg.de/download.php"
 
@@ -232,4 +234,4 @@ def main(
 
 
 if __name__ == "__main__":
-  tyro.cli(main)
+  tyro.cli(main, config=mjlab.TYRO_FLAGS)

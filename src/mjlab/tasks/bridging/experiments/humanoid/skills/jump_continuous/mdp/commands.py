@@ -184,6 +184,45 @@ class JumpCommand(CommandTerm):
     quat = quat[:, None, :].expand(-1, flat.shape[1], -1)
     return quat_apply(quat.reshape(-1, 4), flat.reshape(-1, 3)).reshape(shape)
 
+  def _rows(self, env_ids: torch.Tensor | None) -> torch.Tensor:
+    """env_ids, or every env when the caller did not say."""
+    if env_ids is None:
+      return torch.arange(self.num_envs, device=self.device)
+    return env_ids
+
+  def anchor_yaw_for(
+    self, quat: torch.Tensor, env_ids: torch.Tensor | None = None
+  ) -> torch.Tensor:
+    """The anchor yaw a clip gets when it is told to travel along `quat`. One per row.
+
+    A clip is canonicalized to open at the origin, and it travels from there to wherever it
+    ends up. Anchoring turns it by the difference between that direction and the one it is
+    asked for, which is all this is.
+
+    Pulled out of `anchor_to_robot` so that whoever solves for where the robot has to be
+    uses the same rotation the anchoring will use. The two are inverses of each other, and a
+    private copy of this arithmetic in the caller is a copy that drifts.
+
+    A clip that goes nowhere, a jump on the spot, has no direction of travel, and
+    atan2(0, 0) falls back to the clip's own +x, which is the right default.
+    """
+    rows = self._rows(env_ids)
+    goal_xy = self.motion.goals[self.motion_ids[rows], 0:2]
+    travel = torch.atan2(goal_xy[:, 1], goal_xy[:, 0])
+    yaw = yaw_quat(quat)
+    heading = torch.atan2(2.0 * (yaw[:, 0] * yaw[:, 3]), 1.0 - 2.0 * yaw[:, 3] ** 2)
+    return heading - travel
+
+  def clip_root_at(
+    self, frame: int, env_ids: torch.Tensor | None = None
+  ) -> torch.Tensor:
+    """Where the clip puts the root at one frame, in the clip's own frame. One row each.
+
+    Unstretched, matching `anchor_to_robot`, which places the clip against this same
+    quantity. A stretched clip's frames move, and both of these ignore that together.
+    """
+    return self.motion.body_pos_w[self.motion_ids[self._rows(env_ids)], int(frame), 0]
+
   @property
   def anchor_yaw_quat(self) -> torch.Tensor:
     half = 0.5 * self.anchor_yaw
@@ -267,19 +306,13 @@ class JumpCommand(CommandTerm):
     # at the entry frame is not root_quat. It is the clip's pelvis at that frame, turned by
     # the same anchor. Aim at the pose the reference holds, which body_quat_w reports once
     # this returns, not at the direction of travel
-    goal_xy = self.motion.goals[self.motion_ids[env_ids], 0:2]
-    # A clip that goes nowhere, a jump on the spot, has no direction of travel to align,
-    # and atan2(0, 0) falls back to the clip's own +x, which is the right default
-    travel = torch.atan2(goal_xy[:, 1], goal_xy[:, 0])
-    yaw = yaw_quat(root_quat)
-    heading = torch.atan2(2.0 * (yaw[:, 0] * yaw[:, 3]), 1.0 - 2.0 * yaw[:, 3] ** 2)
-    self.anchor_yaw[env_ids] = heading - travel
+    self.anchor_yaw[env_ids] = self.anchor_yaw_for(root_quat, env_ids)
 
     self._anchored = True
 
     # Position last: measured against the freshly rotated clip origin, so the robot ends up
     # exactly on the reference's first frame rather than near it
-    clip_root = self.motion.body_pos_w[self.motion_ids[env_ids], frame, 0].clone()
+    clip_root = self.clip_root_at(frame, env_ids).clone()
     rotated = quat_apply(self.anchor_yaw_quat[env_ids], clip_root)
     robot_xy = (self.robot_root_pos_w[env_ids] if at_pos is None else at_pos)[
       :, :2

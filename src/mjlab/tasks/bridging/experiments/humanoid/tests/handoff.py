@@ -67,8 +67,8 @@ from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import (
   arm_mask,
   channel_errors,
 )
-from mjlab.tasks.bridging.experiments.humanoid.selector import Selector
-from mjlab.tasks.bridging.experiments.humanoid.skills.jump.mdp.commands import (
+from mjlab.tasks.bridging.experiments.humanoid.selector import EntryTable
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.mdp.commands import (
   JumpCommand,
 )
 from mjlab.tasks.bridging.experiments.humanoid.tests import actors
@@ -78,6 +78,7 @@ from mjlab.tasks.bridging.experiments.humanoid.tests.stage import (
   Policy,
   arena,
   crossing,
+  defaults,
   facing,
   find_checkpoint,
   state,
@@ -102,7 +103,15 @@ single clip so there is no goal to get wrong on top of the pose.
 class HandoffCfg:
   couple: str = "walk2punch_combo"
   entry: int = 0
-  """Which state off the entering skill's shortlist to aim at."""
+  """Which row of the entering skill's entry table to aim at, in table order."""
+
+  duration_s: float = 0.6
+  """How long a bridge would get to reach the entry, in seconds.
+
+  Only places the target here, since neither mode crosses anything: `none` hands over where
+  the walk left the robot and `perfect` teleports. It decides how far ahead of the interrupt
+  the target sits, which is where a real crossing would end up. The couple's own duration
+  wins when it has one."""
 
   walk_steps: int = 150
   """Control steps of walking before the interrupt. Three seconds at 50 Hz, long enough that
@@ -256,7 +265,7 @@ def stage(cfg: HandoffCfg, couple: Couple, mode: str, env, policies, entry) -> O
   here = state(robot)
   for actor in (couple.entering, couple.leaving):
     if actor.enter:
-      actor.enter(env, here[:, 0:3], here[:, 3:7])
+      actor.enter(env, here[:, 0:3], here[:, 3:7], 0, defaults(actor))
 
   twist = env.command_manager.get_term("twist")
   twist.vel_command_b[:, 0] = cfg.speed
@@ -281,7 +290,9 @@ def stage(cfg: HandoffCfg, couple: Couple, mode: str, env, policies, entry) -> O
   # must not do: the arrival error is the entire subject.
   heading = yaw_quat(here[:, 3:7])
   if couple.entering.enter:
-    couple.entering.enter(env, target[:, 0:3], heading)
+    couple.entering.enter(
+      env, target[:, 0:3], heading, entry.frame, defaults(couple.entering)
+    )
 
   # Now ask the entering skill where it actually wants the robot, and believe it over the
   # reconstruction. See `reference_state`
@@ -313,6 +324,9 @@ class Entry:
   name: str
   why: str
   duration_s: float
+  frame: int
+  """Step of the skill's own trajectory this state was recorded at. The oracle resumes the
+  entering skill there rather than at its first frame."""
 
 
 def report(couple: Couple, entry: Entry, outcomes: list[Outcome]) -> None:
@@ -320,7 +334,10 @@ def report(couple: Couple, entry: Entry, outcomes: list[Outcome]) -> None:
   width = 11
 
   print()
-  print(f"{couple.leaving.name} -> {couple.entering.name}, aiming at '{entry.name}'")
+  print(
+    f"{couple.leaving.name} -> {couple.entering.name}, aiming at '{entry.name}', "
+    f"resuming at frame {entry.frame}"
+  )
   print(f"  {entry.why}")
   print(f"  the bridge would get {entry.duration_s:.2f} s to close this:")
   print()
@@ -376,22 +393,25 @@ def main(cfg: HandoffCfg) -> None:
 
   # Before the simulator: this is the one thing a couple can be missing, and building the
   # arena first means waiting a minute to be told a posture is not written down
-  selector = Selector.load(couple.entering.name)
-  for line in selector.lines():
-    print(f"{couple.entering.name}: {line}")
+  table = EntryTable.load()
+  for line in table.lines(couple.entering.name):
+    print(line)
 
   torch.manual_seed(cfg.seed)
   env_cfg = arena(couple)
   env_cfg.scene.num_envs = 1
   env = ManagerBasedRlEnv(cfg=env_cfg, device=cfg.device)
   try:
-    shortlist = selector.shortlist(env)
-    row, posture, duration = shortlist[cfg.entry]
+    rows = table.of(couple.entering.name)
+    row = rows[min(max(cfg.entry, 0), len(rows) - 1)]
     entry = Entry(
-      state=torch.as_tensor(row, dtype=torch.float32, device=cfg.device),
-      name=posture.name,
-      why=posture.why,
-      duration_s=couple.duration_s if couple.duration_s is not None else duration,
+      state=torch.as_tensor(row.state[None], dtype=torch.float32, device=cfg.device),
+      name=row.name,
+      why=row.why,
+      duration_s=(
+        couple.duration_s if couple.duration_s is not None else cfg.duration_s
+      ),
+      frame=row.frame,
     )
 
     policies = {}

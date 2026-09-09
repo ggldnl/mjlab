@@ -23,6 +23,10 @@ possible weakly, because taking the worst channel ignores that changing two chan
 once is harder than either alone. Capturing that would need a model fitted to bridge
 arrivals.
 
+The entries of one skill are equally spaced along its window, so they differ mostly in
+momentum. Taking the closest is therefore taking the phase of the skill that matches the
+speed the robot arrives with, which is the point of spacing them that way.
+
 nearest takes any Cost, so another scorer can be passed instead:
 
     nearest(table, "jump", state, 0.7, cost=MyCost(...))
@@ -125,7 +129,9 @@ def nearest(
   order is the same at 0.3 s and at 1.2 s. A cost that modeled saturation would reorder
   them.
 
-  Returns every entry, not the good ones. Rejecting is filter.py's job and already happened.
+  Returns every one of that skill's entries. There are no bad ones to leave out: the
+  window in selector/__init__.py already said which part of the skill may be entered, and
+  build.py took states only from there.
   """
   if seconds <= 0.0:
     raise ValueError(f"A window is a positive number of seconds, not {seconds}.")

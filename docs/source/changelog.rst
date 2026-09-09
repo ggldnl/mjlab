@@ -13,8 +13,250 @@ Upcoming version (not yet released)
      MuJoCo's values, and dict values for these fields must cover every
      matched geom (add a catch-all ``".*"`` entry).
 
+Fixed
+^^^^^
+
+- A static box from ``get_box_cfg`` floated half its own height above the ground.
+  ``get_box_spec`` lifted the geom by half a height inside the body so that a box
+  left at the default pose rested on the floor, and ``get_box_cfg`` lifted it again
+  through ``init_state``. A box with a mass never showed it, because its freejoint
+  takes the pose from qpos and overwrites the offset; a static one has no freejoint,
+  so mjlab wraps it in a mocap body and the two lifts add. The lift inside the body
+  is gone and ``init_state`` is the only one left, which leaves ``Mjlab-G1-Push``
+  exactly where it was.
+
 Added
 ^^^^^
+
+- ``Mjlab-G1-Climb`` is a new skill: the G1 climbs onto a 0.65 m box, crosses it
+  and steps down the far side, tracking one OmniRetarget clip. Getting on and
+  getting off are one skill because the source motion is one motion, and a policy
+  that stopped on top would end its episode in a state no other skill here has an
+  entry point for.
+
+  The obstacle ships with the motion. OmniRetarget (arXiv 2509.26633) retargets
+  the human climb and the box together and preserves the contacts between them, so
+  the clip is only physical against that box at that pose; a clip retargeted
+  without the obstacle has no defined relationship to one placed in simulation, and
+  its hands land centimetres above or below the face they push off.
+  ``skills/climb/dataset.py`` reads the box out of the scene URDF the release
+  ships, rotates it with the clip when the clip is moved to the origin, and writes
+  it into the manifest, so the environment places the obstacle the converter
+  measured rather than one somebody typed. Its height is measured against whatever
+  the subject was standing on at the opening frame, not against the source floor,
+  which is what makes it survive the move: the two G1 models do not stand at the
+  same foot height, and a difference of two surfaces cancels an offset that applies
+  to the box top and the floor alike. Driving the converted reference through
+  MuJoCo with the box in place puts the deepest contact at 2.8 cm and the median at
+  0.5 cm, against 1.6 cm and 1.5 cm for the same clip's contacts with the floor, so
+  the box is registered at least as well as the ground is.
+
+  The approach walk is cropped out. The parkour controller drives the robot up to
+  the obstacle with the walk and hands over facing it, so the reference opens
+  standing 0.26 m from the near face. That number is what a hand-over has to
+  deliver and the converter prints it. What a hand-over cannot promise exactly is
+  the angle it arrives at, and that is ``climb_env_cfg.APPROACH_YAW_RANGE``: the
+  box and the reference are one rigid thing and neither moves, because every
+  reference observation is expressed in the robot's own frame and rotating the
+  whole scene together leaves all of them unchanged. What is perturbed is where
+  the robot spawns relative to them.
+
+- ``tracking/scripts/datasets/omniretarget/download.py`` fetches the OmniRetarget
+  robot-terrain set: 29 climbing scenes, each at five height scales, with the box
+  each was solved against. Five of those scenes never get the subject onto the box
+  despite the name, and are listed in ``NOT_CLIMBS`` so nobody converts one and
+  looks for the bug in their environment.
+
+- ``Mjlab-G1-Kick`` was rebuilt as a motion tracking task and no longer shapes a
+  kick out of reward terms. The reference is one of the thirteen human kicks
+  published by PAiD (arXiv 2602.05310), which are already retargeted to the 29
+  joint G1: ``skills/kick/dataset.py`` downloads one, permutes its columns from
+  Isaac Lab's breadth-first joint order into mjlab's, and replays it, which is
+  the whole conversion. Driving mjlab's G1 with that permutation reproduces the
+  body positions stored in the clip to a maximum of 0.00 mm, so the two models
+  are the same robot.
+
+  Where the ball goes is searched rather than configured. The G1's foot collides
+  through seven capsules along the sole and nothing else, so the converter takes
+  that geometry, scores every position near the strike on how fast the sole
+  closes on the ball, and requires the support foot to stay 5 cm clear of it at
+  every frame and every corner of the spawn scatter. Both halves are needed: put
+  the ball one radius ahead of the striking ankle, which is the obvious rule, and
+  in the narrower clips the support foot plants on it during the walk in and
+  knocks it away before the swing arrives. Score on clearance alone instead and
+  the ball drifts to the outside edge of the swing, where a 6.0 m/s foot delivers
+  4.0 m/s. Scoring on the closing speed gives 4.4.
+
+  The default clip runs in: 1.05 m of approach at 1.98 m/s. That follows from the
+  same measurement rather than from taste, because the clips that walk in slowly
+  also plant their feet close together, and a 0.22 m ball has nowhere to go in
+  them. Verified per foot in simulation, driving the reference exactly with the
+  full spawn scatter on: the striking foot contacts in 64 of 64 environments and
+  the support foot in none, sending the ball away at 4.2 m/s on average.
+
+  The two ball rewards are latched, a contact bonus and a saturating term on ball
+  speed along the clip's kick direction, and neither anneals the tracking reward
+  away. Reference state initialization is squeezed into the frames before the
+  strike, because the frames around and after it put the foot inside the ball and
+  a reset there strikes it by teleport. The viewer carries two sliders that move
+  the ball while the reference ghost plays, and a position found that way can be
+  pinned with ``Clip(..., ball=(x, y))``, which the converter checks rather than
+  trusts.
+
+- Added ``tracking/scripts/datasets/asap/download.py``, the one that was missing:
+  ASAP's G1-retargeted clips were being fetched by the jump's own converter,
+  which meant the repository URL, the file naming scheme and the clip manifest
+  lived inside a task. They live in the dataset folder now, next to LAFAN1's,
+  openhe's, PHUMA's and AMASS's. Every ``download.py`` also gained a public
+  ``fetch(name, output_dir) -> Path``, which downloads one clip unless it is
+  cached and returns where it landed, so a task that tracks a single clip asks
+  for it by name instead of carrying a copy of the URL. ``front_kick`` and both
+  jumps now do. Existing caches under ``data/lafan1_g1`` and ``data/asap/raw``
+  are reused as they are.
+
+- ``Mjlab-G1-Jump`` has its own ``dataset.py``, so the task that tracks a clip
+  is also the task that fetches and converts it. It is the clip name and nothing
+  else; the conversion is the continuous jump's, the download is ASAP's, the
+  same way ``punch_combo`` is a frame window over ``front_kick``'s converter.
+  Converting one clip no longer replaces the motion directory's manifest, it
+  merges into it, so a single clip run cannot leave the other clips unordered
+  for ``discover_motion_files``.
+
+- Added ``Mjlab-G1-Jump``, a jump that tracks one ASAP clip end to end instead of
+  covering a range of distances. The clip is ``jump_forward_level3``, 1.54 m of
+  forward displacement, picked because it lands where a 1.5 m jump lands with no
+  horizontal stretch applied and because it is the only one of the five whose
+  sole clears the floor at both reset landmarks. One clip means one phase: the
+  policy reads the reference at inference the way the front kick and the punch
+  combo do, and there is no distillation phase that can quietly fail to recover
+  its teacher. The environment is the continuous jump's with the goal terms, the
+  stretch and the teacher observation group taken out, subtracted rather than
+  restated so the two cannot drift apart in their reward tolerances, their
+  sensors or their curriculum.
+
+- Added ``Mjlab-G1-Kick``, a G1 that walks to a loose ball and strikes it at a
+  target on the ground. It is a port of RoboNaldo (arXiv 2606.11092, MIT), which
+  trains a G1 to shoot and publishes both its reference motion and the mechanism
+  that makes an approach possible.
+
+  An episode is two phases and one event. The ball spawns out of reach, so the
+  policy walks to it under dense approach and facing terms plus a foot air time
+  reward. When the ball is predicted to pass within 0.25 m of the striking area
+  inside 0.4 s, a trigger latches and the reference clock starts at the clip's
+  entry frame, so the wind up and the strike play out from wherever the robot is
+  standing. The policy's own locomotion covers the approach, whatever its
+  length, and the clip is snapped in at the moment it becomes relevant. The
+  prediction is on the ball's velocity relative to the robot's, which is what
+  makes it fire for a still ball the robot is walking at as well as for a rolling
+  one.
+
+  The imitation reward is never annealed. RoboNaldo runs ``motion_weight`` at 1.0
+  through every stage of its curriculum and scales only its global anchor terms
+  when the soccer reward turns on; a policy paid only for where the ball ends up
+  is doing reward shaped kicking and looks like it. The curriculum moves the task
+  weights and the ball's spawn instead, widening it from a step away to two
+  metres and finally rolling it in, which needed a new ``event_curriculum``
+  because nothing in mjlab moved an event's parameters before.
+
+  The goal is a target on the ground rather than a launch velocity: a launch
+  velocity only means something relative to a heading the robot has already
+  committed to, while a target survives a ball the robot had to chase. The
+  reward is the closest the ball has come to it, latched, with a short burst when
+  a shot actually lands.
+
+  Not ported: RoboNaldo's terrain curriculum, its sim-to-real regularization set,
+  its lidar staleness model, and its five separate chained training runs.
+
+- Added ``tasks/tracking/scripts/datasets/gmr/retarget.py``, which retargets
+  SMPL-X human motion onto a robot with GMR (Ze et al., ICRA 2026) and writes
+  the Unitree generalized coordinate CSV the rest of the pipeline already reads.
+  GMR fits the robot to the human's key bodies with a per frame differential IK
+  solve, so it needs no training and runs at 35 to 70 frames per second on CPU.
+  This is the step the AMASS downloader has always ended one short of: until
+  now every motion in mjlab came from somebody else's retargeting. GMR and the
+  SMPL-X body models stay optional dependencies, installed only to run it.
+
+- The AMASS downloader now curates a ``kick`` skill, and can select clips by
+  their path inside a subset as well as by their file name. That reaches CMU
+  subjects 10 and 11, its soccer session, whose trials are numbered rather than
+  named, and ACCAD's martial arts kicks.
+
+- Added the ``demos/parkour`` package, which walks a G1 down a procedurally
+  generated obstacle course, switching skills at every obstacle. ``course`` draws
+  the course from a seed, ``pool`` wraps each frozen policy as a ``Skill`` that
+  knows how it has to be spoken to, ``bridge`` aims the bridge at a commanded
+  pose, ``arena`` builds the environment and also serves the course on its own
+  with no robot and no policies loaded, ``controller`` holds the rules and the
+  phase machine, and ``run`` is the entry point.
+
+  Two kinds of obstacle, both solid, both turned, both coloured from the palette.
+  A hurdle is 0.20 m tall and 1.00 m long and is jumped; the jump clip covers
+  about 1.5 m, so the bar plus the floor its take-off and landing need fits
+  inside that. A box is climbed, and every box is identical because the climb
+  skill's clip was retargeted together with its obstacle and is only physical
+  against that box at that pose. Its size therefore comes out of the skill's own
+  manifest rather than out of the config: 0.65 m tall, 1.48 m along the approach,
+  0.70 m across.
+
+  Which follows through to the approach. The clip fixes where the box sits
+  relative to the robot at frame zero, so the pose the robot has to arrive in is
+  that relationship inverted onto the real obstacle rather than a take-off
+  distance somebody chose, and the switch waits on heading and cross-track error
+  as well as on reachability. ``ARRIVE_SLACK`` still applies: a crossing travels
+  along one line, so a demanded pose off that line stays off it and the
+  controller waits rather than firing into a miss. The tolerance on the angle is
+  the climb's own ``APPROACH_YAW_RANGE``, the spread its reference state
+  initialization was trained across.
+
+  The climb reads its obstacle, and on a course there are several. Rather than
+  copy the term, the arena rebinds it to one that swaps the scene's entry for the
+  obstacle the controller is pointing at, calls the skill's own function and puts
+  the entry back: the observation of a frozen policy is bound to its checkpoint
+  and a second implementation of it could drift.
+
+  Every number the generator reads lives in ``config.yml`` beside the package,
+  ``--config`` points at another one, and ``--viewer`` takes ``viser``,
+  ``native`` or ``none``. ``--scene True`` draws the course and stops;
+  ``--dry True`` prints the rules, the course and the plan and stops. Both work
+  with no checkpoints at all, and ``run`` refuses to start, before building
+  anything, when a skill the plan needs has no entry table rows.
+
+- ``Mjlab-G1-Jump`` now trains in two phases in a single run, so that the
+  clips shape the skill while it is learned and nothing reads them once it is.
+  Phase one is unchanged: PPO against a tracking reward over five retargeted
+  clips, stretched horizontally, with the goal in the observation and in the
+  reward. Phase two freezes that policy as a teacher and regresses a student
+  onto it over the student's own rollouts, in the same process, with no
+  checkpoint written in between. The student reads the goal and its own body and
+  nothing else, 101 numbers against the teacher's 176, and the 75 that go are all
+  reference. It is what the checkpoint holds at the end and what ``play`` and the
+  composition arena load. The split is ``agent.tracking_iterations`` of
+  ``agent.max_iterations``. Retraining is required: existing checkpoints hold a
+  teacher and no student, and are refused with a message saying so.
+
+  This makes the jump conditionable the way the walk and the run are. A hand-over
+  into it sets a distance rather than placing a trajectory and winding it to a
+  frame, so the entry table's frame column no longer decides what the skill does.
+
+- Added ``RslRlTeacherStudentRunnerCfg`` and ``MjlabTeacherStudentRunner``,
+  which run PPO with a privileged observation and then distil the result into a
+  policy reading a smaller one, as two phases of a single ``learn`` call. For any
+  skill whose observation is only learnable with information it will not have at
+  inference. ``MjlabOnPolicyRunner`` gained a ``MODEL_KEYS`` class attribute so
+  both runners share its checkpoint handling, and it now serves a
+  ``student_state_dict`` to callers asking for an actor, so a distilled policy
+  loads through every existing inference path unchanged.
+
+- Added a ``distance`` control to the jump in the humanoid transition arena, so
+  ``walk2jump`` can be asked how far the robot has to cover instead of always
+  jumping the 1.55 m that was pinned in ``anchor_jump``. The slider spans the
+  0.35 to 2.55 m the five clips reach once stretched. To carry it,
+  ``Actor.enter`` now also receives the skill's control values: a distance picks
+  which clip plays and how far it is stretched, and the anchor reads that when it
+  places the reference, so it has to be known at placement rather than written a
+  step later the way a ``condition`` is. The entry frame is still an absolute step
+  off a table recorded across all five clips, so a distance far from the default
+  asks a frame chosen under one clip to mean something under another.
 
 - Added the ``selector`` package, which finds where each skill can be entered
   instead of asking someone to write it down. ``selector.record`` drives every
@@ -102,10 +344,253 @@ Added
   defaulting to ``0``. Raise it so the box's own ``friction`` wins against the
   terrain's instead of losing to MuJoCo's elementwise maximum, which is what
   lets a box be more slippery than the ground it sits on.
+- ``tests/transitions/walk2kick.py`` stages a hand-over from the walk into
+  ``Mjlab-G1-Kick``, the football kick. It is the first couple whose entering
+  skill is both a clip tracker and a skill with an object, and the two together
+  are what make it different from the pass: the clip runs in for a metre and
+  strikes a ball fixed relative to the swing, so the swing only connects if the
+  clip is laid down with its ball on the real one. That inverts the placement.
+  Instead of predicting where the robot's momentum will carry it, the harness
+  solves for where the robot has to stand,
+
+  .. code-block:: text
+
+     target = ball - R(heading) * (ball_in_clip - clip_root(entry frame))
+
+  which is ``JumpCommand.anchor_to_robot`` read backwards, built out of that
+  method's own ``anchor_yaw_for`` and ``clip_root_at`` so the two cannot drift
+  apart. ``Actor.arrive`` therefore takes the entry frame now: the kick's window
+  is fifty frames of run-up, so where the robot has to stand depends on how much
+  of that run-up it is skipping, and the answer moves by half a metre across the
+  window. Every other skill ignores the argument. The switch is the button, as
+  it is for the jump and the strikes; the window is still solved from the
+  geometry, which is a separate question from when to fire and is now written
+  that way.
 
 Changed
 ^^^^^^^
 
+- ``selector.view`` and the transition harness draw a skill's entry states as
+  the sequence the skill passes through rather than as a row of poses. They used
+  to stand side by side, evenly spaced, which says every entry is the same
+  distance on from the last and is false for every skill that accelerates
+  through its window. ``EntryTable.trail`` now says how far apart they really
+  are: the ground position is not in a state, since ``canonical`` drops it and it
+  would not compose across two medoids taken from two rollouts anyway, so the gap
+  between two entries is the mean of their two root velocities over the time
+  between their frames, which is the same model the bridge places its targets
+  with. The kick's six entries come out as half a metre of run-up and the jump's
+  six as one tile the robot crouches on, both of which are the truth about those
+  windows. ``selector.view --gap`` inserts daylight between entries for a window
+  the skill barely moves through.
+
+  The transitions draw the whole window with the target. At the switch the
+  target ghost is joined by a faint one per entry, placed along that trail and
+  hung off the target, so the aimed state sits in its own place in the line and
+  the rest of the skill's approach runs back from it. For a skill whose target is
+  fixed by an object, that means the object places the entire line: the kick's
+  ghosts run back from the ball.
+
+  For a couple whose entering skill has an object, that line is now drawn from
+  the first step rather than at the switch, and a ``show the entry states``
+  checkbox turns it off. A hand-over into an object skill is fired at a moment,
+  and firing it late is a miss rather than a worse score: the robot walks through
+  its own ball. Nothing in the arena knows when that moment is, because the button
+  is what a controller would be replacing. What makes it visible is that the
+  moment is really a place. ``Actor.arrive`` says where the robot has to stand for
+  the skill to meet its object, and an object does not move, so evaluating it at
+  each entry's own frame gives a line of poses fixed to the floor and the switch
+  reduces to walking onto them. The viewer's line reports the metres still to go
+  next to whoever is driving, so a number closing on zero is a switch worth firing
+  and one that has bottomed out and started growing again is a robot that has gone
+  past. Measured on ``walk2kick``, firing at step 130 leaves the robot 0.08 m from
+  where the kick wants it and firing at 180 leaves it 0.68 m past.
+
+  The line drawn before the switch is ``Actor.arrive`` per entry, not
+  ``EntryTable.trail``. The trail integrates the entries' own velocities and is a
+  few centimetres out over half a second, which is most of the box a ball skill
+  was trained in; ``arrive`` reads the clip. A skill with nothing on the floor
+  gets neither the line nor the checkbox, since its target moves with the robot
+  every step and there is nothing to walk towards.
+
+- ``PUSH`` declares an ``arrive``. ``arrive_at_box`` inverts ``box_in_reach`` the
+  way ``_arrive_at_ball`` inverts ``_ball_in_reach``, so the push gets the entry
+  ghosts and the standing-error diagnostic the other object skills have.
+
+- The bridge's target now lands on one of the entry states that are drawn, rather
+  than near them, and both the transition harness and the parkour demo were
+  getting this wrong in their own way. Drawing the states an object skill needs
+  and then aiming somewhere else is worse than drawing nothing: the operator times
+  the switch against a line the switch does not use.
+
+  In the harness the split was ``Config.commanded``, which decided whether
+  ``Actor.arrive`` placed the target and defaulted off. It is gone. A skill that
+  says where it needs the robot is aimed there; a skill that says nothing still
+  gets the ballistic midpoint. The flag was off because commanding the arrival
+  measured 0.104 m against 0.083 m on ``walk2pass``, which was never deciding
+  anything against a box eight centimetres deep and was measuring the target on
+  its own rather than against the entry states that have to agree with it.
+
+  What the change buys exactly is the agreement, not a better number: the line
+  drawn at the switch is the demanded one frozen, so the aimed entry's ghost is the
+  target to the last printed digit rather than a few centimetres from it, on every
+  couple. The standing error a hand-over inherits moved from 0.172 m to 0.059 and
+  0.149 m over two runs of ``walk2pass``, which is spread rather than an
+  improvement: that couple fires on geometry, so a small change in the solved window
+  moves which entry it takes and which stride it fires on.
+
+  In the parkour demo ``Controller.frame_of`` returned ``entries[0].frame``, the
+  first row of the table, while ``nearest`` chose whichever entry was easiest to
+  reach. So the approach pose was solved for one entry and the target's state came
+  from another: a pose the skill really passes through, standing somewhere it
+  never passes through it. ``__call__`` carried a comment claiming it re-solved at
+  the chosen frame and it did re-solve, at the same wrong one. ``ready`` now picks
+  the reach first and solves the alignment gate, the approach pose and the window
+  at that entry's frame, and ``frame_of`` answers with the entry a hand-over would
+  actually use. It hid because the climb has a single entry, where the two agree;
+  the jump has six.
+
+- The parkour demo's walk now holds station short of the approach pose instead of
+  driving at it. It was cruising at ``approach_speed`` until something fired, which
+  crossed the whole band the switch can fire in inside about twenty control steps;
+  if the heading had not settled by then the robot walked through the spot and
+  parked past it, and from there the window that would land a crossing on the pose
+  comes out negative, which ``ready`` can never accept. Measured on a two obstacle
+  course it sat 0.16 m past the spot with the solve reading -1.5 s for the whole
+  run and cleared nothing. ``Controller.stand_off`` is the distance to hold: half
+  the entry's own forward speed times the middle of the trained window, which is the
+  ground a crossing covers when it starts from a robot that has stopped. Off the
+  entry's speed and nothing else, because averaging in the robot's own does not
+  converge, a robot stepping in place still having a root velocity that swings
+  through most of a stride. ``walk.approach_gain`` and ``walk.reverse_limit`` in
+  ``config.yml`` are the regulator, and the gain is high because a proportional
+  command stalls where it meets the walk's own deadband: at 0.6 the robot stopped
+  0.34 m out asking for 0.16 m/s it would not act on, and a crossing into an entry
+  moving at 0.2 m/s covers only 0.12 m, so it has to stop inside that or no trained
+  window reaches it.
+
+  Measured on the same two obstacle course, the demo now fires at step 43 into the
+  climb's entry over a 0.64 s window and arrives 0.054 m and 2.6 degrees off the
+  pose it was promised, against a run that previously made no decision at all in
+  8000 steps. It still goes down during the climb itself, which is a hand-over
+  quality question rather than a controller one: the climb has a single entry, so
+  there is no second state for the selector to prefer, and the arrival is 0.37 rad
+  out at the worst joint.
+
+- ``walk.lateral_gain`` in the parkour ``config.yml`` goes from 0.8 to 2.5. Holding
+  station rather than cruising through, the walk has to close its cross-track error
+  standing still, and at 0.8 an error of 0.13 m asks for 0.09 m/s sideways, which
+  the policy stands through: the error moved 0.009 m in a thousand control steps and
+  the alignment gate never opened. At 2.5 the same error asks for 0.33 m/s, a
+  stride, still under the 0.35 limit and well inside the walk's trained range, and
+  the error closes to 0.055 m against a tolerance of 0.080.
+
+- ``Actor.ready`` is no longer called for a skill that declares ``arrive``.
+  Solving the window to land the crossing on the demanded pose puts the object in
+  its box by construction, so the precondition would be answering its own
+  question. What the pass and the push still need the declaration for is to say
+  they fire themselves rather than waiting for the button, which a precondition is
+  a roundabout way of saying; the docstring says so rather than leaving it
+  implied.
+
+- The ``selector`` package no longer discovers where a skill can be entered. It
+  clustered every state a skill visited and then filtered the clusters on
+  coverage, dwell, clearance and progress, which cannot work: a pre-jump stand
+  and a post-landing stand are the same state, so no rule reading the state
+  alone keeps one and drops the other. ``jump`` kept six entries of which three
+  sat after the landing, and ``climb`` kept one, mid-hop with both hands over a
+  box the selector cannot see.
+
+  Where a skill may be entered is now written down by hand, per skill, as a
+  window over that skill's own timeline in ``selector/__init__.py``:
+
+  .. code-block:: python
+
+     WINDOWS = {"jump": Window(phase=(55, 100), states=6), ...}
+
+  ``selector.build`` cuts the window into that many equal slices and keeps the
+  medoid of each one, so the states are equally spaced along the window and the
+  medoid discards the rollouts that drifted or fell without a threshold saying
+  which. ``selector.query`` is unchanged and hands back the closest of them to
+  where the robot is, which now means the phase of the skill matching the speed
+  the robot arrives with. A skill with no window gets no entries and cannot be
+  handed over to; ``walk`` and ``pass`` have one only because the parkour
+  controller has to aim somewhere when it hands back.
+
+  ``selector.filter`` and ``data/selector/candidates.npz`` are gone, together
+  with the ``progress``, ``dwell_s``, ``hold_s`` and ``share`` columns.
+  ``Entry`` carries ``seconds`` instead, and ``coverage``, ``spread`` and
+  ``clearance`` are now diagnostics that no code reads. Existing
+  ``data/selector/entries.npz`` files do not load; re-run ``selector.build``,
+  which needs no new recording.
+
+- The ``walk2jump`` transition hands over to ``Mjlab-G1-Jump`` instead of
+  ``Mjlab-G1-Jump-Continuous``. The continuous jump deploys a distilled student
+  that reads a goal and its own body and no reference at all, so a hand-over
+  into it had a distance to write and no phase to resume: the entry table's
+  frame column meant nothing to it. The single clip jump is a tracker like the
+  front kick and the punch combo, so the jump actor is one line again, with no
+  controls, no ``condition`` and ``anchor_clip`` for its ``enter``. The
+  ``distance`` slider and ``--tell "{'distance': ...}"`` are gone with it, and
+  the selector's ``jump`` rows were already recorded against this task.
+
+- ``front_kick`` and ``punch_combo`` are gone as separate packages and are now
+  two entries of ``skills/martial``, one package for every martial arts motion
+  cut out of a LAFAN1 fight performance. They already shared a converter and an
+  environment, with ``punch_combo`` contributing a frame window and a
+  registration and nothing else, so the split was only in the directory names.
+  A motion is now a line in ``MOTIONS`` in ``martial/dataset.py``: it gets a task
+  named after it, its own clip directory and a ``g1_<name>`` log directory, and
+  both ``SKILLS`` dictionaries pick it up from ``MARTIAL_TASK_IDS``. Task ids,
+  clip directories and log directories are unchanged, so existing checkpoints
+  and converted clips keep working. The converter builds its scene once and
+  converts every motion asked for, ``--motion`` picks one, and the window
+  override is ``--crop-source/--crop-start/--crop-end`` instead of the old
+  ``--crop.*``, which ``tyro.conf.AvoidSubcommands`` had been dropping.
+  ``g1_strike_env_cfg`` is ``g1_martial_env_cfg``.
+
+- The goal conditioned jump is now ``Mjlab-G1-Jump-Continuous``, in
+  ``skills/jump_continuous``, logging to ``g1_jump_continuous``. The name
+  ``Mjlab-G1-Jump`` goes to the new single clip tracker above, which is what a
+  jump means by default here now. Existing runs under ``logs/rsl_rl/g1_jump``
+  are continuous jumps and have to move to ``g1_jump_continuous`` with the
+  rename, or ``play`` will pick one by modification time for the wrong task.
+  ``SKILLS`` in both the skills package and the bridge's dataset now carries
+  both entries, and the bridge's skills dataset keeps recording the continuous
+  jump by default, which is the skill it recorded before.
+
+- The transition harness under ``bridging/experiments/humanoid/tests`` now
+  calls the selector's own API instead of the compatibility shim that was
+  deleted with the new selector, so ``tests/stage.py``, ``tests/handoff.py``
+  and every ``tests/transitions`` script import and run again. Entries are
+  ranked per control step by ``selector.nearest``, which orders them by the
+  rate of change each would demand of the body as it is moving now rather than
+  by a property of the entering skill alone. ``--mode`` says who picks: ``auto``
+  takes the top of that ranking every step, out of the entries ``filter.py``
+  accepted, and has no slider; ``manual`` puts the choice on the ``entry``
+  slider over every candidate the clustering found, rejected ones included, in
+  the order ``selector.view`` draws them. The bridge's window is the longer of
+  the couple's own default and the shortest window the ranking says is
+  feasible: an effort of 1 is a per-channel corpus maximum, so it is a floor to
+  be cleared and not a window to ask for. Scoring a hand-over is the harness's
+  own job now, so the discount comes from the entering skill's PPO config and a
+  pass or fail needs ``--baseline``, read off the ``perfect`` column of
+  ``tests/handoff.py``.
+- The entering skill of a transition now resumes at the step its entry was
+  recorded at instead of at its own first frame. ``Actor.enter`` takes that
+  frame and a clip tracker winds its reference to it, so a hand-over into the
+  middle of a motion no longer replays the run-up the bridge just crossed. A
+  tracking policy has no privileged beginning, so any frame is a state it
+  continues from once the robot is put in it, which is the bridge's job.
+  Caveat: ``selector.record`` drives each skill's training config and stores
+  the episode age, and the trackers train with ``sampling_mode="adaptive"``,
+  which starts every episode at a random clip frame. So the recorded frame is
+  an age offset by that random start, not a clip phase, until
+  ``datasets.dataset.record`` stores the tracker's own ``time_steps``.
+- Removed the leftovers of the deleted ``kick`` skill from the transition
+  harness: the ``KICK`` actor and ``tests/transitions/walk2kick.py``. Nothing
+  in ``tests`` could be imported while they named a package that is no longer
+  there. ``walk2pass`` covers the ball skill that exists.
 - Removed the bridge's warm-start machinery: ``warm_start.py``,
   ``BridgeRunnerCfg``, ``BridgeOnPolicyRunner`` and the ``--agent.warm-start``
   flag. It was measured to hurt (0.064 score against a cold start's 0.142 at a
@@ -210,6 +695,50 @@ Changed
 
 Fixed
 ^^^^^
+
+- The selector's ``frame`` column is the frame of the skill's own reference the
+  state was recorded at, so a tracker can actually be resumed there. It used to
+  be the control steps since that row's episode reset, which for a tracker is
+  not a clip index at all: these tasks reset into a *sampled* frame of the clip,
+  so two rollouts one step old sit at two different frames. Winding the jump's
+  clip to entry ``p28``'s frame 53 landed on a stand 16 cm taller than the crouch
+  the entry actually holds, and the policy stood, crouched and jumped as if from
+  scratch. ``dataset.record`` now records ``clip_phase`` alongside the age, in a
+  new ``phase`` column, and ``build.py`` puts it on the entry. Rollout files
+  written before the column still load; the entry table has to be rebuilt with
+  ``selector.record``, ``selector.build`` and ``selector.filter`` for the frames
+  to mean anything. Affects every tracker: the jump, the front kick, the punch
+  combo, and the tracking corpus in ``datasets/tracker.py``.
+
+- A clip tracker taking over from the bridge now resumes at the frame its entry
+  was recorded at, rather than a whole window past it. The reference is wound to
+  that frame when the switch fires, and a motion command advances one step per
+  environment step no matter who is driving, so by the hand-over it had played
+  the entire crossing forward: 35 frames of a 212 frame jump at the default 0.7 s
+  window, handing the tracker a reference a third of a jump ahead of the robot
+  the bridge had just delivered into the entry state. ``Run.resume`` repeats the
+  placement at the hand-over with the same target, heading and frame, so only the
+  phase moves and the arrival error is left where the bridge left it. Affects
+  every tracking hand-over: the jump, the front kick and the punch combo.
+
+- The two phase runner no longer dies at the phase boundary when logging to
+  W&B. rsl-rl closes the logging writer at the end of every ``learn``, and for
+  W&B closing means ``wandb.finish``, after which the module swaps ``wandb.log``
+  for a stub that raises. The runner already stopped phase two from opening a
+  second writer, so phase two inherited the closed one and raised on its first
+  logged iteration, losing the whole tracking phase. Phase one now leaves the
+  writer open and it is closed once, at the end of phase two. A run interrupted
+  this way is recoverable without retraining: resume from the last tracking
+  checkpoint with ``--agent.tracking-iterations`` set to its iteration, and
+  phase one is skipped entirely.
+
+- ``JumpCommand.solve_goal`` now rounds the reachability miss before comparing,
+  so its documented tie-break on how little a clip is stretched actually runs.
+  Any distance two clips both reach exactly left two residuals differing only in
+  the last bits of a division, so the choice was made on float noise: at 1.55 m it
+  picked level 4 shortened to 0.85 over level 3 stretched to 1.008. This also made
+  the goal-only command disagree with the tracker about which jump a distance
+  means; the two now agree across the whole commanded range.
 
 - ``csv_to_npz`` now saves to a configurable local directory and only uploads
   outputs to Weights & Biases when ``--upload-to-wandb`` is supplied.

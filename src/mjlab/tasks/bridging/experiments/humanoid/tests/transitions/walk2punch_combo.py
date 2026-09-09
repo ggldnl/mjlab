@@ -8,9 +8,10 @@ Run:
 
        uv run python -m mjlab.tasks.bridging.experiments.humanoid.tests.handoff
 
-    2. Check the entry state is one a robot can be in.
-    2. Look at the entry states.
-       uv run python -m ...selector.view --skill punch_combo
+    2. Look at the entry states, and check each is one a robot can be in. Four of them,
+       over the opening before the first strike commits.
+
+       uv run python -m ...selector.view --skill punch_combo --gap 0.8
 
     3. Watch the real thing, once a bridge is trained.
 

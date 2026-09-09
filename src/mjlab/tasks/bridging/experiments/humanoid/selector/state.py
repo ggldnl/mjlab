@@ -1,14 +1,14 @@
 """How a robot state is written down, compared and scaled.
 
-Shared by build.py, which clusters states, and query.py, which measures how far one is from
-another.
+Shared by build.py, which takes the medoid of a group of states, and query.py, which
+measures how far one is from another.
 
 A state is a dataset row: root position, orientation, both root velocities, then joint
 angles and joint rates, (13 + 2J,).
 
     canonical     drop where on the floor and which way round
     channel_gap   how far apart two states are, per channel, in natural units
-    features      one vector per state whose euclidean distance is the clustering metric
+    features      one vector per state whose euclidean distance is the medoid's metric
 """
 
 from __future__ import annotations
@@ -47,8 +47,8 @@ def canonical(states: torch.Tensor) -> torch.Tensor:
   facing different ways come out identical. Both velocities are rotated with the pose,
   or they would still point the way the robot happened to be facing when recorded.
 
-  Two reasons this is the right frame. Clustering: without it, states group by where on
-  the floor they happened rather than by what the robot was doing. Aiming: whoever
+  Two reasons this is the right frame. Grouping: without it, states sort by where on the
+  floor they happened rather than by what the robot was doing. Aiming: whoever
   places a target picks the ground position and the heading, so those are free
   parameters and never a reason one entry is harder to reach than another.
   """
@@ -89,7 +89,8 @@ def channel_gap(here: torch.Tensor, there: torch.Tensor) -> torch.Tensor:
 
 
 def features(states: torch.Tensor) -> torch.Tensor:
-  """Canonical states as vectors whose euclidean distance is the clustering metric.
+  """Canonical states as vectors whose euclidean distance is the metric a medoid is found
+  under.
 
   Each channel is divided by its scale and by the square root of its width, so a 29-number
   joint block does not outweigh a 3-number velocity just by being wider.
@@ -98,9 +99,9 @@ def features(states: torch.Tensor) -> torch.Tensor:
   tilts a standing robot has that is the tilt angle in radians, and forcing the sign stops
   one rotation being written two ways.
 
-  Not the same as channel_gap, on purpose: this one has to be a point in a space a
-  clustering algorithm can take thousands of distances in, that one has to be readable per
-  channel. They agree on scale and on which channels exist, which is as much as they need.
+  Not the same as channel_gap, on purpose: this one has to be a point in a space thousands
+  of distances can be taken in at once, that one has to be readable per channel. They agree
+  on scale and on which channels exist, which is as much as they need.
   """
   num_joints = (states.shape[1] - ROOT_STATE_DIM) // 2
   tilt = states[:, 3:7]

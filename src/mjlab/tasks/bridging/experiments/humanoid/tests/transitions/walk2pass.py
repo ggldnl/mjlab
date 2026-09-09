@@ -8,9 +8,20 @@ No button needed. The ball is put a few metres out on the striking foot's own li
 switch fires when walking has brought it into the box the pass was trained from. Steering
 is on the Drive sliders if the walk wanders off the line.
 
-This was walk2kick until the skill was renamed. What the policy learned is a low shove with
-the sole rather than a strike, so the task is now called what it does. walk2kick is the
-same transition into the version that has to swing.
+What the policy learned is a low shove with the sole rather than a strike, so the task is
+called what it does. The skill that swings is the kick, and it has a couple of its own in
+walk2kick.
+
+The pass has three entry states over frames 27 to 50, which is a short window near the
+opening and deliberately so: the robot is standing over a ball for the whole episode, and
+this skill is trained by reward rather than tracking anything, so one frame is much like
+another and the window exists only to give the bridge somewhere to aim.
+
+That also makes its trail almost nothing. The three states are a standing robot a fraction
+of a second apart, so `selector.view` draws them on top of each other and the transition
+draws them on top of the target. Real, and the reason `--gap` exists:
+
+    uv run python -m ...selector.view --skill pass --gap 0.8
 """
 
 from mjlab.tasks.bridging.experiments.humanoid.tests.actors import PASS, WALK

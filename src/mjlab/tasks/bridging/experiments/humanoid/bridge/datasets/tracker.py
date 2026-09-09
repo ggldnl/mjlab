@@ -240,6 +240,7 @@ def collect(cfg: TrackerCfg) -> Path:
   env_ids: list[np.ndarray] = []
   trajectory_ids: list[np.ndarray] = []
   frames: list[np.ndarray] = []
+  phases: list[np.ndarray] = []
   sources: list[np.ndarray] = []
   goals: list[np.ndarray] = []
   names: list[str] = []
@@ -262,7 +263,7 @@ def collect(cfg: TrackerCfg) -> Path:
       )
     fps = rate
 
-    rows, envs, trajectories, ages, commands = dataset.record(
+    rows, envs, trajectories, ages, clip_frames, commands = dataset.record(
       cfg.task, env_cfg, checkpoint, cfg, clip.stem
     )
 
@@ -281,6 +282,7 @@ def collect(cfg: TrackerCfg) -> Path:
     env_ids.append(envs)
     trajectory_ids.append(trajectories)
     frames.append(ages)
+    phases.append(clip_frames)
     sources.append(np.full(len(rows), len(names), dtype=np.int16))
     goals.append(commands)
     names.append(clip.stem)
@@ -302,6 +304,7 @@ def collect(cfg: TrackerCfg) -> Path:
     tuple(names),
     fps,
     goals,
+    phases,
   )
 
 

@@ -550,6 +550,29 @@ def reset_ball_at_strike(
   _tracker(env).reset(env_ids, root_state[:, :2])
 
 
+def reset_kick_phase(
+  env: ManagerBasedRlEnv, env_ids: torch.Tensor | None = None
+) -> None:
+  """Clear the latched strike state, leaving the ball where it is.
+
+  What `reset_ball_at_strike` does as part of putting the ball out, on its own. That is the
+  right pairing at a reset and the wrong one in a composition, where the ball is already on
+  the floor wherever some other placement left it and only the latches are stale.
+
+  Stale latches are not cosmetic. `touched` is a real observation the policy reads, so a
+  kick taking over with it still set from a previous hand-over believes it has already
+  struck the ball, and `max_speed` keeps paying for a strike that happened in another
+  episode. Harmless the first time and wrong every time after.
+
+  The spawn is read back off the ball rather than handed in, which this can do and a reset
+  event cannot: nothing has just written to the simulation, so the entity buffers are
+  current.
+  """
+  if env_ids is None:
+    env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+  _tracker(env).reset(env_ids, ball_pos_w(env)[env_ids, :2])
+
+
 ##
 # Curriculum helper.
 ##

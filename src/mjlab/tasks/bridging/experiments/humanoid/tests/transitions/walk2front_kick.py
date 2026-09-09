@@ -17,7 +17,7 @@ right state, and did it arrive in the right place relative to a ball or a crate.
 can happen anywhere, so the second question does not apply and the arrival score is about
 the pose and the velocities and nothing else.
 
-The clip opens on half a second of held stance, added by the front kick's own converter so
+The clip opens on half a second of held stance, added by the martial package's converter so
 that frame zero is a robot standing still. That makes frame 0 a real hand-over target
 rather than a mid-bounce, and it also makes it the boring one: a robot delivered there has
 to settle and start the motion from scratch, which is the stop-and-restart the whole

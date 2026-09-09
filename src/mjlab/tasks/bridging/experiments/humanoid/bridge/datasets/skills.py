@@ -54,12 +54,12 @@ from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
   RolloutCfg,
 )
 from mjlab.tasks.bridging.experiments.humanoid.skills.jump import JUMP_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.skills.passing import PASS_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.skills.punch_combo import (
-  PUNCH_COMBO_TASK_ID,
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous import (
+  JUMP_CONTINUOUS_TASK_ID,
 )
+from mjlab.tasks.bridging.experiments.humanoid.skills.martial import MARTIAL_TASK_IDS
+from mjlab.tasks.bridging.experiments.humanoid.skills.passing import PASS_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.push import PUSH_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.skills.run import RUN_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.skills.walk import WALK_TASK_ID
 from mjlab.tasks.registry import load_env_cfg
 
@@ -79,12 +79,13 @@ class SkillSpec:
 
 SKILLS: dict[str, SkillSpec] = {
   "walk": SkillSpec(WALK_TASK_ID, ("g1_walk",)),
-  "run": SkillSpec(RUN_TASK_ID, ("g1_run",)),
   "jump": SkillSpec(JUMP_TASK_ID, ("g1_jump",)),
+  "jump_continuous": SkillSpec(JUMP_CONTINUOUS_TASK_ID, ("g1_jump_continuous",)),
   "pass": SkillSpec(PASS_TASK_ID, ("g1_pass",)),
   # "kick": SkillSpec(PASS_TASK_ID, ("g1_kick",)),
   "push": SkillSpec(PUSH_TASK_ID, ("g1_push",)),
-  "punch_combo": SkillSpec(PUNCH_COMBO_TASK_ID, ("g1_punch_combo",)),
+  # Every martial arts motion, whichever ones that package lists
+  **{name: SkillSpec(task, (f"g1_{name}",)) for name, task in MARTIAL_TASK_IDS.items()},
 }
 
 
@@ -92,7 +93,7 @@ SKILLS: dict[str, SkillSpec] = {
 class SkillsCfg(RolloutCfg):
   """How the skills dataset is collected."""
 
-  skills: tuple[str, ...] = ("walk", "run", "jump")
+  skills: tuple[str, ...] = ("walk", "run", "jump_continuous")
   """Which skills to record. The default three need nothing on the floor. Kick and push
   work too, and are left out because a state whose meaning depends on where a crate was is
   not a useful thing for the bridge to aim at."""
@@ -116,6 +117,7 @@ def collect(cfg: SkillsCfg) -> Path:
   env_ids: list[np.ndarray] = []
   trajectory_ids: list[np.ndarray] = []
   frames: list[np.ndarray] = []
+  phases: list[np.ndarray] = []
   sources: list[np.ndarray] = []
   goals: list[np.ndarray] = []
   fps = 0.0
@@ -140,19 +142,29 @@ def collect(cfg: SkillsCfg) -> Path:
       explicit,
       hint=f" Train it with `uv run train {spec.task}`, or name one in `checkpoints`.",
     )
-    rows, envs, trajectories, ages, commands = dataset.record(
+    rows, envs, trajectories, ages, clip_frames, commands = dataset.record(
       spec.task, env_cfg, checkpoint, cfg, name
     )
     states.append(rows)
     env_ids.append(envs)
     trajectory_ids.append(trajectories)
     frames.append(ages)
+    phases.append(clip_frames)
     sources.append(np.full(len(rows), index, dtype=np.int16))
     goals.append(commands)
     print(f"[dataset] {name}: {len(rows)} states, {commands.shape[1]} command numbers")
 
   return dataset.write(
-    cfg.path, states, env_ids, trajectory_ids, frames, sources, cfg.skills, fps, goals
+    cfg.path,
+    states,
+    env_ids,
+    trajectory_ids,
+    frames,
+    sources,
+    cfg.skills,
+    fps,
+    goals,
+    phases,
   )
 
 

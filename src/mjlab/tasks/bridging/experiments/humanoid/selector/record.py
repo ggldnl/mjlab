@@ -4,6 +4,9 @@ First step of the pipeline. Drives one trained policy per skill and writes down 
 control step: one npz, one source per skill, in the layout bridge/datasets/dataset.py
 defines. Needs a trained checkpoint per skill, found under logs/rsl_rl/g1_<skill>.
 
+One file holds every skill, so recording is all or nothing: running this with a single
+skill replaces the rollouts of all the others.
+
 The first settle steps after every reset are dropped, so progress 0 is half a second into
 an episode rather than its first frame. Without that the dataset fills with one identical
 standing pose per failure: mjlab resets the instant an environment terminates, and the step
@@ -24,10 +27,10 @@ Run
 
 2. Choose which skills, or how much of each.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.record --skills "('walk','jump','push')"
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.record --skills "('walk','jump','kick')"
     uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.record --num-envs 128 --steps 800
 
-3. Then find the candidates.
+3. Then pick the entry states.
 
     uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.build
 """
@@ -43,6 +46,7 @@ import tyro
 import mjlab
 from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets import dataset
 from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import RolloutCfg
+from mjlab.tasks.bridging.experiments.humanoid.selector import WINDOWS
 from mjlab.tasks.bridging.experiments.humanoid.selector.table import ROLLOUTS_PATH
 from mjlab.tasks.bridging.experiments.humanoid.skills import SKILLS
 from mjlab.tasks.registry import load_env_cfg
@@ -66,12 +70,14 @@ class RecordCfg(RolloutCfg):
   #   In this case the view script should change and account for the object.
   #   We could make it so each skill declares the objects it needs along with its observation
   #   of the objects
-  skills: tuple[str, ...] = tuple(SKILLS.keys())
-  """Which skills to record. The default three need nothing on the floor.
+  skills: tuple[str, ...] = tuple(WINDOWS)
+  """Which skills to record. Everything with a window by default, since anything else
+  is recorded for nothing: build.py only takes states from inside a window.
 
-  Front kick, push and pass work too. Their entry states mean less on their own, since
-  where the ball or the crate was is part of what the skill was doing, and none of that
-  is in a robot state."""
+  A skill that touches an object is recorded like any other, and its entry states mean
+  less on their own: where the ball or the box was is part of what the skill was doing,
+  and none of that is in a robot state. Its window is what keeps that from mattering, by
+  covering only the part of the skill before the object is involved."""
 
   path: Path = ROLLOUTS_PATH
 

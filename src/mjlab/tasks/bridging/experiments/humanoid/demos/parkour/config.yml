@@ -1,0 +1,111 @@
+# Parameters the parkour course is drawn from.
+#
+# Read by course.Settings.load. Pairs are ranges, [low, high], sampled uniformly. Colours
+# are rgba, 0 to 1.
+#
+# What is NOT here: the climb box's size and its angle to the approach. Those come from the
+# climb skill's own manifest, because the clip was retargeted against that box at that pose
+# and is only physical against it. Changing them is retraining the climb, not editing a
+# config. See course.climb_box.
+#
+#   uv run python -m mjlab.tasks.bridging.experiments.humanoid.demos.parkour.run --scene True
+#   uv run python -m ...demos.parkour.run --config my_course.yml
+
+seed: 0
+# How many obstacles. They alternate, starting with a box, so every gap between two of them
+# carries a switch out of one skill and into a different one.
+count: 15
+
+lane:
+  # Metres from the start to the first obstacle's near face. Longer than the spacing
+  # because the robot starts from a standstill.
+  first_run_up: 1.0
+  # Metres from one obstacle's far face to the next one's near face. Has to hold the walk
+  # settling after a landing, the turn onto the next obstacle's approach line, and the
+  # bridge's window.
+  spacing: [1.0, 2.0]
+
+# Every obstacle takes its colour from here, drawn at random.
+palette:
+  - [0.91, 0.30, 0.24, 1.0]
+  - [0.96, 0.65, 0.14, 1.0]
+  - [0.28, 0.62, 0.86, 1.0]
+  - [0.36, 0.72, 0.42, 1.0]
+  - [0.85, 0.82, 0.25, 1.0]
+  - [0.60, 0.40, 0.78, 1.0]
+
+box:
+  # How far each box is turned off the lane, radians. This is the course's own turn and is
+  # added to the angle the clip already has between the robot and the box, so the controller
+  # has to walk the robot onto a different approach line for every one of them. That is the
+  # point of it: an obstacle square to the lane never tests the alignment.
+  yaw: [-0.45, 0.45]
+
+hurdle:
+  # Jumped, not climbed. The jump clip covers about 1.5 m, so the bar plus the floor the
+  # take-off and the landing need has to fit inside that.
+  length: 1.00
+  height: 0.20
+  width: 1.50
+  yaw: [-0.45, 0.45]
+  # Metres of floor the jump is asked for beyond each edge.
+  clearance: 0.22
+
+approach:
+  # Where the controller puts the robot before it hands over, and how exact it has to be.
+  #
+  # For a box none of this decides the spot: the clip fixes where the robot stands relative
+  # to its obstacle, and the controller solves for that pose exactly. What is left is how
+  # much error it tolerates before firing, and that is these three.
+  #
+  # yaw comes from the climb's own APPROACH_YAW_RANGE, which is the angle its reference
+  # state initialization was trained across. Firing outside it hands the policy a start it
+  # never saw.
+  yaw_tolerance: 0.15
+  lateral_tolerance: 0.08
+  # Metres before the near face the jump takes over. A box has no equivalent: see above.
+  hurdle_takeoff: 0.55
+
+walk:
+  # How the walk is steered onto an approach line. It aims at the approach point while it
+  # is far and squares up to the obstacle's own heading as it arrives, blending over this
+  # distance.
+  blend_radius: 2.5
+  # Sideways metres per second per metre of cross-track error, and its cap.
+  # Raised from 0.8, which could not close a cross-track error the walk was holding station
+  # against. At 0.8 an error of 0.13 m asks for 0.09 m/s sideways, a command small enough
+  # that the policy stands through it; the robot sat 0.13 m off the line, inside tolerance on
+  # heading and outside it on cross-track, until the run gave up. At 2.5 the same error asks
+  # for 0.33 m/s, which is a stride, and the limit below still caps it
+  lateral_gain: 2.5
+  lateral_limit: 0.35
+
+  # Forward speed is regulated on the along track distance to the approach pose, not held at
+  # approach_speed until something happens. Held, the walk goes straight through the spot and
+  # parks past it, where the window that would land a crossing on the pose comes out negative
+  # and the switch can never fire again. See Controller.stand_off
+  # High, because a proportional command stalls where it meets the walk's own deadband, and
+  # the stall point is the hold point plus deadband over gain. At 0.6 that put the robot
+  # 0.34 m out, commanding 0.16 m/s it would not act on, and a crossing into an entry moving
+  # at 0.2 m/s covers 0.12 m: it has to stop inside that or no trained window reaches. At 4
+  # the stall sits around 0.11 m. Cruise still caps it, so this only decides the last
+  # 0.2 m of the approach
+  approach_gain: 4.0
+
+  # How hard the walk may step back, in m/s, when a stride has carried it past the hold
+  # point. Small: a robot reversing in front of an obstacle it is about to climb is
+  # recovering from an overshoot, not a manoeuvre worth being good at
+  reverse_limit: 0.25
+  # How fast to walk while an obstacle is pending, m/s. A hand-over has to shed whatever
+  # momentum the walk arrives with inside the bridge's window.
+  approach_speed: 0.7
+  # And with nothing pending.
+  cruise_speed: 1.0
+
+end:
+  # The demo stops when the robot is on the floor. Either check alone misses a case: a robot
+  # face down on top of a box is higher than the floor threshold, and one sitting upright in
+  # a heap is still upright.
+  fall_height: 0.40
+  # Radians the torso may lean off vertical before it counts as down.
+  tip_angle: 1.05
