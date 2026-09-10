@@ -1,15 +1,23 @@
 """Bridge task. One policy that drives the robot from a start dynamic state to a target
-dynamic state, in a given time period.
+dynamic state.
 
 Task id Mjlab-G1-Bridge, checkpoints under logs/rsl_rl/g1_bridge.
 
     in     state (root velocities, gravity, joint angles and rates, last action)
            + per channel gap to the target state
-           + seconds left + window length
+           + the best reward score reached so far and eight requested tolerance scales
     out    29 joint position targets
 
-One episode is one window: teleport onto a start state, reach the target state before the
-deadline.
+One episode is one window: teleport onto a start state, then get to the target state. There
+is no deadline and no clock in the observation. The policy is paid the best arrival score it
+reaches, whenever it reaches it, and a window that is going nowhere is abandoned after
+BridgeCommandCfg.patience_scale times the duration its two ends were drawn at.
+
+Which means how long a crossing takes is measured rather than commanded. Read
+Metrics/bridge/arrival_s for it. Use BridgeCommand.arrived_now for a live handoff;
+arrived records any success during the window and score reports its best fixed-tolerance
+match. The reward baseline best uses the profile frozen for that window. fixed_arrived
+reports success against the baseline independently of the requested profile.
 
 Endpoints come from tracker rollouts, never from motion capture. A retargeted human clip is
 a description, not a state a G1 is ever in. Both endpoints come from one rollout a fixed
@@ -54,7 +62,31 @@ Two methods on the command term drive the bridge from outside:
     place(env_ids, start, target, duration_s)    teleport onto a start, then cross
     open_window(env_ids, duration_s)             cross from wherever the robot already is
 
-Durations are seconds, not control ticks. Tick counts change with the decimation.
+Durations are seconds, not control ticks. Tick counts change with the decimation. The
+duration is how long the crossing is expected to take and buys patience_scale times that
+much patience; it is not a deadline and the policy never sees it, so a caller with no
+opinion should pass the middle of duration_s_range.
+
+Both methods accept tolerances as a keyword: a Tolerances object, an (8,) tensor shared
+by the selected environments, or an (N, 8) tensor in env_ids order. Values use physical
+units and CHANNELS order. For example:
+
+    command.open_window(ids, seconds, tolerances=Tolerances(arm_joint_pos=0.2))
+
+An omitted profile uses BridgeCommandCfg.tolerances. Keep that baseline unchanged between
+training and inference because it normalizes the observation. Only corpus sampling draws
+random profiles: independently per window and channel, uniformly in log space. Over
+tolerance_steps, both multiplier bounds move from tolerance_initial_range (5, 10) to
+tolerance_final_range (0.5, 4). Random profiles continue after the curriculum ends.
+Tune the bounds to cover measured runtime requirements; these defaults are not empirical
+skill limits. Transition scripts accept named limits, for example --tolerances.arm-joint-pos
+0.2. The parkour Bridge.aim method accepts the same tolerances keyword.
+
+The observation remains 24 + 2J wide. Restored bridge checkpoints load with the same
+baseline, but need training on varied requests before their precision conditioning can
+be assessed. Kernel shape, channel weights, guidance, alive and termination rules are
+unchanged. Monitor fixed_arrived, score and err_* for comparable progress; arrived and
+requested_score describe the sampled requests, and tol_* records their physical limits.
 """
 
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg

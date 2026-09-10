@@ -20,12 +20,45 @@ from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
   ROOT_STATE_DIM,
 )
 from mjlab.utils.lab_api.math import (
+  quat_apply,
   quat_apply_inverse,
   quat_conjugate,
   quat_error_magnitude,
   quat_mul,
   yaw_quat,
 )
+
+
+def reference_in_heading(states: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
+  """Express a reference root pose in the canonical frame of each recorded robot."""
+  heading = yaw_quat(states[:, 3:7])
+  origin = states[:, :3].clone()
+  origin[:, 2] = 0.0
+  return torch.cat(
+    [
+      quat_apply_inverse(heading, reference[:, :3] - origin),
+      quat_mul(quat_conjugate(heading), reference[:, 3:7]),
+    ],
+    dim=-1,
+  )
+
+
+def place_with_reference(
+  states: torch.Tensor, reference: torch.Tensor, placed_reference: torch.Tensor
+) -> torch.Tensor:
+  """Move a recorded robot and its reference together using one heading and translation."""
+  rotation = quat_mul(
+    yaw_quat(placed_reference[:, 3:7]), quat_conjugate(yaw_quat(reference[:, 3:7]))
+  )
+  target = states.clone()
+  target[:, :3] = placed_reference[:, :3] + quat_apply(
+    rotation, states[:, :3] - reference[:, :3]
+  )
+  target[:, 3:7] = quat_mul(rotation, states[:, 3:7])
+  target[:, 7:10] = quat_apply(rotation, states[:, 7:10])
+  target[:, 10:13] = quat_apply(rotation, states[:, 10:13])
+  return target
+
 
 CHANNELS = ("root_z", "tilt", "lin_vel", "ang_vel", "joint_pos", "joint_vel")
 """The six ways two states differ. Ground position and heading are not among them: see

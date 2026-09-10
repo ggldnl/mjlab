@@ -1,44 +1,20 @@
-"""The window: a start state, a target state, and a deadline.
+"""The bridge targets a physical state and is rewarded for improving its best arrival.
 
-One episode is one window. Start and target come from one rollout, a fixed number of
-control ticks apart, and the deadline is exactly that many ticks expressed in seconds.
-The robot is teleported onto the start with full dynamic state and the clock runs.
-The real motion from the masked window (coming from the rollout) is used as
-learning signal.
+Command layout, 24 + 2J values:
+    root position gap       3, heading frame
+    root orientation gap    6
+    root velocity gaps      6, body frame
+    joint gaps              2J
+    reward best             1
+    requested tolerances    8, divided by the configured baseline
 
-Command layout
+Each window holds one tolerance profile, shared by the reward, observation and success
+check. Training samples each channel independently and tightens the sampling range over
+time. Fixed baseline score, errors and best_step remain comparable across the curriculum
+and track a separate best moment. arrived and arrived_now use the requested profile.
 
-What the policy reads, 17 + 2J numbers:
-
-    d_pos    3   where the target is from here, in the heading frame
-    d_rot    6   rotation from this orientation to the target
-    d_lin    3   how much faster the target is going, in the body frame
-    d_ang    3   and how much more it is turning
-    d_q      J   how far each joint still has to travel
-    d_qd     J   and how much its rate has to change
-    left     1   seconds to the deadline
-    span     1   seconds the whole window was given
-
-Every channel is a difference, so the network can learn to close it. The target itself is
-fixed in the world for the whole window and only the observation is relative: a goal
-recomputed from the current state every tick is one the robot satisfies by standing still.
-
-Both clock numbers are needed. Without time to go the task is not Markov, since the same
-state a quarter of the way through a window and a step from its end call for opposite
-actions. Without the span, a policy one tick from its deadline cannot tell a long window it
-has nearly finished from a short one it has barely started.
-
-CHANNELS names the 8 ways an arrival can be wrong. Arms are split from legs, and each group
-is scored on its worst joint. Channels stay separate because the units differ, and because
-a single channel at zero is what the bottleneck in arrival_score uses to hold the whole
-score down. Scored on 6 channels with all 29 joints in one of them, the policy found the
-hole: park the arms wherever balance wants them, take the loss on one joint channel,
-collect the four root channels in full.
-
-Both ends come from one rollout because two individually reachable states can be an
-unreachable pair, and an unsolvable episode is worse than none. An earlier version drew the
-ends independently and argued feasibility with an acceleration bound and a joint travel
-bound. That was a bad idea.
+The previous action is proprioception, not a target. Target actions are recorded for
+resumption experiments but are not part of the bridge objective.
 """
 
 from __future__ import annotations
@@ -123,29 +99,10 @@ def arm_mask(joint_names: tuple[str, ...], device: str | torch.device) -> torch.
 
 @dataclass(kw_only=True)
 class Tolerances:
-  """How close a hand-over has to be to count. Physical units, fixed for the whole run.
+  """Arrival limits in physical units, in CHANNELS order.
 
-  Answers one question: how far off can the bridge leave the robot and still have the next
-  skill start properly? That is a property of the next skill and of the robot, so every
-  number below is a length, an angle, a speed or a rate with a stated physical reason.
-
-  Do not calibrate these from the corpus. They used to be half the median gap per channel,
-  which broke three ways: the number moved whenever the corpus was rebuilt; half the
-  median gap is a fact about where an exponential kernel is informative, not about whether
-  a hand-over worked; and a threshold defined as a fraction of current difficulty gets
-  easier exactly when the task does.
-
-  The reward does not need them anyway. _retune sets the kernel width from the running
-  error of the policy. These are the fixed instrument: arrived, and every reported number.
-
-  _check_tolerances still measures the gap, demoted to a printed check. It says which
-  channels a motionless robot already satisfies, and which are so far out that arrived
-  reads zero for a long time. Both are worth knowing before reading a training curve.
-  Neither is a reason to edit this file.
-
-  The selector should replace these eventually: it measures how far each skill can be
-  displaced from an entry state and still succeed, which is this requirement per skill per
-  channel. Until it exists, one conservative set for the G1.
+  The config holds the baseline used for observation scaling and fixed evaluation.
+  Each request can supply its own limits through open_window or place.
   """
 
   root_pos: float = 0.05
@@ -179,6 +136,11 @@ class Tolerances:
   """Radians per second on the worst arm joint."""
 
   def as_tensor(self, device: str | torch.device) -> torch.Tensor:
+    if any(
+      not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0
+      for name in CHANNELS
+    ):
+      raise ValueError("Tolerances must be finite and positive")
     return torch.tensor(
       [getattr(self, name) for name in CHANNELS], device=device, dtype=torch.float32
     )
@@ -313,21 +275,30 @@ class BridgeCommand(CommandTerm):
       self._span = max_steps
 
     self.tolerances = cfg.tolerances.as_tensor(self.device)
-    """The requirements. Fixed for the whole run. This is what arrived means and what every
-    reported number is measured against, so it must not move."""
+    """Fixed baseline for observation scaling, guidance and evaluation."""
 
-    self.reward_tolerances = self.tolerances * cfg.tolerance_ceiling
-    """What the reward actually uses. Starts wide and descends toward the fixed ones. See
-    _retune for why, and why the two have to be different objects."""
+    self._curriculum = cfg.adaptive_tolerances and cfg.dataset_path is not None
+    """Whether corpus windows sample a tolerance profile."""
+    for bounds in (cfg.tolerance_initial_range, cfg.tolerance_final_range):
+      if not all(math.isfinite(v) for v in bounds) or not 0 < bounds[0] <= bounds[1]:
+        raise ValueError("Tolerance ranges must be finite, positive and ordered")
+    if any(
+      end > start
+      for start, end in zip(
+        cfg.tolerance_initial_range, cfg.tolerance_final_range, strict=True
+      )
+    ):
+      raise ValueError("Final tolerance bounds must not exceed initial bounds")
+    if cfg.tolerance_steps < 0:
+      raise ValueError("tolerance_steps must be nonnegative")
+    self.window_tolerances = self.tolerances.expand(self.num_envs, -1).clone()
+    """Per request limits, frozen until that environment opens another window."""
 
-    self._running_error = self.reward_tolerances / max(cfg.tolerance_slack, 1e-6)
-    """Slow average of what each channel misses by at the deadline. Initialized so the
-    first tightening asks for exactly the ceiling and measurements pull it down from
-    there."""
-
-    self._retuned_at = -1
-    """Environment step the curriculum last moved on. errors_now is called from a reward
-    term, and a second term reading it would advance the average twice in one step."""
+    self._advanced_at = -1
+    self._improvement = torch.zeros(self.num_envs, device=self.device)
+    """The step advance last ran on, and what it returned. Everything in it is a write:
+    the best of the window moves and the metrics are rewritten. Two
+    callers in one environment step would pay the same improvement twice."""
 
     self._checked = False
     self._opening_gaps: list[torch.Tensor] = []
@@ -364,22 +335,40 @@ class BridgeCommand(CommandTerm):
     rather than the moved states keeps the table at one row index per tick."""
 
     # The window. target is a dataset row placed in the world of this environment,
-    # deadline is how many control steps the policy has to reach it
+    # patience is how many control steps it is given before the window is abandoned
     self.target = torch.zeros(self.num_envs, self.state_dim, device=self.device)
-    self.deadline = torch.full(
+    self.patience = torch.full(
       (self.num_envs,),
-      self.steps_for(torch.tensor(cfg.duration_s_range[1])).item(),
+      self.steps_for(torch.tensor(cfg.duration_s_range[1] * cfg.patience_scale)).item(),
       dtype=torch.long,
       device=self.device,
     )
     self.start_distance = torch.zeros(self.num_envs, device=self.device)
 
-    # Latched at the deadline and held until the next window is drawn. The metrics read
-    # these rather than the live state, because by then the env has already been reset and
-    # the live state is a fresh robot standing at its default pose
-    self.reached = torch.zeros(self.num_envs, device=self.device)
-    self.score = torch.zeros(self.num_envs, device=self.device)
+    ##
+    # The best moment of the window, updated live and held until the next window is drawn.
+    #
+    # Not a snapshot at some chosen instant. There is no instant to choose any more: the
+    # policy may cross the target at any point and a target carrying momentum is one it
+    # cannot stay on, so the question "how did this window go" is answered by its best
+    # moment and by nothing else. advance keeps these current, and the metrics read them
+    # rather than the live state, because the metrics run after the auto-reset and the
+    # live state by then is a fresh robot at its default pose
+    ##
+
+    self.best = torch.zeros(self.num_envs, device=self.device)
+    """Reward baseline observed by the policy, using this window's fixed widths."""
+
+    self.fixed_best = torch.zeros(self.num_envs, device=self.device)
+    self._has_scored = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
     self.arrived = torch.zeros(self.num_envs, device=self.device)
+    """1 where every channel was inside tolerance at some point this window."""
+    self.fixed_arrived = torch.zeros(self.num_envs, device=self.device)
+
+    self.best_step = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+    """Control step the best moment happened on. How long the crossing really took, which
+    with no deadline is an output rather than something that was asked for."""
+
     self.final = torch.zeros(self.num_envs, len(CHANNELS), device=self.device)
     self.final_joint_pos = torch.zeros(
       self.num_envs, self.num_joints, device=self.device
@@ -387,11 +376,14 @@ class BridgeCommand(CommandTerm):
     self.final_joint_vel = torch.zeros(
       self.num_envs, self.num_joints, device=self.device
     )
+    """The channel errors, and the per joint errors, at the best moment."""
 
     self.metrics["arrived"] = torch.zeros(self.num_envs, device=self.device)
+    self.metrics["fixed_arrived"] = torch.zeros(self.num_envs, device=self.device)
+    self.metrics["requested_score"] = torch.zeros(self.num_envs, device=self.device)
     self.metrics["score"] = torch.zeros(self.num_envs, device=self.device)
-    self.metrics["reached_deadline"] = torch.zeros(self.num_envs, device=self.device)
-    self.metrics["deadline_s"] = torch.zeros(self.num_envs, device=self.device)
+    self.metrics["arrival_s"] = torch.zeros(self.num_envs, device=self.device)
+    self.metrics["patience_s"] = torch.zeros(self.num_envs, device=self.device)
     self.metrics["start_noise"] = torch.zeros(self.num_envs, device=self.device)
     for name in CHANNELS:
       self.metrics[f"err_{name}"] = torch.zeros(self.num_envs, device=self.device)
@@ -418,19 +410,39 @@ class BridgeCommand(CommandTerm):
     return self._env.episode_length_buf
 
   @property
-  def remaining(self) -> torch.Tensor:
-    """Control steps left before the deadline, floored at zero."""
-    return (self.deadline - self.step).clamp(min=0)
+  def patience_s(self) -> torch.Tensor:
+    """How long this window is allowed to run, in physical seconds.
+
+    Not a deadline and not in the observation. It says when an unsuccessful crossing is
+    abandoned, which the policy has no use for: told how long it had, a policy trades
+    accuracy for punctuality, and punctuality is not what a hand-over needs.
+    """
+    return self.patience.float() / self.fps
 
   @property
-  def progress(self) -> torch.Tensor:
-    """How far through the window, in [0, 1]."""
-    return (self.step.float() / self.deadline.float()).clamp(max=1.0)
+  def out_of_patience(self) -> torch.Tensor:
+    """Whether the window has run as long as it is allowed to. (num_envs,) bool."""
+    return self.step >= self.patience
 
   @property
-  def duration_s(self) -> torch.Tensor:
-    """The fixed duration of this window in physical seconds."""
-    return self.deadline.float() / self.fps
+  def score(self) -> torch.Tensor:
+    """Best fixed-tolerance score reached this window, zero before scoring."""
+    return self.fixed_best
+
+  @property
+  def arrived_now(self) -> torch.Tensor:
+    """Whether the current state satisfies every requested arrival requirement."""
+    return arrived(self.errors_now(), self.window_tolerances)
+
+  @property
+  def arrival_s(self) -> torch.Tensor:
+    """When the best moment happened, in seconds since the window opened.
+
+    The duration the crossing actually took. With no deadline this is measured rather than
+    commanded, which is the whole point of dropping one: how long a hand-over needs is a
+    property of the two states and the body, not a number a caller should have to guess.
+    """
+    return self.best_step.float() / self.fps
 
   ##
   # What the policy reads.
@@ -438,7 +450,7 @@ class BridgeCommand(CommandTerm):
 
   @property
   def command(self) -> torch.Tensor:
-    """(num_envs, 17 + 2J). Layout is in this module's header."""
+    """(num_envs, 24 + 2J), including reward baseline and requested tolerance scales."""
     data = self.robot.data
     yaw = yaw_quat(data.root_link_quat_w)
     q = slice(ROOT_STATE_DIM, ROOT_STATE_DIM + self.num_joints)
@@ -457,8 +469,8 @@ class BridgeCommand(CommandTerm):
         ),
         self.target[:, q] - data.joint_pos,
         self.target[:, qd] - data.joint_vel,
-        (self.remaining.float() / self.fps).unsqueeze(-1),
-        self.duration_s.unsqueeze(-1),
+        self.best.unsqueeze(-1),
+        self.window_tolerances / self.tolerances,
       ],
       dim=-1,
     )
@@ -520,53 +532,88 @@ class BridgeCommand(CommandTerm):
     alpha = min(self._env.common_step_counter / self.cfg.guide_steps, 1.0)
     return 1.0 - alpha
 
-  def errors_now(self) -> torch.Tensor:
-    """The 8 channel errors against the target this step, latched at the deadline.
+  def advance(self) -> torch.Tensor:
+    """Score this step, fold it into the best of the window, and return the improvement.
 
-    Called from the reward, which is the only place an arrival can be read at all. The
+    The whole objective. mdp.arrival pays what this returns, so summed over an episode the
+    policy is paid exactly the best arrival score it reached, once, whenever it reached it.
+
+    Why the best moment and not the last one. A target carries momentum, so it is a state
+    the robot passes through rather than one it can sit in: scored at a fixed instant, a
+    crossing that went through the target perfectly three ticks early reads as a miss. And
+    scored every step without the maximum, a policy aiming at a moving target is paid to
+    turn round and come back to it, which is the opposite of a hand-over.
+
+    Reward and arrival use the window's requested profile. score and fixed_arrived keep
+    the configured baseline so progress remains measurable as the requests get tighter.
+
+    Called from the reward, which is the only place the pre-reset state can be read. The
     reward manager runs before the auto-reset; the metrics run after it, by which point an
-    environment that just finished holds a fresh robot at its default pose, so every
-    number taken from it describes a different episode. This project once shipped a
-    success metric that read 100% for exactly that reason.
+    environment that just finished holds a fresh robot at its default pose, so every number
+    taken from it describes a different episode. This project once shipped a success metric
+    that read 100% for exactly that reason.
 
-    So the deadline snapshot is taken here and written straight into metrics, where
-    CommandTerm.reset picks it up. _update_metrics never touches those entries.
+    So the metrics are written here, every step, and CommandTerm.reset picks up whatever
+    stands when an environment ends. Every step and not only at the end, because there is
+    no end to wait for any more: an environment that falls at step nine logs the best it
+    reached in those nine steps rather than a zero.
     """
+    if self._advanced_at == self._env.common_step_counter:
+      return self._improvement
+    self._advanced_at = self._env.common_step_counter
+
     errors = channel_errors(self.state_now(), self.target, self.arms)
     self._check_tolerances(errors)
 
-    at_deadline = self.step == self.deadline
-    if bool(at_deadline.any()):
-      score = arrival_score(errors, self.tolerances)
-      hit = arrived(errors, self.tolerances).float()
-      self.final = torch.where(at_deadline.unsqueeze(-1), errors, self.final)
-      now = self.state_now()
-      q = slice(ROOT_STATE_DIM, ROOT_STATE_DIM + self.num_joints)
-      qd = slice(ROOT_STATE_DIM + self.num_joints, ROOT_STATE_DIM + 2 * self.num_joints)
-      self.final_joint_pos = torch.where(
-        at_deadline.unsqueeze(-1),
-        (now[:, q] - self.target[:, q]).abs(),
-        self.final_joint_pos,
-      )
-      self.final_joint_vel = torch.where(
-        at_deadline.unsqueeze(-1),
-        (now[:, qd] - self.target[:, qd]).abs(),
-        self.final_joint_vel,
-      )
-      self.score = torch.where(at_deadline, score, self.score)
-      self.arrived = torch.where(at_deadline, hit, self.arrived)
-      self.reached = torch.where(
-        at_deadline, torch.ones_like(self.reached), self.reached
-      )
-      self._retune(errors[at_deadline])
+    score = arrival_score(errors, self.window_tolerances)
+    improvement = (score - self.best).clamp(min=0.0)
+    fixed_score = arrival_score(errors, self.tolerances)
+    better = (fixed_score > self.fixed_best) | ~self._has_scored
+    self._has_scored[:] = True
 
-      self.metrics["score"] = self.score.clone()
-      self.metrics["arrived"] = self.arrived.clone()
-      self.metrics["reached_deadline"] = self.reached.clone()
-      for index, name in enumerate(CHANNELS):
-        self.metrics[f"err_{name}"] = self.final[:, index].clone()
+    self.best = torch.maximum(self.best, score)
+    self.fixed_best = torch.maximum(self.fixed_best, fixed_score)
+    self.arrived = torch.maximum(
+      self.arrived, arrived(errors, self.window_tolerances).float()
+    )
+    self.fixed_arrived = torch.maximum(
+      self.fixed_arrived, arrived(errors, self.tolerances).float()
+    )
 
-    return errors
+    # The errors and the step of the best moment, so every reported number describes one
+    # instant of the crossing rather than a mix of the closest the root ever came and the
+    # closest the arms ever came
+    now = self.state_now()
+    q = slice(ROOT_STATE_DIM, ROOT_STATE_DIM + self.num_joints)
+    qd = slice(ROOT_STATE_DIM + self.num_joints, ROOT_STATE_DIM + 2 * self.num_joints)
+    wide = better.unsqueeze(-1)
+    self.final = torch.where(wide, errors, self.final)
+    self.final_joint_pos = torch.where(
+      wide, (now[:, q] - self.target[:, q]).abs(), self.final_joint_pos
+    )
+    self.final_joint_vel = torch.where(
+      wide, (now[:, qd] - self.target[:, qd]).abs(), self.final_joint_vel
+    )
+    self.best_step = torch.where(better, self.step, self.best_step)
+
+    self.metrics["score"] = self.fixed_best.clone()
+    self.metrics["arrived"] = self.arrived.clone()
+    self.metrics["fixed_arrived"] = self.fixed_arrived.clone()
+    self.metrics["requested_score"] = self.best.clone()
+    self.metrics["arrival_s"] = self.arrival_s
+    for index, name in enumerate(CHANNELS):
+      self.metrics[f"err_{name}"] = self.final[:, index].clone()
+
+    self._improvement = improvement
+    return improvement
+
+  def errors_now(self) -> torch.Tensor:
+    """The 8 channel errors against the target, this step. Read only.
+
+    advance is what moves the window's state on. This is for a term or a caller that wants
+    the live gap without paying anything for it.
+    """
+    return channel_errors(self.state_now(), self.target, self.arms)
 
   def _check_tolerances(self, errors: torch.Tensor) -> None:
     """Print once per run: which requirements a motionless robot already meets, and which
@@ -585,9 +632,10 @@ class BridgeCommand(CommandTerm):
     this only reports how the task sits against it. An earlier version printed a value to
     paste in, which made the definition of success a function of current difficulty.
 
-    Read at the step a window opens, which is the error a statue would still have at its
-    deadline. Windows open a few environments at a time, so gaps are collected until there
-    are enough for a median. The gap does not move during a run, so one measurement is it.
+    Read at the step a window opens, which is the error a statue would still have when the
+    window was abandoned. Windows open a few environments at a time, so gaps are collected
+    until there are enough for a median. The gap does not move during a run, so one
+    measurement is it.
     """
     if self._checked:
       return
@@ -616,67 +664,34 @@ class BridgeCommand(CommandTerm):
         f"   statue misses by {float(gaps[index]):.2f}   {verdict}"
       )
 
-  def _retune(self, arrived_errors: torch.Tensor) -> None:
-    """Set each channel's reward tolerance so its kernel keeps teaching.
+  def _sample_tolerances(self, count: int) -> torch.Tensor:
+    """Sample each request and channel independently in log space."""
+    if not self._curriculum:
+      return self.tolerances.expand(count, -1)
+    steps = self.cfg.tolerance_steps
+    alpha = min(max(self._env.common_step_counter / steps, 0.0), 1.0) if steps else 1.0
+    initial = self.tolerances.new_tensor(self.cfg.tolerance_initial_range).log()
+    final = self.tolerances.new_tensor(self.cfg.tolerance_final_range).log()
+    low, high = torch.lerp(initial, final, alpha).unbind()
+    draws = torch.rand(count, len(CHANNELS), device=self.device)
+    return self.tolerances * (low + draws * (high - low)).exp()
 
-    An exponential kernel only teaches over a narrow band. Past about 3 tolerances the
-    kernel and its gradient are numerically zero, the channel drops out of the objective,
-    and since it then costs nothing the policy spends it on the channels that still pay.
-
-    Two things propose a tolerance and the wider one wins:
-
-        schedule   walks from tolerance_ceiling x requirement down to the requirement over
-                   tolerance_steps. The pressure to improve
-        brake      tolerance_slack x the running error, holding the tolerance near what
-                   the policy is missing by, about 1.4 tolerances out, the steepest part
-                   of the kernel
-
-    So the schedule only binds while the policy keeps up with it.
-
-    Do not make this ratchet down only. It used to, on the argument that a tolerance free
-    to widen would let a regressing policy score the same. It cannot: score and arrived
-    are computed against self.tolerances, which never moves. What the ratchet did instead,
-    over a 1713 iteration run:
-
-        iteration   err joint_pos   reward tolerance   kernel
-        0           0.161           0.990              0.97
-        240         0.213           0.155              0.15
-        480         0.243           0.150              0.07
-        1440        0.469           0.150              0.00005
-        1713        0.569           0.150              0.0000006
-
-    An untrained bridge stands near its default pose, which scores well on joints for the
-    same reason a person standing still is good at not tripping. The ratchet read that as
-    capability and locked to it. Then the policy learned to move the root, moving the root
-    moves the joints, the error rose past a tolerance that could not follow, and the
-    channel was dead from iteration 1440 on. arrived was 0.000 all run.
-
-    The running average covers errors latched at a deadline only. An episode that ended on
-    the floor has no arrival to be wrong about.
-
-    Side effect: the arrival reward falls as tolerances descend, even while the policy
-    improves, so the reward curve is not a progress bar. Read Metrics/bridge/err_*, which
-    are raw, alongside Metrics/bridge/tol_*.
-    """
-    if arrived_errors.numel() == 0:
-      return
-    if self._env.common_step_counter == self._retuned_at:
-      return
-    self._retuned_at = self._env.common_step_counter
-
-    rate = self.cfg.tolerance_rate
-    self._running_error = (
-      1.0 - rate
-    ) * self._running_error + rate * arrived_errors.mean(dim=0)
-
-    alpha = min(self._env.common_step_counter / max(self.cfg.tolerance_steps, 1), 1.0)
-    schedule = self.tolerances * self.cfg.tolerance_ceiling ** (1.0 - alpha)
-
-    self.reward_tolerances = torch.clamp(
-      torch.maximum(schedule, self.cfg.tolerance_slack * self._running_error),
-      min=self.tolerances,
-      max=self.tolerances * self.cfg.tolerance_ceiling,
+  def _request_tolerances(
+    self, count: int, tolerances: Tolerances | torch.Tensor | None
+  ) -> torch.Tensor:
+    """Validate an explicit profile, or use the baseline for an external request."""
+    if tolerances is None:
+      return self.tolerances.expand(count, -1)
+    values = (
+      tolerances.as_tensor(self.device)
+      if isinstance(tolerances, Tolerances)
+      else tolerances.to(device=self.device, dtype=self.tolerances.dtype)
     )
+    if values.shape not in ((len(CHANNELS),), (count, len(CHANNELS))):
+      raise ValueError(f"Expected tolerances with shape (8,) or ({count}, 8)")
+    if not bool(torch.isfinite(values).all() and (values > 0).all()):
+      raise ValueError("Tolerances must be finite and positive")
+    return values.expand(count, -1)
 
   ##
   # Drawing a window.
@@ -705,7 +720,17 @@ class BridgeCommand(CommandTerm):
     rotation = quat_mul(facing, quat_conjugate(yaw_quat(start[:, 3:7])))
     origin = start[:, 0:3].clone()
     start, target = reframe_pair(start, target, rotation)
-    self.place(env_ids, start, target, steps.float() / self.fps)
+    self.place(
+      env_ids,
+      start,
+      target,
+      steps.float() / self.fps,
+      tolerances=self._sample_tolerances(count),
+    )
+    if self.dataset.previous_action is not None:
+      self._env.action_manager.action[env_ids] = self.dataset.previous_action[
+        start_rows
+      ]
 
     # After place, which clears the reference along with every other latch. origin is the
     # start position before the reframe, which is also after it: a yaw turns a state
@@ -733,31 +758,63 @@ class BridgeCommand(CommandTerm):
     """
     return (duration_s * self.fps).round().long().clamp(min=1)
 
-  def open_window(self, env_ids: torch.Tensor, duration_s: torch.Tensor) -> None:
-    """Start the clock on the target currently held, for this many seconds. Teleports nobody.
+  def open_window(
+    self,
+    env_ids: torch.Tensor,
+    duration_s: torch.Tensor,
+    *,
+    tolerances: Tolerances | torch.Tensor | None = None,
+  ) -> None:
+    """Open a window on the target currently held, allowing this many seconds. Teleports
+    nobody.
 
     place is this plus a start state to teleport onto. A live hand-over already has the
     robot where it wants it, so it calls this instead.
+
+    duration_s is how long the crossing is expected to take, not a deadline. It buys
+    patience_scale times that much patience and never reaches the policy. A caller with no
+    opinion should pass the middle of duration_s_range: asking for too little only abandons
+    a crossing that was going to work.
+
+    tolerances accepts physical limits as Tolerances, an (8,) tensor or an (N, 8) tensor
+    aligned with env_ids. None requests the configured baseline, without sampling.
     """
-    self._open(env_ids, duration_s, self.robot.data.root_link_pos_w[env_ids])
+    self._open(
+      env_ids,
+      duration_s,
+      self.robot.data.root_link_pos_w[env_ids],
+      self._request_tolerances(env_ids.numel(), tolerances),
+    )
 
   def _open(
-    self, env_ids: torch.Tensor, duration_s: torch.Tensor, root_pos: torch.Tensor
+    self,
+    env_ids: torch.Tensor,
+    duration_s: torch.Tensor,
+    root_pos: torch.Tensor,
+    tolerances: torch.Tensor,
   ) -> None:
-    """Set the deadline and clear every latch from the window before.
+    """Set the patience and clear every latch from the window before.
 
     root_pos is where the robot starts, passed in rather than read, because place calls
     this before it has written the teleport to the simulator and the live buffers still
     hold the previous episode.
     """
-    self.deadline[env_ids] = self.steps_for(duration_s)
+    self.patience[env_ids] = self.steps_for(duration_s * self.cfg.patience_scale)
     self.start_distance[env_ids] = (root_pos - self.target[env_ids, 0:3]).norm(dim=-1)
     # Cleared here rather than in place, so a window aimed from outside cannot inherit the
     # crossing of the window before it
     self.has_reference[env_ids] = 0.0
-    self.reached[env_ids] = 0.0
-    self.score[env_ids] = 0.0
+    # best has to go back to zero or the next window opens already paid for the last one,
+    # and since it is in the observation the policy would read a crossing that never began
+    # as one nearly finished
+    self.best[env_ids] = 0.0
+    self.fixed_best[env_ids] = 0.0
+    self._has_scored[env_ids] = False
+    self._improvement[env_ids] = 0.0
+    self.window_tolerances[env_ids] = tolerances
     self.arrived[env_ids] = 0.0
+    self.fixed_arrived[env_ids] = 0.0
+    self.best_step[env_ids] = 0
     self.final[env_ids] = 0.0
     self.final_joint_pos[env_ids] = 0.0
     self.final_joint_vel[env_ids] = 0.0
@@ -768,13 +825,16 @@ class BridgeCommand(CommandTerm):
     start: torch.Tensor,
     target: torch.Tensor,
     duration_s: torch.Tensor,
+    *,
+    tolerances: Tolerances | torch.Tensor | None = None,
   ) -> None:
     """Open a window on these environments and teleport the robot onto its start.
 
     Args:
       env_ids: which environments.
       start, target: (N, 13 + 2J) dataset rows in one shared frame.
-      duration_s: how long the bridge gets.
+      duration_s: how far apart in time the two ends were drawn. See open_window.
+      tolerances: requested physical limits. See open_window.
 
     Both states slide horizontally so the start lands on the environment origin, which
     keeps them in one coordinate system without the caller knowing where that is. Heights,
@@ -785,6 +845,7 @@ class BridgeCommand(CommandTerm):
     """
     if env_ids.numel() == 0:
       return
+    profile = self._request_tolerances(env_ids.numel(), tolerances)
 
     origin = self._env.scene.env_origins[env_ids]
     shift = origin[:, :2] - start[:, :2]
@@ -795,7 +856,7 @@ class BridgeCommand(CommandTerm):
     root_pos[:, 0:2] = origin[:, :2]
 
     self.target[env_ids] = target
-    self._open(env_ids, duration_s, root_pos)
+    self._open(env_ids, duration_s, root_pos, profile)
 
     root_quat = start[:, 3:7].clone()
     root_lin_vel = start[:, 7:10].clone()
@@ -848,22 +909,35 @@ class BridgeCommand(CommandTerm):
     return self.cfg.start_noise * alpha
 
   def _update_command(self) -> None:
-    pass
+    """Keep the window's best moment current even where no reward runs.
+
+    advance is normally called by mdp.arrival, which is where it has to be during training:
+    the reward manager runs before the auto-reset, and everything advance latches is read
+    off a state the reset is about to destroy.
+
+    The transition arena and the parkour demo have no reward manager at all, so without this
+    nothing would ever call it there. That is not a missing log line: `best` is half of what
+    the policy reads, so a bridge whose best never moved would spend every inference step on
+    an observation training never produced.
+
+    Idempotent, so in training this is the second call of the step and does nothing. The two
+    callers see the state one physics substep apart, which is the same lag the reward and
+    the metrics already differ by.
+    """
+    self.advance()
 
   def _update_metrics(self) -> None:
     """Only the live numbers.
 
-    errors_now writes the latched ones before the reset that destroys the state they are
-    read from. Writing them again here would overwrite them with a freshly reset robot.
+    advance writes the rest before the reset that destroys the state they are read from.
+    Writing them again here would overwrite them with a freshly reset robot.
     """
-    self.metrics["deadline_s"] = self.duration_s
+    self.metrics["patience_s"] = self.patience_s
     self.metrics["start_noise"] = torch.full_like(
       self.metrics["start_noise"], self.noise_scale
     )
     for index, name in enumerate(CHANNELS):
-      self.metrics[f"tol_{name}"] = torch.full_like(
-        self.metrics[f"tol_{name}"], float(self.reward_tolerances[index])
-      )
+      self.metrics[f"tol_{name}"] = self.window_tolerances[:, index].clone()
 
   ##
   # Drawing it.
@@ -874,12 +948,12 @@ class BridgeCommand(CommandTerm):
 
     The amber one stands in the target. A pose and nothing else, because a pose is all
     that can be drawn: half of a target is velocity and a still body says nothing about
-    that. It does show where the window is sending the robot, and after the deadline it
-    stays where it was put, so the gap to the real robot is the arrival error left
-    standing to be looked at.
+    that. It does show where the window is sending the robot, and it stays where it was put
+    for the whole window, so the gap to the real robot is the arrival error left standing to
+    be looked at.
 
-    The blue one walks the recorded crossing, a frame per control tick, and arrives inside
-    the amber one at the deadline because the last frame of the crossing is the target. It
+    The blue one walks the recorded crossing, a frame per control tick, and ends up inside
+    the amber one because the last frame of the crossing is the target. It
     is what guidance is paying for, so watching the robot fall behind it is watching the
     shaping fail to take. Watching the robot follow it and still miss the target would
     mean the crossing is being tracked and the arrival is not.
@@ -1006,47 +1080,56 @@ class BridgeCommandCfg(CommandTermCfg):
   """
 
   duration_s_range: tuple[float, float] = (0.3, 1.2)
-  """How long a window may be, in seconds.
+  """How far apart in time the two ends of a window are drawn, in seconds.
+
+  A feasibility device, not a deadline. Cutting both ends out of one rollout this far apart
+  is what proves a crossing between them exists; the policy is never told the number and is
+  not scored on matching it.
 
   The simulator still advances in discrete control ticks, but the dataset, this config and
   the external bridge interface are all in seconds. BridgeCommand.steps_for is the only
   conversion.
   """
 
+  patience_scale: float = 1.5
+  """How much longer than the drawn duration a window is allowed to run.
+
+  The pair is a duration apart because the recorded policy covered it in that time, and the
+  bridge is a different policy solving a harder version of the problem: it starts perturbed
+  off the recorded state and has no reference to follow. Held to exactly the recorded
+  duration it would be scored on being as quick as the demonstration, which is not the
+  requirement.
+
+  Slack rather than a large fixed budget, so a short window stays a short episode. Above
+  about 2 the tail of every episode is a robot that has already done its best sitting out
+  the clock, which is sample time spent on nothing.
+  """
+
   tolerances: Tolerances = field(default_factory=Tolerances)
-  """What arriving means. Fixed, and the floor the curriculum below descends to."""
+  """Fixed baseline for scaling and evaluation, also the default external request.
 
-  ##
-  # The tolerance curriculum. See `BridgeCommand._retune`.
-  ##
+  Keep this identical between training and inference. Supply a different request through
+  open_window or place instead of changing the observation's normalization baseline.
+  """
 
-  tolerance_ceiling: float = 10.0
-  """How many times its requirement a channel's reward kernel may start at.
+  adaptive_tolerances: bool = True
+  """Sample tolerance profiles for corpus windows. Disabled for play and live requests."""
 
-  Ten is what the worst channel needs. arm_joint_pos requires 0.05 and an untrained bridge
-  misses by several times that, so anything tighter starts the channel on the flat part of
-  its own kernel, which is the situation this exists to prevent."""
+  tolerance_initial_range: tuple[float, float] = (5.0, 10.0)
+  """Initial multipliers of the baseline, sampled independently per channel in log space."""
 
-  tolerance_slack: float = 0.7
-  """Where the tolerance sits relative to the error being made, as a fraction.
+  tolerance_final_range: tuple[float, float] = (0.5, 4.0)
+  """Final multiplier range. Retains mixed precision profiles around the runtime default.
 
-  At 0.7 the policy is about 1.4 tolerances out, near the steepest part of the kernel.
-  Above 1.0 the channel saturates and stops teaching, below 0.5 it flattens out at the
-  other end."""
-
-  tolerance_rate: float = 1.0e-3
-  """How fast the running error follows the measured one, per environment step.
-
-  Slow on purpose. The tolerance is read off this average every step, so a rate that
-  reacts to a single lucky batch makes the task jitter under the policy."""
+  Tune these bounds to cover measured runtime requests. They are training defaults,
+  not measured skill robustness limits. Equal bounds request a single precision scale.
+  """
 
   tolerance_steps: int = 120_000
-  """Environment steps to walk a reward kernel from the ceiling down to the requirement.
+  """Environment steps to interpolate both bounds in log space. Zero uses final bounds.
 
-  A third of a 15000 iteration run at 24 steps per iteration, leaving two thirds of
-  training at the tolerance actually being asked for. A bound, not a demand: the running
-  error holds the tolerance above the schedule for as long as the policy needs it there,
-  so a shorter setting stops the schedule binding rather than making the task harder."""
+  Only newly drawn windows change. The runner restores the step counter on resume.
+  """
 
   start_noise: float = 1.0
   """Full scale of the perturbation applied to the start state.

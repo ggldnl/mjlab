@@ -120,6 +120,7 @@ def collect(cfg: SkillsCfg) -> Path:
   phases: list[np.ndarray] = []
   sources: list[np.ndarray] = []
   goals: list[np.ndarray] = []
+  metadata: list[dict[str, np.ndarray]] = []
   fps = 0.0
 
   for index, name in enumerate(cfg.skills):
@@ -142,8 +143,9 @@ def collect(cfg: SkillsCfg) -> Path:
       explicit,
       hint=f" Train it with `uv run train {spec.task}`, or name one in `checkpoints`.",
     )
+    context: dict[str, np.ndarray] = {}
     rows, envs, trajectories, ages, clip_frames, commands = dataset.record(
-      spec.task, env_cfg, checkpoint, cfg, name
+      spec.task, env_cfg, checkpoint, cfg, name, metadata=context
     )
     states.append(rows)
     env_ids.append(envs)
@@ -152,6 +154,7 @@ def collect(cfg: SkillsCfg) -> Path:
     phases.append(clip_frames)
     sources.append(np.full(len(rows), index, dtype=np.int16))
     goals.append(commands)
+    metadata.append(context)
     print(f"[dataset] {name}: {len(rows)} states, {commands.shape[1]} command numbers")
 
   return dataset.write(
@@ -165,6 +168,7 @@ def collect(cfg: SkillsCfg) -> Path:
     fps,
     goals,
     phases,
+    metadata=metadata,
   )
 
 

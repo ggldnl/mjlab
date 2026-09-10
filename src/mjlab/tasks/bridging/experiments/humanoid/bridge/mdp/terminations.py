@@ -1,6 +1,6 @@
 """How a window ends.
 
-    deadline_reached   clock ran out. Time-out, so the critic bootstraps
+    out_of_patience    given up on. Time-out, so the critic bootstraps
     strayed            robot walked away from the target. Failure
     fell_over          torso tipped past recovering. Failure
 
@@ -28,14 +28,23 @@ def _command(env: ManagerBasedRlEnv, command_name: str) -> BridgeCommand:
   return term
 
 
-def deadline_reached(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
-  """Clock ran out. Time-out, not failure.
+def out_of_patience(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+  """The window ran as long as it is allowed to. Time-out, not failure.
+
+  Not a deadline. The policy is not told this is coming and is not scored against it: it is
+  paid for the best moment of the window, whenever that was, so this only decides when an
+  unsuccessful crossing stops consuming sample time.
+
+  Time-out and not failure for the usual reason, and here it also happens to be the truth:
+  a crossing that ran out of patience is one the policy did not finish, not one it got
+  wrong.
 
   The final step is still scored. Terminations run before rewards, so the step that trips
-  this is the one arrival is paid for and the one the arrival is latched from.
+  this is the last one mdp.arrival is paid for, and it is also the step BridgeCommand.advance
+  feeds the tolerance curriculum from.
   """
   command = _command(env, command_name)
-  return command.step >= command.deadline
+  return command.out_of_patience
 
 
 def strayed(

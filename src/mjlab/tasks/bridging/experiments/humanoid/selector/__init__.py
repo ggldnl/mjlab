@@ -1,12 +1,11 @@
 """Where each skill can be entered.
 
-    record.py  ->  build.py  ->  query.py
-     (drive)        (pick)       (choose)
+    record.py  ->  build.py  ->  view.py
+     (drive)        (cut)        (look)
 
-           view.py (look at what was picked)
-
-The bridge runs for a fixed window and then hands over, so it needs somewhere to aim.
-This package says where.
+The bridge aims at one of these states. Which one is the caller's choice, not this
+package's: demos name it per skill, benchmarks take it as a flag, the staging viewer puts
+it on a slider. reach.py says what any given choice would cost.
 
 One rule. The states a skill can be entered at are the states it passes through during a
 stretch of its own timeline, and that stretch is written down here, per skill, by hand.
@@ -20,9 +19,9 @@ medoid of every rollout that was inside that slice. The medoid is what makes it 
 A few rollouts drift or fall and land far from the rest, so the middle of the cloud is a
 state the skill really was in, without a threshold having to say which.
 
-query.py then hands back whichever of those states is closest to where the robot is now.
-Equally spaced along the window means the states differ mostly in momentum, so a robot
-arriving fast enters late and one arriving slow enters early.
+Equally spaced along the window means the states differ mostly in momentum, so entering
+late is entering fast and entering early is entering slow. Picking an index is picking a
+speed to arrive at.
 
 Equally spaced in frames is not equally spaced on the ground, and view.py draws the second
 one. EntryTable.trail integrates the velocities the states carry to say how far apart they
@@ -55,7 +54,7 @@ Run
 
     uv run python -m mjlab.tasks.bridging.experiments.humanoid.selector.view
 
-Then read the table, or ask which entry is closest to where the robot is:
+Then read the table, and ask what a chosen entry would cost to reach:
 
     table = EntryTable.load()
     for entry in table.of("jump"):
@@ -63,10 +62,9 @@ Then read the table, or ask which entry is closest to where the robot is:
       entry.frame    # frame to resume the skill at
       entry.seconds  # where that frame sits in the skill
 
-    reach = best(table, "jump", state, seconds=0.7)
-    reach.entry      # aim here
-    reach.effort     # below 1 is reachable
-    reach.binding    # which channel makes it hard
+    r = reach(table, "jump", 0, state, seconds=0.7)
+    r.effort         # below 1 is reachable
+    r.binding        # which channel makes it hard
 """
 
 from __future__ import annotations
@@ -96,7 +94,7 @@ class Window:
 
   Two is a floor and a ceiling of the window with nothing between. Six over a stretch
   where the robot is accelerating is enough to tell 0.3 m/s from 1.4 m/s apart, which is
-  the resolution the closest-state choice runs on.
+  the resolution whoever picks an entry gets to work with.
   """
 
 
@@ -128,7 +126,7 @@ WINDOWS: dict[str, Window] = {
   # Trained by reward, not tracking anything, so the clock is step count and one frame is
   # as good as another: the robot is standing over a ball the whole episode. A short
   # window near the start, purely so there is something to aim at
-  "pass": Window(phase=(27, 50), states=3),
+  "pass": Window(phase=(27, 50), states=1),
   # Same, and the parkour controller hands back to walk after every obstacle, so it needs
   # entry states even though walk would accept a hand-over at any state at all
   "walk": Window(phase=(27, 60), states=1),
@@ -143,20 +141,14 @@ A skill left out of here gets no entry states, and demos.parkour refuses to hand
 it. Adding one means adding a line, not writing a rule.
 """
 
-from mjlab.tasks.bridging.experiments.humanoid.selector.query import (  # noqa: E402
-  Cost as Cost,
-)
-from mjlab.tasks.bridging.experiments.humanoid.selector.query import (  # noqa: E402
-  RateCost as RateCost,
-)
-from mjlab.tasks.bridging.experiments.humanoid.selector.query import (  # noqa: E402
+from mjlab.tasks.bridging.experiments.humanoid.selector.reach import (  # noqa: E402
   Reach as Reach,
 )
-from mjlab.tasks.bridging.experiments.humanoid.selector.query import (  # noqa: E402
-  best as best,
+from mjlab.tasks.bridging.experiments.humanoid.selector.reach import (  # noqa: E402
+  reach as reach,
 )
-from mjlab.tasks.bridging.experiments.humanoid.selector.query import (  # noqa: E402
-  nearest as nearest,
+from mjlab.tasks.bridging.experiments.humanoid.selector.reach import (  # noqa: E402
+  reaches as reaches,
 )
 from mjlab.tasks.bridging.experiments.humanoid.selector.table import (  # noqa: E402
   Entry as Entry,

@@ -313,6 +313,7 @@ class JumpCommand(CommandTerm):
     # Position last: measured against the freshly rotated clip origin, so the robot ends up
     # exactly on the reference's first frame rather than near it
     clip_root = self.clip_root_at(frame, env_ids).clone()
+    clip_root[:, :2] += self.stretch_offset[env_ids]
     rotated = quat_apply(self.anchor_yaw_quat[env_ids], clip_root)
     robot_xy = (self.robot_root_pos_w[env_ids] if at_pos is None else at_pos)[
       :, :2
@@ -859,11 +860,17 @@ class JumpCommand(CommandTerm):
       )
 
     joint_pos = self.joint_pos[env_ids].clone()
-    joint_vel = self.joint_vel[env_ids]
+    joint_vel = self.joint_vel[env_ids].clone()
     joint_pos += sample_uniform(
       lower=self.cfg.joint_position_range[0],
       upper=self.cfg.joint_position_range[1],
       size=joint_pos.shape,
+      device=self.device,
+    )
+    joint_vel += sample_uniform(
+      lower=self.cfg.joint_velocity_range[0],
+      upper=self.cfg.joint_velocity_range[1],
+      size=joint_vel.shape,
       device=self.device,
     )
 
@@ -1073,6 +1080,16 @@ class JumpCommandCfg(CommandTermCfg):
   pose_range: dict[str, tuple[float, float]] = field(default_factory=dict)
   velocity_range: dict[str, tuple[float, float]] = field(default_factory=dict)
   joint_position_range: tuple[float, float] = (-0.1, 0.1)
+  joint_velocity_range: tuple[float, float] = (0.0, 0.0)
+  """Joint velocity written at reset on top of the reference's own, in rad/s.
+
+  Zero by default, which is what every task shipped with before this existed: an episode
+  began with the reference's exact joint velocities. That is the one channel a reset never
+  perturbed, and it is the one a hand-over cannot deliver. A skill handed a robot by
+  another policy gets the right angles and somebody else's rates.
+
+  Widen it to train the skill's own initiation set. See skills/finetune.py.
+  """
 
   scale_range: tuple[float, float] = (0.85, 1.15)
   """How much a clip may be stretched horizontally. Wider means more goal coverage and a

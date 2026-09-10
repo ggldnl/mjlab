@@ -16,6 +16,11 @@ Neither observation group sees the middle of the window. There is no reference t
 which is what makes this a bridge and not a tracker. mdp.guidance reads the recorded
 crossing, but it is a reward, not an input.
 
+Neither sees a clock either. The command carries no time to go and no window length, because
+there is no deadline to be early or late for: mdp.arrival pays the best moment of a window
+whenever it happens. The command carries the reward baseline and its requested tolerance
+profile. The fixed baseline evaluation score is tracked separately. See mdp/commands.py.
+
 Run
 
 1. Build the corpus.
@@ -62,11 +67,13 @@ FOOT_BODIES = ("left_ankle_roll_link", "right_ankle_roll_link")
 FOOT_SITES = ("left_foot", "right_foot")
 FEET_CONTACT = "feet_ground_contact"
 
-MAX_DEADLINE_S = 2.0
+MAX_WINDOW_S = 2.0
 """Longest window an episode has to fit, in seconds. A backstop that never fires.
 
-deadline_reached is what ends a window, and no window outlives
-BridgeCommandCfg.duration_s_range, so this sits above that range with room to spare."""
+out_of_patience is what ends a window, at patience_scale times the duration its ends were
+drawn at, so the longest one is 1.2 x 1.5 = 1.8 s. This sits above that with room to
+spare. Raise it if either of those two numbers goes up, or the global episode timer starts
+cutting windows off before the command term does."""
 
 
 def bridge_env_cfg(
@@ -93,6 +100,7 @@ def bridge_env_cfg(
     # would be two questions scored as one
     resampling_time_range=(1.0e9, 1.0e9),
     start_noise=0.0 if play else 1.0,
+    adaptive_tolerances=not play,
     debug_vis=True,
   )
 
@@ -163,30 +171,42 @@ def bridge_env_cfg(
 
   feet = SceneEntityCfg("robot", body_names=FOOT_BODIES)
   rewards: dict[str, RewardTermCfg] = {
-    # The objective. Weighted to dominate: everything else exists to make it reachable,
-    # not to compete with it
+    # The objective, and now the only one. Pays how much the arrival score beat its own
+    # best, so an episode's total is the best arrival the crossing ever managed.
+    #
+    # Weight 8 against a term that sums to at most 1 over a whole episode, so a perfect
+    # crossing is worth 8. That is what "weighted to dominate" has to mean here: the
+    # previous version said the same at the same weight and collected 0.114 an episode,
+    # because a progress cubed ramp times a bottleneck kernel is nearly zero nearly always.
+    # Read Episode_Reward/arrival against alive and the regularizers, not the weight
     "arrival": RewardTermCfg(
-      func=mdp.arrival, weight=8.0, params={"command_name": COMMAND, "sharpness": 3.0}
-    ),
-    # Broad full state gradient for the first half of a window. Same channels as arrival,
-    # so crouching and arm posture are never opposed by a locomotion prior
-    "approach": RewardTermCfg(
-      func=mdp.approach, weight=1.0, params={"command_name": COMMAND}
+      func=mdp.arrival, weight=8.0, params={"command_name": COMMAND}
     ),
     # Shaping. Dense, every step, and gone by BridgeCommandCfg.guide_steps, after which
     # this task is the plain bridge.
     #
-    # Weight 2 is a per step rate against a per step arrival that is near zero for most of
-    # a window, so at full weight this is the largest term over the stretch that has no
-    # other signal. That is what a term meant to lead a search has to be worth, and also
-    # why it has to go away: kept at full weight it would be the objective
+    # Weight 2 is a per step rate against an arrival that pays at most 8 once, so over a
+    # window this still outweighs a crossing that is going badly and does not outweigh one
+    # going well. That is what a term meant to lead a search has to be worth, and also why
+    # it has to go away: kept at full weight it would be the objective.
+    #
+    # It is the term to suspect if the run stalls the way the last one did. Arrival and
+    # guidance used to peak together at about iteration 1400 and then fall as this annealed
+    # out and start_noise ramped in, and root position and velocity error never recovered.
+    # Change one of the two schedules at a time or the next run says as little as that one
     "guidance": RewardTermCfg(
       func=mdp.guidance,
       weight=2.0,
       params={"command_name": COMMAND, "tolerance_scale": 4.0},
     ),
     # Small and positive, so no step is worth nothing at all. See mdp/rewards.py on why
-    # every arrival term is positive
+    # every arrival term is positive.
+    #
+    # Worth watching now that arrival is not paid every step. Once a crossing has done its
+    # best, the rest of its patience earns this and nothing else, so a run where
+    # Episode_Reward/alive approaches Episode_Reward/arrival is one where standing still
+    # after a bad crossing pays as well as a good one. Cut the weight before cutting
+    # patience_scale: shortening the window also shortens the crossing
     "alive": RewardTermCfg(func=base_mdp.is_alive, weight=0.5),
     ##
     # Gait terms: what the motion looks like, as opposed to where it ends up.
@@ -241,8 +261,8 @@ def bridge_env_cfg(
   }
 
   terminations: dict[str, TerminationTermCfg] = {
-    "deadline_reached": TerminationTermCfg(
-      func=mdp.deadline_reached, params={"command_name": COMMAND}, time_out=True
+    "out_of_patience": TerminationTermCfg(
+      func=mdp.out_of_patience, params={"command_name": COMMAND}, time_out=True
     ),
     "strayed": TerminationTermCfg(
       func=mdp.strayed, params={"command_name": COMMAND, "margin": 1.5}
@@ -283,9 +303,9 @@ def bridge_env_cfg(
       nconmax=35, njmax=250, mujoco=MujocoCfg(timestep=0.005, iterations=10)
     ),
     decimation=4,
-    # Backstop only, and only while training. deadline_reached ends every window well
+    # Backstop only, and only while training. out_of_patience ends every window well
     # inside this. Play mode wants no backstop: the global episode timer would cut a
     # viewer off mid-window, and tests/test_task_configs.py requires play configs to be
     # unbounded
-    episode_length_s=1.0e9 if play else MAX_DEADLINE_S,
+    episode_length_s=1.0e9 if play else MAX_WINDOW_S,
   )

@@ -57,6 +57,7 @@ from mjlab.tasks.bridging.experiments.humanoid.selector.state import (
   canonical,
   channel_gap,
   features,
+  reference_in_heading,
 )
 from mjlab.tasks.bridging.experiments.humanoid.selector.table import (
   ROLLOUTS_PATH,
@@ -250,6 +251,18 @@ class BuildCfg:
 def build(cfg: BuildCfg) -> EntryTable:
   """Every entry state of every requested skill."""
   data = load_dataset(cfg.path, cfg.device, cfg.split)
+  if any(
+    value is None
+    for value in (
+      data.previous_action,
+      data.reference,
+      data.motion_file,
+      data.motion_scale,
+    )
+  ):
+    raise SystemExit(
+      "Rollouts lack resumption context. Rerun selector.record, then selector.build"
+    )
   ground = Ground()
   if ground.num_joints != data.num_joints:
     raise SystemExit(
@@ -295,6 +308,9 @@ def for_skill(
 ) -> list[Entry]:
   """One skill's entry states, earliest frame first."""
   rows = data.of((skill,))
+  assert data.reference is not None and data.previous_action is not None
+  assert data.motion_file is not None and data.motion_scale is not None
+  references = reference_in_heading(data.states[rows], data.reference[rows])
   states = everything[rows]
   trajectory = data.trajectory[rows]
   # The skill's own clock. For a tracker it is the frame of the reference the policy was
@@ -337,6 +353,10 @@ def for_skill(
         coverage=int(torch.unique(trajectory[members]).numel()) / rollouts,
         spread=float(torch.cdist(here, feat[center : center + 1]).median()),
         clearance=ground.clearance(pose.astype(np.float64)),
+        previous_action=data.previous_action[rows[center]].cpu().numpy().copy(),
+        reference=references[center].cpu().numpy().copy(),
+        motion_file=str(data.motion_file[int(rows[center])]),
+        motion_scale=float(data.motion_scale[rows[center]]),
       )
     )
 

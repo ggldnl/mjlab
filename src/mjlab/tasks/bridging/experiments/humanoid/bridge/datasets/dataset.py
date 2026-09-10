@@ -150,6 +150,33 @@ def control_rate(env_cfg: ManagerBasedRlEnvCfg) -> float:
   return 1.0 / (env_cfg.sim.mujoco.timestep * env_cfg.decimation)
 
 
+def entry_context(env: ManagerBasedRlEnv) -> dict[str, np.ndarray]:
+  """Record the preceding action and the reference paired with the current state."""
+  from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.mdp.commands import (
+    JumpCommand,
+  )
+
+  context = {
+    "previous_action": env.action_manager.action.detach().cpu().numpy().copy(),
+    "reference": np.full((env.num_envs, 7), np.nan, dtype=np.float32),
+    "motion_file": np.full(env.num_envs, "", dtype="U1"),
+    "motion_scale": np.ones(env.num_envs, dtype=np.float32),
+  }
+  for name in env.command_manager.active_terms:
+    command = env.command_manager.get_term(name)
+    if not isinstance(command, JumpCommand):
+      continue
+    files = command.cfg.motion_files
+    pose = torch.cat([command.body_pos_w[:, 0], command.body_quat_w[:, 0]], dim=-1)
+    pose[:, :2] -= env.scene.env_origins[:, :2]
+    context["reference"] = pose.detach().cpu().numpy().copy()
+    ids = command.motion_ids.detach().cpu().numpy()
+    context["motion_file"] = np.asarray([Path(files[i]).name for i in ids])
+    context["motion_scale"] = command.scales.detach().cpu().numpy().copy()
+    break
+  return context
+
+
 def find_checkpoint(
   experiments: tuple[str, ...], explicit: str | None = None, hint: str = ""
 ) -> Path:
@@ -179,6 +206,7 @@ def record(
   checkpoint: Path,
   cfg: RolloutCfg,
   label: str,
+  metadata: dict[str, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
   """Drive one trained policy in one environment, recording every control step.
 
@@ -222,6 +250,7 @@ def record(
   trajectories: list[torch.Tensor] = []
   goals: list[torch.Tensor] = []
   keep: list[torch.Tensor] = []
+  contexts: list[dict[str, np.ndarray]] = []
   for step in range(cfg.steps):
     # Only the policy call goes in inference mode. Stepping the env inside it marks every
     # buffer it writes as an inference tensor, and the next reset cannot write them
@@ -250,6 +279,8 @@ def record(
     # Read after the step, so this is the command the policy was following when it
     # produced the state, not one drawn for the episode about to start
     goals.append(commanded(env).clone())
+    if metadata is not None:
+      contexts.append(entry_context(env))
     keep.append(age >= cfg.settle)
     if (step + 1) % 100 == 0:
       print(f"[dataset] {label}: {step + 1}/{cfg.steps}")
@@ -261,6 +292,10 @@ def record(
   trajectory_ids = torch.stack(trajectories, dim=0).flatten(0, 1)
   commands = torch.stack(goals, dim=0).flatten(0, 1)
   valid = torch.stack(keep, dim=0).flatten(0, 1)
+  if metadata is not None:
+    mask = valid.cpu().numpy()
+    for key in contexts[0]:
+      metadata[key] = np.concatenate([context[key] for context in contexts])[mask]
   # Which environment each surviving row came from, so load_dataset can hold whole
   # environments out rather than individual frames
   env_id = torch.arange(cfg.num_envs, device=cfg.device).repeat(cfg.steps)[valid]
@@ -285,6 +320,7 @@ def write(
   fps: float,
   goals: list[np.ndarray] | None = None,
   phases: list[np.ndarray] | None = None,
+  metadata: list[dict[str, np.ndarray]] | None = None,
 ) -> Path:
   """One npz, in the layout load_dataset expects.
 
@@ -308,6 +344,9 @@ def write(
   }
   if phases is not None:
     columns["phase"] = np.concatenate(phases)
+  if metadata:
+    for key in metadata[0]:
+      columns[key] = np.concatenate([context[key] for context in metadata])
   if goals is not None:
     width = max(g.shape[1] for g in goals)
     columns["goal"] = np.concatenate(
@@ -345,6 +384,11 @@ class Dataset:
 
   None for a dataset written before the column. Equal to `frame` for a skill with no
   reference. See clip_phase for why a tracker needs its own column."""
+
+  previous_action: torch.Tensor | None = None
+  reference: torch.Tensor | None = None
+  motion_file: np.ndarray | None = None
+  motion_scale: torch.Tensor | None = None
 
   def commands_of(self, skill: str) -> torch.Tensor | None:
     """The command column for one source, padding removed. (N, G_skill).
@@ -483,9 +527,11 @@ class Segments:
 
     Column k is the state k ticks after the window opened, so column 0 is the start and
     column steps is the target. Columns past the duration of a window repeat its target
-    rather than running on into whatever follows in the rollout: nothing reads them, since
-    the episode is over by then, and a row from the next stride would be a quietly wrong
-    answer if anything ever did.
+    rather than running on into whatever follows in the rollout, and they are read: a
+    window runs for BridgeCommandCfg.patience_scale times the duration its ends were drawn
+    at, so the last third of an episode sits in this padding. Repeating the target is what
+    makes that harmless, since the shaping then pays for staying on the target it has just
+    been paid for reaching. A row from the next stride would pay for leaving it.
     """
     offsets = torch.arange(span + 1, device=position.device)
     reach = torch.minimum(offsets.unsqueeze(0), steps.unsqueeze(-1))
@@ -547,6 +593,18 @@ def load_dataset(
     goal_dim=tuple(int(v) for v in raw["goal_dim"]) if "goal_dim" in raw else (),
     phase=torch.from_numpy(raw["phase"]).to(device).long()[mask]
     if "phase" in raw
+    else None,
+    previous_action=torch.from_numpy(raw["previous_action"]).to(device)[mask]
+    if "previous_action" in raw
+    else None,
+    reference=torch.from_numpy(raw["reference"]).to(device)[mask]
+    if "reference" in raw
+    else None,
+    motion_file=raw["motion_file"][mask.cpu().numpy()]
+    if "motion_file" in raw
+    else None,
+    motion_scale=torch.from_numpy(raw["motion_scale"]).to(device)[mask]
+    if "motion_scale" in raw
     else None,
   )
   print(f"[dataset] {loaded.states.shape[0]} states in '{split}' from {loaded.names}")

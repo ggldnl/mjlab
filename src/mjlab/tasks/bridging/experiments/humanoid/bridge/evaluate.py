@@ -105,11 +105,14 @@ class Result:
   name: str
   arrived: torch.Tensor
   score: torch.Tensor
-  reached: torch.Tensor
+  arrival_s: torch.Tensor
+  """Seconds from the window opening to its best moment. How long the crossing took, which
+  with no deadline is measured rather than asked for."""
   fell: torch.Tensor
   errors: torch.Tensor
-  """(episodes, len(CHANNELS)). Rows for episodes that never reached a deadline are
-  unfilled, and are excluded by reached."""
+  """(episodes, len(CHANNELS)) at each window's best moment. Episodes that ended on the
+  floor are excluded by fell: their best moment is whatever they managed before going
+  down, which is not an arrival."""
   joint_pos_errors: torch.Tensor
   joint_vel_errors: torch.Tensor
 
@@ -121,8 +124,8 @@ def _build(cfg: EvalCfg) -> ManagerBasedRlEnv:
   assert isinstance(command, BridgeCommandCfg)
   command.dataset_path = cfg.dataset
   command.split = cfg.split
-  # The rollout reads the arrival latched at the deadline, and an auto-reset would draw
-  # the next window and clear it before step returns
+  # The rollout reads the window's best moment off the command, and an auto-reset would
+  # draw the next window and clear it before step returns
   env_cfg.auto_reset = False
   return ManagerBasedRlEnv(cfg=env_cfg, device=cfg.device)
 
@@ -191,7 +194,7 @@ def rollout(env: ManagerBasedRlEnv, policy, cfg: EvalCfg, name: str) -> Result:
 
   arrived: list[torch.Tensor] = []
   score: list[torch.Tensor] = []
-  reached: list[torch.Tensor] = []
+  arrival_s: list[torch.Tensor] = []
   fell: list[torch.Tensor] = []
   errors: list[torch.Tensor] = []
   joint_pos_errors: list[torch.Tensor] = []
@@ -203,11 +206,11 @@ def rollout(env: ManagerBasedRlEnv, policy, cfg: EvalCfg, name: str) -> Result:
     obs, _, terminated, truncated, _ = env.step(action)
     done = (terminated | truncated).nonzero().flatten()
     if done.numel():
-      # Read before the reset. errors_now latches all of this at the deadline, and place
-      # clears it for the next window
+      # Read before the reset. advance keeps all of this current at the window's best
+      # moment, and place clears it for the next window
       arrived.append(command.arrived[done].clone())
       score.append(command.score[done].clone())
-      reached.append(command.reached[done].clone())
+      arrival_s.append(command.arrival_s[done].clone())
       fell.append(terminated[done].float().clone())
       errors.append(command.final[done].clone())
       joint_pos_errors.append(command.final_joint_pos[done].clone())
@@ -221,7 +224,7 @@ def rollout(env: ManagerBasedRlEnv, policy, cfg: EvalCfg, name: str) -> Result:
     name=name,
     arrived=torch.cat(arrived)[: cfg.episodes],
     score=torch.cat(score)[: cfg.episodes],
-    reached=torch.cat(reached)[: cfg.episodes],
+    arrival_s=torch.cat(arrival_s)[: cfg.episodes],
     fell=torch.cat(fell)[: cfg.episodes],
     errors=torch.cat(errors)[: cfg.episodes],
     joint_pos_errors=torch.cat(joint_pos_errors)[: cfg.episodes],
@@ -244,13 +247,23 @@ def report(
 
   row("arrived", [r.arrived.mean().item() for r in results])
   row("score", [r.score.mean().item() for r in results])
-  row("reached deadline", [r.reached.mean().item() for r in results])
   row("failed early", [r.fell.mean().item() for r in results])
+  # Over the crossings that stayed on their feet. A window that ended on the floor has a
+  # best moment too, and reporting how quickly it reached it would read as a fast crossing
+  row(
+    "arrival s",
+    [
+      r.arrival_s[r.fell < 1].mean().item()
+      if bool((r.fell < 1).any())
+      else float("nan")
+      for r in results
+    ],
+  )
   print()
   for index, channel in enumerate(CHANNELS):
     values = []
     for r in results:
-      kept = r.errors[r.reached > 0, index]
+      kept = r.errors[r.fell < 1, index]
       values.append(kept.median().item() if kept.numel() else float("nan"))
     row(f"err {channel}", values)
   if per_joint:
@@ -259,7 +272,7 @@ def report(
       pos = []
       vel = []
       for result in results:
-        kept = result.reached > 0
+        kept = result.fell < 1
         pos.append(
           result.joint_pos_errors[kept, index].median().item()
           if bool(kept.any())

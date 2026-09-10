@@ -15,6 +15,10 @@ Columns:
     spread     how much those rollouts disagree here. 1.0 is one arrival tolerance wide
     clearance  metres between the lowest part of the robot and the floor. About zero
                standing, positive in the air. See ground.py
+    previous_action  preceding policy action, (J,)
+    reference        reference root pose in the same canonical frame, (7,)
+    motion_file      clip filename, empty for a skill without a reference
+    motion_scale     recorded clip scale
 
 Rows are in frame order, earliest first, which is the order along the window they were
 taken from. Nothing here ranks them: which one to enter at depends on where the outgoing
@@ -106,6 +110,10 @@ class Entry:
   coverage: float
   spread: float
   clearance: float
+  previous_action: np.ndarray | None = field(default=None, compare=False)
+  reference: np.ndarray | None = field(default=None, compare=False)
+  motion_file: str = ""
+  motion_scale: float = 1.0
 
   @property
   def why(self) -> str:
@@ -153,7 +161,7 @@ class EntryTable:
   """(6,) fastest per-channel change per second the corpus achieved, in CHANNELS order.
 
   A property of the robot rather than of any one skill, so it is measured over every
-  recorded state and carried by the file. query.py divides by it to turn a gap into an
+  recorded state and carried by the file. reach.py divides by it to turn a gap into an
   effort. See build.achievable.
   """
 
@@ -241,6 +249,10 @@ class EntryTable:
         coverage=float(raw["coverage"][i]),
         spread=float(raw["spread"][i]),
         clearance=float(raw["clearance"][i]),
+        previous_action=raw["previous_action"][i] if "previous_action" in raw else None,
+        reference=raw["reference"][i] if "reference" in raw else None,
+        motion_file=str(raw["motion_file"][i]) if "motion_file" in raw else "",
+        motion_scale=float(raw["motion_scale"][i]) if "motion_scale" in raw else 1.0,
       )
       for i in range(raw["states"].shape[0])
     )
@@ -249,6 +261,10 @@ class EntryTable:
     )
 
   def save(self, path: Path = TABLE_PATH) -> Path:
+    if any(e.previous_action is None or e.reference is None for e in self.entries):
+      raise ValueError(
+        "Entries require recorded actions and reference context; rerun selector.record"
+      )
     path.parent.mkdir(parents=True, exist_ok=True)
     columns: dict[str, Any] = {
       "states": np.stack([e.state for e in self.entries]).astype(np.float32),
@@ -259,6 +275,16 @@ class EntryTable:
       "command_dim": np.asarray([e.command.size for e in self.entries], dtype=np.int16),
       "fps": np.asarray(self.fps),
       "rates": np.asarray(self.rates, dtype=np.float32),
+      "previous_action": np.stack(
+        [e.previous_action for e in self.entries if e.previous_action is not None]
+      ),
+      "reference": np.stack(
+        [e.reference for e in self.entries if e.reference is not None]
+      ),
+      "motion_file": np.asarray([e.motion_file for e in self.entries]),
+      "motion_scale": np.asarray(
+        [e.motion_scale for e in self.entries], dtype=np.float32
+      ),
     }
     for column in COLUMNS:
       columns[column] = np.asarray(

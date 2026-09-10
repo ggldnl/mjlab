@@ -28,9 +28,6 @@ from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import (
   channel_errors as channel_errors,
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.rewards import (
-  approach as approach,
-)
-from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.rewards import (
   arrival as arrival,
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.rewards import (
@@ -49,10 +46,10 @@ from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.rewards import (
   knees_inward as knees_inward,
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.terminations import (
-  deadline_reached as deadline_reached,
+  fell_over as fell_over,
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.terminations import (
-  fell_over as fell_over,
+  out_of_patience as out_of_patience,
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.terminations import (
   strayed as strayed,

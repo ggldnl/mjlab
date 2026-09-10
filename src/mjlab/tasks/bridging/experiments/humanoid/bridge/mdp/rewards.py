@@ -2,8 +2,7 @@
 
 Objective, all strictly positive:
 
-    arrival    8 channel kernel against the target, under a ramp peaking at the deadline
-    approach   same channels through a wide kernel, flat across the window
+    arrival    how much the 8 channel kernel against the target beat its own best
     guidance   nearness to the recorded crossing. Shaping, anneals to zero
 
 Regularizers, all non positive:
@@ -14,17 +13,24 @@ Regularizers, all non positive:
     feet_chatter   contact or flight phase too short to be a step
     joint_limits   joints against their soft limits
 
-The objective needs three terms because nothing scores the middle of a window. With no
-help the robot has to explore a huge space to reach the target, so arrival alone is a
-reward that has to be stumbled into. guidance pays for staying near the motion the rollout
-recorded across this window, which is the ground truth used as a learning signal, and
-approach gives a broad state gradient once guidance is gone. Only arrival and approach
-survive the anneal.
+arrival is the whole objective and it is dense, which is what it was not before. It used
+to be a kernel under a progress cubed ramp, which put most of its mass in the last fifth of
+a window and left the rest of the episode to a broad `approach` term evaluated at four
+times the requirement. That term then ate the run: at convergence it was collecting 0.238
+against arrival's 0.114, root linear velocity error had not moved in twelve thousand
+iterations, and `arrived` read 0.000 all run. The policy had correctly learned the thing it
+was being paid for, which was to hover in the neighbourhood and not fall over.
 
-All three are positive, so ending an episode early is always worse than continuing. An
-earlier version found that falling over promptly beat trying, which is what happens when
-reward can go negative and the cheapest way to stop losing is to stop. The strayed
-termination, not the reward, is what stops the policy parking somewhere safe.
+Paying the improvement instead makes every step that gets closer worth something and needs
+no second term to fill the middle of the window, so `approach` is gone rather than
+reweighted. The broad early gradient it was there for now comes from the tolerance
+curriculum, which samples broad precision profiles and tightens their range. See
+BridgeCommandCfg.tolerance_initial_range and tolerance_final_range.
+
+Both are positive, so ending an episode early is always worse than continuing. An earlier
+version found that falling over promptly beat trying, which is what happens when reward can
+go negative and the cheapest way to stop losing is to stop. The strayed termination, not the
+reward, is what stops the policy parking somewhere safe.
 """
 
 from __future__ import annotations
@@ -48,29 +54,31 @@ def _command(env: ManagerBasedRlEnv, command_name: str) -> BridgeCommand:
   return term
 
 
-def arrival(
-  env: ManagerBasedRlEnv, command_name: str, sharpness: float = 3.0
-) -> torch.Tensor:
-  """8 channel kernel against the target, under a ramp peaking at the deadline.
+def arrival(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+  """How much the arrival score beat the best already reached this window.
 
-  sharpness is the exponent on progress. At 3 the last fifth of a window is worth about
-  half of what this pays over the whole of it, so the reward concentrates where the
-  question is without leaving the first two thirds with no signal.
+  Summed over an episode this is the best arrival score the crossing ever achieved, paid
+  once, whenever it happened. Three things follow, and all three are the point.
 
-  Paying early is a small distortion that buys something: arriving ahead of time and
-  holding collects more than arriving on the buzzer, and holding is the better hand-over.
+  Dense. Any step that gets closer than the policy has ever been pays immediately, so
+  there is a gradient from the first step of a window rather than only near its end.
 
-  Runs against the curriculum tolerances, not the requirements. See BridgeCommand._retune:
-  a channel more than about 3 tolerances out contributes exactly zero, and a channel that
-  teaches nothing is capacity spent on the ones that do.
+  No instant to hit. A target carries momentum, so it is a state the robot passes through
+  and not one it can sit in. Scored at a fixed tick, a crossing that went through the
+  target perfectly three ticks early reads as a miss, which is what a deadline was doing
+  to every dynamic target in the corpus.
+
+  Nothing paid for coming back. A plain per step score would pay a policy aiming at a
+  moving target to turn round and re-approach it, over and over, which is the opposite of
+  a hand-over. Once the best is set, leaving costs nothing and returning earns nothing.
+
+  BridgeCommand.advance is what computes it, because it also moves the best of the window,
+  writes the metrics. This is the only reward term that calls
+  it, and calling it twice in one step would pay the same improvement twice.
   """
-  command = _command(env, command_name)
-  errors = command.errors_now()
-  ramp = command.progress.pow(sharpness)
-  # Curriculum tolerances, not requirements. arrived and every reported number use
-  # command.tolerances, so only what is being taught moves. One shared object would make
-  # the score chase the error and hold constant by construction, leaving no instrument
-  return ramp * arrival_score(errors, command.reward_tolerances)
+  increment = _command(env, command_name).advance()
+  # Arrival is an event amount, while the manager integrates reward rates
+  return increment / env.step_dt if env.cfg.scale_rewards_by_dt else increment
 
 
 def guidance(
@@ -83,7 +91,7 @@ def guidance(
   the one for this tick.
 
   Shaping, not an objective. guide_scale anneals it to zero, after which the reward is
-  arrival and approach alone. It has to go away: there is no reference at inference, and
+  arrival alone. It has to go away: there is no reference at inference, and
   during training the start is perturbed off the recorded one on purpose, so the recorded
   crossing is often unreachable from where the robot actually is. A term that scored it
   would pay for imitating one answer instead of for arriving.
@@ -109,23 +117,6 @@ def guidance(
     errors, command.tolerances * tolerance_scale, bottleneck_weight=0.2
   )
   return scale * score * command.has_reference
-
-
-def approach(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
-  """Broad full state gradient, flat across the window. arrival handles precision.
-
-  4x the tolerances, with a light bottleneck instead of the heavy one arrival uses. This
-  term has to say something useful about a state nowhere near the target, and a hard
-  bottleneck would flatten it to zero over the first half of a window, which is the half
-  with no other signal.
-
-  All 8 channels, not just the root. A root only version made every other channel wait for
-  the last few ticks, and the policy had a rational incentive to use its arms for balance
-  and never bring them back.
-  """
-  command = _command(env, command_name)
-  errors = command.errors_now()
-  return arrival_score(errors, command.reward_tolerances * 4.0, bottleneck_weight=0.2)
 
 
 def feet_below_ground(

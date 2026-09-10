@@ -136,6 +136,7 @@ def collect(cfg: RecordCfg) -> Path:
   phases: list[np.ndarray] = []
   sources: list[np.ndarray] = []
   goals: list[np.ndarray] = []
+  metadata: list[dict[str, np.ndarray]] = []
   fps = 0.0
 
   for index, name in enumerate(cfg.skills):
@@ -162,8 +163,9 @@ def collect(cfg: RecordCfg) -> Path:
       cfg.checkpoints[index] if index < len(cfg.checkpoints) else None,
       hint=f" Train it with `uv run train {task}`, or name one in `checkpoints`.",
     )
+    context: dict[str, np.ndarray] = {}
     rows, envs, trajectories, ages, clip_frames, commands = dataset.record(
-      task, env_cfg, checkpoint, cfg, name
+      task, env_cfg, checkpoint, cfg, name, metadata=context
     )
     states.append(rows)
     env_ids.append(envs)
@@ -172,6 +174,7 @@ def collect(cfg: RecordCfg) -> Path:
     phases.append(clip_frames)
     sources.append(np.full(len(rows), index, dtype=np.int16))
     goals.append(commands)
+    metadata.append(context)
     rollouts = len(np.unique(trajectories))
     print(f"[selector] {name}: {len(rows)} states over {rollouts} rollouts")
     for line in spread_of(commands, trajectories):
@@ -188,6 +191,7 @@ def collect(cfg: RecordCfg) -> Path:
     fps,
     goals,
     phases,
+    metadata=metadata,
   )
 
 

@@ -243,6 +243,7 @@ def collect(cfg: TrackerCfg) -> Path:
   phases: list[np.ndarray] = []
   sources: list[np.ndarray] = []
   goals: list[np.ndarray] = []
+  metadata: list[dict[str, np.ndarray]] = []
   names: list[str] = []
   fps = 0.0
 
@@ -263,8 +264,9 @@ def collect(cfg: TrackerCfg) -> Path:
       )
     fps = rate
 
+    context: dict[str, np.ndarray] = {}
     rows, envs, trajectories, ages, clip_frames, commands = dataset.record(
-      cfg.task, env_cfg, checkpoint, cfg, clip.stem
+      cfg.task, env_cfg, checkpoint, cfg, clip.stem, metadata=context
     )
 
     # What a tracker that never fell would have produced. Each fall costs settle steps of
@@ -285,6 +287,7 @@ def collect(cfg: TrackerCfg) -> Path:
     phases.append(clip_frames)
     sources.append(np.full(len(rows), len(names), dtype=np.int16))
     goals.append(commands)
+    metadata.append(context)
     names.append(clip.stem)
     print(f"[dataset] {clip.stem}: {len(rows)} states, survival {survival:.2f}")
 
@@ -305,6 +308,7 @@ def collect(cfg: TrackerCfg) -> Path:
     fps,
     goals,
     phases,
+    metadata=metadata,
   )
 
 

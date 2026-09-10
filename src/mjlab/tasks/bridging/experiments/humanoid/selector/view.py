@@ -39,9 +39,6 @@ Run
 3. Move a window in selector/__init__.py, re-run selector.build, reload the page.
 """
 
-# TODO we have nothing to control in the viewer. The entry states of a conditioned skill
-#   depend on the conditioning signal, so it would be nice to show how they move with it
-
 from __future__ import annotations
 
 import time
