@@ -24,8 +24,8 @@ was being paid for, which was to hover in the neighbourhood and not fall over.
 Paying the improvement instead makes every step that gets closer worth something and needs
 no second term to fill the middle of the window, so `approach` is gone rather than
 reweighted. The broad early gradient it was there for now comes from the tolerance
-curriculum, which samples broad precision profiles and tightens their range. See
-BridgeCommandCfg.tolerance_initial_range and tolerance_final_range.
+curriculum, which starts every channel at the wide end of its band and tightens one at
+a time on evidence. See BridgeCommandCfg.core_band and support_band.
 
 Both are positive, so ending an episode early is always worse than continuing. An earlier
 version found that falling over promptly beat trying, which is what happens when reward can

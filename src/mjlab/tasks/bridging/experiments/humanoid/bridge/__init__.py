@@ -74,19 +74,35 @@ units and CHANNELS order. For example:
     command.open_window(ids, seconds, tolerances=Tolerances(arm_joint_pos=0.2))
 
 An omitted profile uses BridgeCommandCfg.tolerances. Keep that baseline unchanged between
-training and inference because it normalizes the observation. Only corpus sampling draws
-random profiles: independently per window and channel, uniformly in log space. Over
-tolerance_steps, both multiplier bounds move from tolerance_initial_range (5, 10) to
-tolerance_final_range (0.5, 4). Random profiles continue after the curriculum ends.
-Tune the bounds to cover measured runtime requirements; these defaults are not empirical
-skill limits. Transition scripts accept named limits, for example --tolerances.arm-joint-pos
+training and inference because it normalizes the observation. It is a unit, not the
+requirement: what training asks for is a multiple of it, drawn from a per channel band.
+
+Root and legs are drawn from core_band, 4x the baseline down to 0.6x, and the arms from
+support_band, 16x down to 4x. The two do not overlap, so the arms are never asked for more
+precision than the legs, which is the ordering every measured skill wants. Each window
+picks one channel to be strict and relaxes the other seven toward the wide end of their
+bands by focus_relax, so a window asks one question. A channel's band position moves only
+when the windows that focused it are met between success_band's two rates, which is
+Florensa's reverse curriculum applied per channel: above the upper rate the channel is
+solved and is asked for more, below the lower it is past what the policy can do and is
+asked for less. Watch level_<channel> and focus_rate_<channel>.
+
+Transition scripts accept named limits, for example --tolerances.arm-joint-pos
 0.2. The parkour Bridge.aim method accepts the same tolerances keyword.
 
-The observation remains 24 + 2J wide. Restored bridge checkpoints load with the same
-baseline, but need training on varied requests before their precision conditioning can
-be assessed. Kernel shape, channel weights, guidance, alive and termination rules are
-unchanged. Monitor fixed_arrived, score and err_* for comparable progress; arrived and
+The observation is 26 + 2J wide: the clock added two values and checkpoints from before
+it cannot be resumed. Restored bridge checkpoints load with the same baseline, but need
+training on varied requests before their precision conditioning can be assessed. Kernel
+shape, channel weights, guidance, alive and termination rules are unchanged. Monitor fixed_arrived, score and err_* for comparable progress; arrived and
 requested_score describe the sampled requests, and tol_* records their physical limits.
+
+The channel to read first is reach_*, which is err_* over that channel's requirement. One
+is the limit on every channel, so the eight are comparable to each other whatever their
+units, and worst_channel is the largest of them: the one thing standing between the
+crossing and an arrival. channels_met counts how many of the eight are inside, so it runs
+0 to 8 and reaching 8 is what fixed_arrived reports as 1. All three are against the fixed
+baseline, so a falling curve means the crossing improved rather than the curriculum
+letting go.
 """
 
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg

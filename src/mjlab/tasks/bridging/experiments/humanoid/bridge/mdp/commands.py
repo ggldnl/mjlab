@@ -1,17 +1,20 @@
 """The bridge targets a physical state and is rewarded for improving its best arrival.
 
-Command layout, 24 + 2J values:
+Command layout, 26 + 2J values:
     root position gap       3, heading frame
     root orientation gap    6
     root velocity gaps      6, body frame
     joint gaps              2J
+    clock                   2, seconds left of the crossing and the fraction spent
     reward best             1
     requested tolerances    8, divided by the configured baseline
 
 Each window holds one tolerance profile, shared by the reward, observation and success
-check. Training samples each channel independently and tightens the sampling range over
-time. Fixed baseline score, errors and best_step remain comparable across the curriculum
-and track a separate best moment. arrived and arrived_now use the requested profile.
+check. Training draws it from a per channel band, puts one channel strictly and relaxes
+the other seven, and tightens a channel's band position only when the policy is meeting it.
+See _sample_tolerances and _advance_levels. Fixed baseline score, errors and best_step
+remain comparable across the curriculum and track a separate best moment. arrived and
+arrived_now use the requested profile.
 
 The previous action is proprioception, not a target. Target actions are recorded for
 resumption experiments but are not part of the bridge objective.
@@ -65,8 +68,23 @@ CHANNELS = (
 ARM_JOINT = re.compile(r"(shoulder|elbow|wrist)")
 """What counts as an arm. Everything else, legs and waist alike, is the supporting chain."""
 
+SUPPORT = ("arm_joint_pos", "arm_joint_vel")
+"""Channels that are only worth anything once the other six are right.
+
+An arm has no say in whether the next skill can stand up, so an arm delivered inside
+tolerance onto a robot whose root and legs are wrong buys nothing. These two are held to a
+looser band than the other six at every moment of training, which is what core_band and
+support_band do, and the measurements agree: the kick accepts 0.8 rad on its worst arm
+joint, 16 times the baseline, while it wants the root within 4 cm.
+"""
+
+CORE = tuple(name for name in CHANNELS if name not in SUPPORT)
+"""Root and legs. What a hand-over is actually made of."""
+
+
 TARGET_COLOR = (1.0, 0.72, 0.2, 0.45)
 """Target ghost: amber, standing still where the window ends."""
+
 
 REFERENCE_COLOR = (0.35, 0.6, 1.0, 0.35)
 """Reference ghost: blue, walking the recorded crossing as the clock runs.
@@ -103,6 +121,14 @@ class Tolerances:
 
   The config holds the baseline used for observation scaling and fixed evaluation.
   Each request can supply its own limits through open_window or place.
+
+  Not the requirement any more, only the unit it is quoted in. What training asks for is
+  core_band and support_band, in multiples of these numbers, and two of these values no
+  longer cover the one skill that has been measured: entry_margin at 8 directions puts the
+  kick at 0.041 m and 0.101 m/s, under the 0.05 and 0.15 here. Left alone deliberately.
+  Moving the baseline moves the observation scaling and the fixed_ metrics with it, so no
+  run would be comparable to any earlier one; the band floor of 0.6x reaches 0.030 m and
+  0.090 m/s, which covers both with room.
   """
 
   root_pos: float = 0.05
@@ -118,19 +144,36 @@ class Tolerances:
   carrying the wrong momentum is about to be somewhere else."""
   root_ang_vel: float = 0.30
   """Radians per second, about 9 degrees of unwanted turn over that same half second."""
-  leg_joint_pos: float = 0.10
-  """Radians on the worst leg or waist joint, about 6 degrees. At the G1's thigh length that
-  is roughly 3 cm of foot placement, which is the scale the root position bound is set at."""
-  leg_joint_vel: float = 1.50
-  """Radians per second on the worst leg or waist joint."""
+  leg_joint_pos: float = 0.08
+  """Radians on the worst leg or waist joint, about 5 degrees. At the G1's thigh length that
+  is roughly 2 cm of foot placement, which is the scale the root position bound is set at.
+
+  The two leg channels are the only ones measured against a skill rather than argued, and
+  both carry a fifth off what was measured. See leg_joint_vel."""
+  leg_joint_vel: float = 0.80
+  """Radians per second on the worst leg or waist joint.
+
+  This was the one channel declared looser than a skill turned out to accept: at 1.50 a
+  bridge could meet the requirement and still hand over a robot that does not track.
+
+  Both leg bounds sit a fifth below what tests.end2end.entry_margin measured on the kick,
+  which held its clip at 0.10 rad and 1.00 rad/s and left it by 0.15 and 1.50. So the
+  measured values were the last rung that passed rather than the edge of anything, and
+  they were measured one channel at a time. The margin is for the eight moving together,
+  which nothing has measured. The other six channels are already far tighter than the kick
+  needs and are argued from what a hand-over costs, not from this."""
   arm_joint_pos: float = 0.05
   """Radians on the worst arm joint, about 3 degrees.
 
-  Tighter than the legs, which is the opposite of what the dynamics suggest, and
-  deliberate. An arm has little say in whether the next skill can stand up, so a
-  requirement argued from balance alone would be loose, and loose here is exactly the hole
-  that let a bridge park its arms wherever it liked. Three degrees is the bar for "same
-  posture", and holding the arms to it is what the arm channels exist for.
+  A unit, not the requirement. What the arms are actually asked for is support_band times
+  this, 0.2 to 0.8 rad, which is looser than the legs and is meant to be: an arm has little
+  say in whether the next skill can stand up. This value once was the requirement, and
+  three degrees on an arm joint is roughly what a bridge that has not solved the root is
+  being asked to spend its capacity on.
+
+  The arm channels still exist for the reason they always did, which is that nothing else
+  stops a bridge parking its arms wherever it likes. A bound of 0.8 rad still rules that
+  out. It just does not rule it out at four times the precision the legs get.
   """
   arm_joint_vel: float = 0.75
   """Radians per second on the worst arm joint."""
@@ -193,28 +236,41 @@ def channel_errors(
 def arrival_score(
   errors: torch.Tensor, tolerances: torch.Tensor, bottleneck_weight: float = 0.7
 ) -> torch.Tensor:
-  """One kernel per channel, blended into one number. (N, 8) -> (N,), in (0, 1].
+  """How near an arrival is, in one number. (N, 8) -> (N,), in (0, 1].
 
-  Two parts:
+  Distance first, squashed once at the end. Each channel becomes log(1 + e / tolerance),
+  those are aggregated into one distance, and the score is 1 / (1 + distance). See
+  benchmarks/objective-proposal.md.
 
-      average      gradient on every channel at once, so a policy that is bad everywhere
-                   still knows which way to move
-      bottleneck   the worst channel's kernel alone. Makes "arrive on all of them" the
-                   objective rather than "arrive on the cheap ones"
+  The distance has two parts:
 
-  At bottleneck_weight 0.7 the bottleneck dominates: one channel at zero caps the whole
-  score at 0.3 whatever the other seven do.
+      bottleneck   the worst channel alone. Makes "arrive on all of them" the objective
+                   rather than "arrive on the cheap ones"
+      average      every channel at once, so a policy that is bad everywhere still knows
+                   which way to move
 
   The four joint channels outweigh the four root ones in the average. One root state can
   be reached by many postures, so the root channels are the easy half, and left equal they
   are where the policy spends its capacity.
+
+  The logarithm is the whole point and it replaced a per channel exp(-z^2). That kernel is
+  flat to machine zero a few tolerances out, and a trained bridge was leaving six
+  tolerances of leg joint position error: it read 2e-18 there with a derivative of 2e-17,
+  against 0.19 on a root channel already inside its limit. So the worst channel carried
+  none of the gradient, the bottleneck term was a constant, and the reward asked for the
+  channels that were already met. At that same arrival this form puts 46% of the total
+  gradient on the leg joints, which is the channel that is actually wrong.
+
+  Scores are not comparable across that change. A crossing with every channel exactly on
+  its limit used to read 0.368 and now reads 0.591.
   """
-  kernel = torch.exp(-(errors / tolerances).square())
   weights = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0, 1.5, 2.0, 1.5], device=errors.device)
-  average = (kernel * weights).sum(dim=-1) / weights.sum()
-  return (1.0 - bottleneck_weight) * average + bottleneck_weight * kernel.min(
-    dim=-1
-  ).values
+  reach = torch.log1p(errors / tolerances)
+  distance = (
+    bottleneck_weight * reach.amax(dim=-1)
+    + (1.0 - bottleneck_weight) * (reach * weights).sum(dim=-1) / weights.sum()
+  )
+  return 1.0 / (1.0 + distance)
 
 
 def arrived(errors: torch.Tensor, tolerances: torch.Tensor) -> torch.Tensor:
@@ -279,20 +335,48 @@ class BridgeCommand(CommandTerm):
 
     self._curriculum = cfg.adaptive_tolerances and cfg.dataset_path is not None
     """Whether corpus windows sample a tolerance profile."""
-    for bounds in (cfg.tolerance_initial_range, cfg.tolerance_final_range):
-      if not all(math.isfinite(v) for v in bounds) or not 0 < bounds[0] <= bounds[1]:
-        raise ValueError("Tolerance ranges must be finite, positive and ordered")
-    if any(
-      end > start
-      for start, end in zip(
-        cfg.tolerance_initial_range, cfg.tolerance_final_range, strict=True
-      )
-    ):
-      raise ValueError("Final tolerance bounds must not exceed initial bounds")
-    if cfg.tolerance_steps < 0:
-      raise ValueError("tolerance_steps must be nonnegative")
     self.window_tolerances = self.tolerances.expand(self.num_envs, -1).clone()
     """Per request limits, frozen until that environment opens another window."""
+
+    ##
+    # The curriculum. See _sample_tolerances for the three things it guarantees.
+    ##
+
+    self.bands = _bands(cfg, self.device)
+    """(8, 2). The widest and the tightest multiple of the baseline each channel is ever
+    asked for. A draw never leaves its own row, which is what makes the ordering between
+    the arms and the rest hold by construction rather than on average."""
+
+    self.level = torch.zeros(len(CHANNELS), device=self.device)
+    """Where along its band each channel currently sits, 0 wide and 1 tight.
+
+    Moved by _advance_levels on evidence, never by the step counter. Not part of any
+    checkpoint: a resumed run restarts at cfg.level_init, so a resume that matters should
+    read level_<channel> off the last run and pass it."""
+    if cfg.level_init is not None:
+      if len(cfg.level_init) != len(CHANNELS) or not all(
+        0.0 <= v <= 1.0 for v in cfg.level_init
+      ):
+        raise ValueError(f"level_init needs {len(CHANNELS)} values in [0, 1]")
+      self.level = self.level.new_tensor(cfg.level_init)
+
+    if not 0.0 <= cfg.focus_relax < 1.0:
+      raise ValueError("focus_relax must be in [0, 1)")
+    if cfg.focus_jitter < 1.0:
+      raise ValueError("focus_jitter is a multiplicative spread and must be at least 1")
+    low, high = cfg.success_band
+    if not 0.0 <= low <= high <= 1.0:
+      raise ValueError("success_band must be two ordered rates in [0, 1]")
+    if not 0.0 < cfg.focus_step <= 1.0 or cfg.focus_samples < 1:
+      raise ValueError("focus_step must be in (0, 1] and focus_samples at least 1")
+
+    self._focus = torch.full((self.num_envs,), -1, dtype=torch.long, device=self.device)
+    """Which channel this window is the strict one, or -1 for a window aimed from outside."""
+    self._hits = torch.zeros(len(CHANNELS), device=self.device)
+    self._tries = torch.zeros(len(CHANNELS), device=self.device)
+    """Windows closed since this channel's level last moved, and how many met it."""
+    self._rate = torch.zeros(len(CHANNELS), device=self.device)
+    """Last measured success rate per channel, kept only so it can be logged."""
 
     self._advanced_at = -1
     self._improvement = torch.zeros(self.num_envs, device=self.device)
@@ -343,6 +427,18 @@ class BridgeCommand(CommandTerm):
       dtype=torch.long,
       device=self.device,
     )
+    self.window_steps = torch.full(
+      (self.num_envs,),
+      self.steps_for(torch.tensor(cfg.duration_s_range[1])).item(),
+      dtype=torch.long,
+      device=self.device,
+    )
+    """How long the crossing was asked to take, in control ticks. The clock the policy
+    reads, and not the same thing as patience: this is the instruction, patience is how
+    long an unsuccessful attempt is left running before it is abandoned.
+
+    Initialized to the longest window rather than to zero. A command is read before any
+    window has been opened, and the fraction elapsed divides by this."""
     self.start_distance = torch.zeros(self.num_envs, device=self.device)
 
     ##
@@ -411,11 +507,11 @@ class BridgeCommand(CommandTerm):
 
   @property
   def patience_s(self) -> torch.Tensor:
-    """How long this window is allowed to run, in physical seconds.
+    """How long this window is allowed to run before it is abandoned, in seconds.
 
-    Not a deadline and not in the observation. It says when an unsuccessful crossing is
-    abandoned, which the policy has no use for: told how long it had, a policy trades
-    accuracy for punctuality, and punctuality is not what a hand-over needs.
+    Still not in the observation, and still not a deadline. The clock the policy reads is
+    window_steps, the crossing it was asked for; this is the slack around it, and knowing
+    exactly when an attempt stops being scored is of no use to a crossing.
     """
     return self.patience.float() / self.fps
 
@@ -438,9 +534,10 @@ class BridgeCommand(CommandTerm):
   def arrival_s(self) -> torch.Tensor:
     """When the best moment happened, in seconds since the window opened.
 
-    The duration the crossing actually took. With no deadline this is measured rather than
-    commanded, which is the whole point of dropping one: how long a hand-over needs is a
-    property of the two states and the body, not a number a caller should have to guess.
+    How long the crossing actually took, against the window_steps it was asked for. Read
+    the two together: a best moment landing well before the clock runs out is a policy
+    arriving early and drifting, and one landing after it is a policy using the patience
+    slack it was not promised.
     """
     return self.best_step.float() / self.fps
 
@@ -449,8 +546,30 @@ class BridgeCommand(CommandTerm):
   ##
 
   @property
+  def clock(self) -> torch.Tensor:
+    """Seconds left of the crossing, and the fraction of it already spent. (num_envs, 2).
+
+    The target is a dynamic state, a pose and a momentum at one moment, and reaching one
+    is a matter of when to stop closing and start arriving. A policy that cannot tell a
+    0.3 second window from a 1.2 second one cannot make that decision and can only learn
+    one average approach for every window it is ever given, which is what it did: four
+    separate interventions left the arrival error where it was.
+
+    Both go past their end rather than being clamped there. patience_scale leaves a window
+    running half as long again as it was given, and a crossing inside that overrun is late,
+    which is a thing worth being able to see. Seconds left goes negative and the fraction
+    goes past one.
+    """
+    spent = self.step.float()
+    length = self.window_steps.float()
+    return torch.stack(
+      [(length - spent) / self.fps, spent / length],
+      dim=-1,
+    )
+
+  @property
   def command(self) -> torch.Tensor:
-    """(num_envs, 24 + 2J), including reward baseline and requested tolerance scales."""
+    """(num_envs, 26 + 2J), including the clock, reward baseline and tolerance scales."""
     data = self.robot.data
     yaw = yaw_quat(data.root_link_quat_w)
     q = slice(ROOT_STATE_DIM, ROOT_STATE_DIM + self.num_joints)
@@ -469,6 +588,7 @@ class BridgeCommand(CommandTerm):
         ),
         self.target[:, q] - data.joint_pos,
         self.target[:, qd] - data.joint_vel,
+        self.clock,
         self.best.unsqueeze(-1),
         self.window_tolerances / self.tolerances,
       ],
@@ -596,13 +716,22 @@ class BridgeCommand(CommandTerm):
     )
     self.best_step = torch.where(better, self.step, self.best_step)
 
+    # Every channel over its own requirement. 1.0 is the limit whatever the units were, so
+    # the eight are comparable to each other and the binding one is the largest. Against
+    # the fixed baseline, like score and unlike requested_score, or a curve could fall
+    # because the crossing improved or because the curriculum let go
+    reach = self.final / self.tolerances
+
     self.metrics["score"] = self.fixed_best.clone()
     self.metrics["arrived"] = self.arrived.clone()
     self.metrics["fixed_arrived"] = self.fixed_arrived.clone()
     self.metrics["requested_score"] = self.best.clone()
     self.metrics["arrival_s"] = self.arrival_s
+    self.metrics["channels_met"] = (reach <= 1.0).sum(dim=-1).float()
+    self.metrics["worst_channel"] = reach.amax(dim=-1)
     for index, name in enumerate(CHANNELS):
       self.metrics[f"err_{name}"] = self.final[:, index].clone()
+      self.metrics[f"reach_{name}"] = reach[:, index].clone()
 
     self._improvement = improvement
     return improvement
@@ -664,17 +793,101 @@ class BridgeCommand(CommandTerm):
         f"   statue misses by {float(gaps[index]):.2f}   {verdict}"
       )
 
-  def _sample_tolerances(self, count: int) -> torch.Tensor:
-    """Sample each request and channel independently in log space."""
+  def _sample_tolerances(self, count: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """One window's limits and the channel it puts the question to. (count, 8), (count,).
+
+    Three things hold for every draw this returns.
+
+    The arms are never asked for more precision than the rest. Each channel is confined to
+    its own band and the core bands sit entirely below the arm bands, so the ordering is a
+    property of the bands, checked once in _bands, rather than something that happens to
+    come out right on average. It did not before: the eight channels were drawn from one
+    shared range, so half of all windows asked the arms to be tighter than the legs, which
+    is the case where a perfect arm is worth nothing.
+
+    One channel is the question and the other seven are the background. The focused
+    channel sits as far along its band as its curriculum has earned; the rest are pulled
+    back toward wide by focus_relax. The policy is told which one it is, for free: the
+    observation already carries window_tolerances / tolerances, so the strict channel is
+    visible as the small number among eight.
+
+    Everything tightens over the run, but only on evidence. The band positions only move
+    in _advance_levels, which needs the policy to be keeping up first.
+
+    The jitter is what keeps the tolerance input in the observation meaningful. Without it
+    a channel's requirement is one number per training phase and the policy can learn it
+    instead of reading it.
+    """
     if not self._curriculum:
-      return self.tolerances.expand(count, -1)
-    steps = self.cfg.tolerance_steps
-    alpha = min(max(self._env.common_step_counter / steps, 0.0), 1.0) if steps else 1.0
-    initial = self.tolerances.new_tensor(self.cfg.tolerance_initial_range).log()
-    final = self.tolerances.new_tensor(self.cfg.tolerance_final_range).log()
-    low, high = torch.lerp(initial, final, alpha).unbind()
-    draws = torch.rand(count, len(CHANNELS), device=self.device)
-    return self.tolerances * (low + draws * (high - low)).exp()
+      return self.tolerances.expand(count, -1), torch.full(
+        (count,), -1, dtype=torch.long, device=self.device
+      )
+    focus = torch.randint(len(CHANNELS), (count,), device=self.device)
+    position = self.level.expand(count, -1) * self.cfg.focus_relax
+    position = position.scatter(1, focus.unsqueeze(-1), self.level[focus].unsqueeze(-1))
+
+    wide = self.bands[:, 0].log().expand(count, -1)
+    strict = self.bands[:, 1].log().expand(count, -1)
+    spread = math.log(self.cfg.focus_jitter)
+    jitter = (torch.rand(count, len(CHANNELS), device=self.device) * 2 - 1) * spread
+    multiplier = (torch.lerp(wide, strict, position) + jitter).exp()
+    # Back into the band. The jitter is the one thing here that could cross the ordering
+    multiplier = multiplier.clamp(self.bands[:, 1], self.bands[:, 0])
+    return self.tolerances * multiplier, focus
+
+  def _record_outcomes(self, env_ids: torch.Tensor) -> None:
+    """Fold the windows that are closing into the counters their focus channel is gated on.
+
+    Read at the best moment of the window and not at any moment. A channel that dipped
+    inside its limit at some point while the rest of the robot was elsewhere has not
+    arrived, and a curriculum gated on that would tighten away from a policy that is not
+    actually there yet.
+    """
+    if not self._curriculum:
+      return
+    live = (self._focus[env_ids] >= 0) & self._has_scored[env_ids]
+    ids = env_ids[live]
+    if ids.numel() == 0:
+      return
+    focus = self._focus[ids]
+    column = focus.unsqueeze(-1)
+    met = self.final[ids].gather(1, column) <= self.window_tolerances[ids].gather(
+      1, column
+    )
+    self._tries.index_add_(0, focus, torch.ones_like(focus, dtype=self._tries.dtype))
+    self._hits.index_add_(0, focus, met.squeeze(-1).to(self._hits.dtype))
+    self._advance_levels()
+
+  def _advance_levels(self) -> None:
+    """Move each channel's band position, on evidence. Florensa's band, per channel.
+
+    A channel whose focused windows are met more often than success_band's upper rate is
+    solved at the precision it is being asked for, so it is asked for more. One met less
+    often than the lower rate is past what the policy can do, so it is asked for less. In
+    between, the requirement is sitting exactly where the samples are worth something and
+    nothing moves.
+
+    This is the whole difference from the step ramp it replaces. That one tightened on the
+    environment step counter whether or not anything was being learned, and did: across
+    four separate runs the worst channel sat at 5.5 times its limit for thousands of
+    iterations while the schedule went on demanding more of it. A requirement the policy
+    has no chance of meeting produces failures it cannot learn anything from.
+
+    Per channel and not global, so a channel that is stuck cannot hold back the seven that
+    are not. Each one has its own counters and moves on its own evidence.
+    """
+    ready = self._tries >= self.cfg.focus_samples
+    if not bool(ready.any()):
+      return
+    rate = self._hits / self._tries.clamp(min=1.0)
+    low, high = self.cfg.success_band
+    step = torch.zeros_like(rate)
+    step = torch.where(rate >= high, torch.full_like(rate, self.cfg.focus_step), step)
+    step = torch.where(rate <= low, torch.full_like(rate, -self.cfg.focus_step), step)
+    self.level = torch.where(ready, (self.level + step).clamp(0.0, 1.0), self.level)
+    self._rate = torch.where(ready, rate, self._rate)
+    self._hits = torch.where(ready, torch.zeros_like(self._hits), self._hits)
+    self._tries = torch.where(ready, torch.zeros_like(self._tries), self._tries)
 
   def _request_tolerances(
     self, count: int, tolerances: Tolerances | torch.Tensor | None
@@ -706,6 +919,8 @@ class BridgeCommand(CommandTerm):
         "or drive it from outside with `open_window`, which is what the transition arena "
         "does."
       )
+    # Before place, which is where the closing window's numbers are cleared
+    self._record_outcomes(env_ids)
     count = env_ids.numel()
     start_rows, target_rows, steps, position = self.windows.draw(count)
     start = self.dataset.states[start_rows].clone()
@@ -720,13 +935,10 @@ class BridgeCommand(CommandTerm):
     rotation = quat_mul(facing, quat_conjugate(yaw_quat(start[:, 3:7])))
     origin = start[:, 0:3].clone()
     start, target = reframe_pair(start, target, rotation)
-    self.place(
-      env_ids,
-      start,
-      target,
-      steps.float() / self.fps,
-      tolerances=self._sample_tolerances(count),
-    )
+    tolerances, focus = self._sample_tolerances(count)
+    self.place(env_ids, start, target, steps.float() / self.fps, tolerances=tolerances)
+    # After place, which clears the focus along with every other latch
+    self._focus[env_ids] = focus
     if self.dataset.previous_action is not None:
       self._env.action_manager.action[env_ids] = self.dataset.previous_action[
         start_rows
@@ -800,10 +1012,13 @@ class BridgeCommand(CommandTerm):
     hold the previous episode.
     """
     self.patience[env_ids] = self.steps_for(duration_s * self.cfg.patience_scale)
+    self.window_steps[env_ids] = self.steps_for(duration_s)
     self.start_distance[env_ids] = (root_pos - self.target[env_ids, 0:3]).norm(dim=-1)
     # Cleared here rather than in place, so a window aimed from outside cannot inherit the
     # crossing of the window before it
     self.has_reference[env_ids] = 0.0
+    # A window aimed from outside has no focused channel and is not evidence about one
+    self._focus[env_ids] = -1
     # best has to go back to zero or the next window opens already paid for the last one,
     # and since it is in the observation the policy would read a crossing that never began
     # as one nearly finished
@@ -936,8 +1151,14 @@ class BridgeCommand(CommandTerm):
     self.metrics["start_noise"] = torch.full_like(
       self.metrics["start_noise"], self.noise_scale
     )
+    ones = torch.ones_like(self.metrics["start_noise"])
     for index, name in enumerate(CHANNELS):
       self.metrics[f"tol_{name}"] = self.window_tolerances[:, index].clone()
+      # Where the curriculum has got to, and the evidence that moved it there. Per channel
+      # scalars broadcast over the environments, because this is what the metric dict is
+      self.metrics[f"level_{name}"] = ones * self.level[index]
+      self.metrics[f"focus_rate_{name}"] = ones * self._rate[index]
+    self.metrics["level"] = ones * self.level.mean()
 
   ##
   # Drawing it.
@@ -1017,6 +1238,44 @@ class BridgeCommand(CommandTerm):
 ##
 # Helpers.
 ##
+
+
+def _bands(cfg: BridgeCommandCfg, device: str | torch.device) -> torch.Tensor:
+  """Each channel's widest and tightest multiple of the baseline. (8, 2).
+
+  Where the ordering guarantee is enforced, once, rather than per draw: the widest any
+  core channel is ever asked for has to be at least as tight as the tightest any arm
+  channel is ever asked for. With that true of the bands it is true of every window, and
+  _sample_tolerances only has to keep its draws inside their row.
+  """
+  rows = []
+  for name in CHANNELS:
+    band = cfg.band_overrides.get(
+      name, cfg.support_band if name in SUPPORT else cfg.core_band
+    )
+    if (
+      len(band) != 2
+      or not all(math.isfinite(v) for v in band)
+      or not 0 < band[1] <= band[0]
+    ):
+      raise ValueError(f"{name}: band must be a finite, positive (wide, strict) pair")
+    rows.append(list(band))
+  table = torch.tensor(rows, device=device, dtype=torch.float32)
+
+  is_core = [name in CORE for name in CHANNELS]
+  core = [i for i, yes in enumerate(is_core) if yes]
+  support = [i for i, yes in enumerate(is_core) if not yes]
+  if core and support:
+    widest = float(table[core, 0].max())
+    tightest = float(table[support, 1].min())
+    if widest > tightest:
+      raise ValueError(
+        f"Root and legs reach {widest:.2f}x the baseline at their widest and the arms "
+        f"reach {tightest:.2f}x at their tightest, so a window could ask the arms for "
+        "more precision than the legs. Lower the wide end of core_band, or raise the "
+        "strict end of support_band."
+      )
+  return table
 
 
 def _up(count: int, device: torch.device | str) -> torch.Tensor:
@@ -1115,20 +1374,71 @@ class BridgeCommandCfg(CommandTermCfg):
   adaptive_tolerances: bool = True
   """Sample tolerance profiles for corpus windows. Disabled for play and live requests."""
 
-  tolerance_initial_range: tuple[float, float] = (5.0, 10.0)
-  """Initial multipliers of the baseline, sampled independently per channel in log space."""
+  core_band: tuple[float, float] = (4.0, 0.6)
+  """Widest and tightest multiple of the baseline asked of root and legs, in that order.
 
-  tolerance_final_range: tuple[float, float] = (0.5, 4.0)
-  """Final multiplier range. Retains mixed precision profiles around the runtime default.
+  0.6 is the floor because it is what the one measured consumer needs. entry_margin at 8
+  directions puts the kick at entry 3 at 0.67 times the baseline on root_lin_vel, which is
+  the binding channel; 0.6 clears it, and clears root_pos at 0.82 with room to spare.
 
-  Tune these bounds to cover measured runtime requests. They are training defaults,
-  not measured skill robustness limits. Equal bounds request a single precision scale.
+  4.0 at the wide end is the ordering constraint and not much else: it is the tightest the
+  arms are ever asked for, so it is the loosest the legs can be without inverting the two.
   """
 
-  tolerance_steps: int = 120_000
-  """Environment steps to interpolate both bounds in log space. Zero uses final bounds.
+  support_band: tuple[float, float] = (16.0, 4.0)
+  """The same for the arm channels. Looser than core_band at both ends, by construction.
 
-  Only newly drawn windows change. The runner restores the step counter on resume.
+  16 is the kick's measured arm_joint_pos, 0.8 rad, and that was a floor: the ladder ran
+  out before the policy did. The old schedule asked for 0.025 to 0.2 rad here, up to 32
+  times tighter than any consumer has ever wanted, while arm_joint_pos carries the joint
+  highest reward weight. That is a large share of the gradient spent on a requirement
+  nobody asked for.
+  """
+
+  band_overrides: dict[str, tuple[float, float]] = field(default_factory=dict)
+  """Per channel bands, for a channel the group default is wrong for.
+
+  root_ang_vel is the known one: the kick accepts 1.3 rad/s, 4.33 times the baseline, and
+  the core band tops out at 4. Left at the default for now so the first run of this
+  curriculum changes one thing, but it is a candidate.
+  """
+
+  focus_relax: float = 0.3
+  """How far back toward wide the seven unfocused channels sit, as a fraction of level.
+
+  Zero puts them at the wide end of their band whatever the focused one is doing, which is
+  the purest form of one question at a time and also throws away everything the other
+  seven have learned. 0.3 keeps them meaningfully easier than the focused channel without
+  letting them rot.
+  """
+
+  focus_jitter: float = 1.3
+  """Multiplicative spread around a channel's band position, clamped back into the band.
+
+  Without it a requirement is one number per phase and the policy can memorize it rather
+  than read it off the observation, which would make the tolerance input decoration.
+  """
+
+  success_band: tuple[float, float] = (0.3, 0.7)
+  """Florensa's R_min and R_max. Tighten above the upper rate, back off below the lower.
+
+  Wider than the paper's (0.1, 0.9) on purpose. That band is measured over starts sampled
+  around one goal; this is measured over a channel of a mixed corpus, so the rate is
+  noisier and a narrow band would move the level on noise.
+  """
+
+  focus_step: float = 0.05
+  """How far a channel's band position moves when it does move. 20 moves end to end."""
+
+  focus_samples: int = 512
+  """Closed windows focusing a channel before its rate is trusted enough to act on."""
+
+  level_init: tuple[float, ...] | None = None
+  """Band positions to start from, one per channel, or None for wide.
+
+  The curriculum is evidence and not a step counter, so unlike the schedule it replaces it
+  is not recovered from the restored step counter on a resume. Read level_<channel> off
+  the run being resumed and pass it here.
   """
 
   start_noise: float = 1.0
@@ -1148,14 +1458,16 @@ class BridgeCommandCfg(CommandTermCfg):
   further the perturbation moves the robot off it, the less that motion answers the
   question.
 
-  Must finish well before tolerance_steps, or the arrival kernel reaches the accuracy it
-  is actually asking for while the policy is still being paid to imitate.
+  Must be over long before the tolerance curriculum tightens far, or the arrival kernel
+  reaches the accuracy it is actually asking for while the policy is still being paid to
+  imitate. The curriculum moves on evidence now, so this is no longer two step counters
+  to line up: the levels simply will not advance while the shaping is competing.
   """
 
   start_noise_steps: int = 60_000
   """Environment steps the perturbation takes to widen from nothing to start_noise.
 
-  See BridgeCommand.noise_scale. Shorter than the tolerance schedule on purpose: this one
+  See BridgeCommand.noise_scale. Finished early on purpose: this one
   makes the task harder and should be finished well before the tolerances arrive at what
   they are actually asking for."""
 
