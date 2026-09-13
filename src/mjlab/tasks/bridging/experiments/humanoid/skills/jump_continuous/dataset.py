@@ -11,7 +11,7 @@ both steps skip files already there.
 
 What happens to each clip:
 
-    0. Download the pickle through datasets/asap/download.py, unless it is cached.
+    0. Download the pickle through dataset/asap/download.py, unless it is cached.
     1. Scatter the 23 ASAP joints into mjlab's 29 joint G1 by name. The six wrist joints
        ASAP does not have stay at zero.
     2. Rotate and translate so the clip starts at the origin facing +x. Every clip was

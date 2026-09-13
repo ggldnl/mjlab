@@ -15,7 +15,7 @@ data/lafan1_g1/clips/<name>. Both steps skip files already there.
 
 What happens to a clip, in order:
 
-    0. Download the performance through datasets/lafan1/download.py, unless it is cached.
+    0. Download the performance through dataset/lafan1/download.py, unless it is cached.
     1. Slice the frame window and scatter the CSV joint columns into the model's own joint
        order by name.
     2. Rotate and translate so the clip starts at the origin facing +x. The pelvis heading
@@ -46,7 +46,7 @@ Run
 
 4. Pick a window by eye first.
 
-    uv run python src/mjlab/tasks/tracking/scripts/datasets/lafan1/interactive_crop.py --data-dir data/lafan1_g1 --motion fight1_subject2
+    uv run python src/mjlab/tasks/tracking/scripts/dataset/lafan1/interactive_crop.py --data-dir data/lafan1_g1 --motion fight1_subject2
 """
 
 from __future__ import annotations

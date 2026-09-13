@@ -822,6 +822,17 @@ class JumpCommand(CommandTerm):
     self.anchor_pos[env_ids] = 0.0
     self.anchor_yaw[env_ids] = 0.0
 
+    self.place_on_reference(env_ids)
+
+  def place_on_reference(self, env_ids: torch.Tensor) -> None:
+    """Write the robot onto the reference frame each env is wound to, plus the reset noise.
+
+    Split out of _resample_command so a caller that picked the frame itself can reuse the
+    noise without going back through the sampler. What gets drawn is whatever the four
+    range fields on the config hold when this is called, so a caller wanting different
+    noise installs it there first. See skills/recover.py, which places part of a batch a
+    second time at a different frame with a wider reset.
+    """
     root_pos = self.body_pos_w[env_ids, 0].clone()
     root_ori = self.body_quat_w[env_ids, 0].clone()
     root_lin_vel = self.body_lin_vel_w[env_ids, 0].clone()

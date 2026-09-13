@@ -11,7 +11,7 @@ Everything below moves them together.
 What happens to a clip, in order:
 
     0. Download the archive and the scene's obstacle through
-       tracking/scripts/datasets/omniretarget/download.py, unless they are cached.
+       tracking/scripts/dataset/omniretarget/download.py, unless they are cached.
     1. Slice the frame window and scatter the 29 joint columns into the model's own joint
        order by name. The source is already the canonical Unitree order, checked against
        the g1_29dof.urdf the dataset ships, so this is a rename rather than a remap.

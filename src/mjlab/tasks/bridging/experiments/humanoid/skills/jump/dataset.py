@@ -1,6 +1,6 @@
 """Fetch and convert the one ASAP clip this task tracks.
 
-The downloader is the tracking task's datasets/asap/download.py, the converter
+The downloader is the tracking task's dataset/asap/download.py, the converter
 is the continuous jump's dataset.py. Read that module's docstring. The npz
 lands in data/asap/motions next to whatever else has been converted.
 
