@@ -20,11 +20,11 @@ Run
    corpus, duration range and segment index the command term draws from, so what is on
    screen is a sample of the training distribution.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.view
 
 2. Restrict to one clip, and to the side of the split uv run play and evaluate read.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view \
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.view \
       --source jumps1_subject1 --split eval
 """
 
@@ -43,7 +43,7 @@ from mjviser import ViserMujocoScene
 
 import mjlab
 from mjlab.asset_zoo.robots.unitree_g1.g1_constants import get_spec
-from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.datasets.dataset import (
   DEFAULT_DATASET,
   ROOT_STATE_DIM,
   Dataset,

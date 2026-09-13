@@ -9,8 +9,7 @@ time the robot took to get from one to the other.
 
 Every source builds one the same way, by driving a trained policy and writing down what
 happens, so the driving lives here and a source module only says which policy, in which
-environment, with what on the floor. datasets/tracker.py is the source in use, the other
-is deprecated.
+environment, with what on the floor. dataset/tracker.py is the only source.
 
 One row per environment per control step:
 
@@ -69,13 +68,7 @@ TRACKER_DATASET = DATASET_ROOT / "tracker.npz"
 
 DEFAULT_DATASET = TRACKER_DATASET
 """What every config points at unless told otherwise. The human motion corpus, which is
-what keeps the bridge independent of the skill pool. See datasets/tracker.py."""
-
-SKILLS_DATASET = DATASET_ROOT / "rollouts.npz"
-"""Deprecated. The corpus built from the skill pool's own rollouts. See datasets/skills.py.
-
-Kept loadable, and no longer the default. Pass it explicitly to reproduce an older run.
-"""
+what keeps the bridge independent of the skill pool. See dataset/tracker.py."""
 
 LOG_ROOT = Path("logs") / "rsl_rl"
 
@@ -325,7 +318,7 @@ def write(
   """One npz, in the layout load_dataset expects.
 
   The skill and skill_names keys keep their names even though a tracker dataset puts clip
-  names in them. Renaming would orphan the datasets already on disk.
+  names in them. Renaming would orphan the dataset already on disk.
 
   Sources have different command widths, so goal is padded to the widest and goal_dim says
   how much of each row is real. Padded into one table rather than one array per source,
@@ -375,7 +368,7 @@ class Dataset:
   goal: torch.Tensor | None = None
   """(N, G) every command term's value at that step, padded to the widest source.
 
-  Optional because datasets written before the column exists still load. Read it with
+  Optional because dataset written before the column exists still load. Read it with
   `commands_of`, which trims the padding off."""
   goal_dim: tuple[int, ...] = ()
   """(S,) how much of `goal` is real, per source. The rest is padding."""
@@ -548,17 +541,13 @@ def load_dataset(
   frames of one rollout are nearly the same state, so a frame level split would put the
   near twin of a row on the other side of it.
 
-  For the skills dataset both sides come from the same policies, so this measures whether
-  the bridge learned the task or the particular pairs it saw. It says nothing about
-  transfer to a skill it never met. tracker.py is what answers that.
   """
   if split not in ("train", "eval"):
     raise ValueError(f"split is 'train' or 'eval', not '{split}'.")
   if not path.exists():
     raise SystemExit(
       f"No dataset at {path}. Build one with `uv run python -m "
-      f"mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker`. "
-      f"(...datasets.skills builds the deprecated skill-pool corpus.)"
+      f"mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.tracker`."
     )
 
   raw = np.load(path, allow_pickle=False)

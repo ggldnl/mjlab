@@ -1,7 +1,7 @@
-"""Bridge task. One policy that drives the robot from a start dynamic state to a target
-dynamic state.
+"""The imitation bridge. One PPO policy that drives the robot from a start dynamic state
+to a target dynamic state.
 
-Task id Mjlab-G1-Bridge, checkpoints under logs/rsl_rl/g1_bridge.
+Task id Mjlab-G1-Imitation-Bridge, checkpoints under logs/rsl_rl/g1_imitation_bridge.
 
     in     state (root velocities, gravity, joint angles and rates, last action)
            + per channel gap to the target state
@@ -28,32 +28,33 @@ alike.
 
 Run
 
-1. Build the corpus. Look at datasets/tracker.py.
+1. Build the corpus. It is shared, so it lives one level up. Look at bridges/dataset.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.tracker
 
 2. Inspect it: per source counts, then a window replayed as a ghost.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.view
 
 3. Train.
 
-    uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
+    uv run train Mjlab-G1-Imitation-Bridge --env.scene.num-envs 4096
 
 4. Score it against a robot that does nothing.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.evaluate
 
 5. Watch it. Amber ghost is the target, blue ghost is the recorded crossing.
 
-    uv run play Mjlab-G1-Bridge
+    uv run play Mjlab-G1-Imitation-Bridge
 
 Layout
 
-    datasets/      where start and target states come from
     mdp/           commands (the window), rewards, terminations
     env_cfg.py     the mjlab task
     evaluate.py    scoring against the do nothing baseline
+
+The corpus is not here. Every architecture reads the same one, from bridges/dataset.
 
 API
 
@@ -93,7 +94,8 @@ Transition scripts accept named limits, for example --tolerances.arm-joint-pos
 The observation is 26 + 2J wide: the clock added two values and checkpoints from before
 it cannot be resumed. Restored bridge checkpoints load with the same baseline, but need
 training on varied requests before their precision conditioning can be assessed. Kernel
-shape, channel weights, guidance, alive and termination rules are unchanged. Monitor fixed_arrived, score and err_* for comparable progress; arrived and
+shape, channel weights, guidance, alive and termination rules are unchanged. Monitor
+fixed_arrived, score and err_* for comparable progress; arrived and
 requested_score describe the sampled requests, and tol_* records their physical limits.
 
 The channel to read first is reach_*, which is err_* over that channel's requirement. One
@@ -106,10 +108,14 @@ letting go.
 """
 
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
-from mjlab.tasks.bridging.experiments.humanoid.bridge.env_cfg import bridge_env_cfg
+from mjlab.tasks.bridging.experiments.humanoid.bridges import BridgeSpec
+from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.env_cfg import (
+  bridge_env_cfg,
+)
 from mjlab.tasks.registry import register_mjlab_task
 
-BRIDGE_TASK_ID = "Mjlab-G1-Bridge"
+BRIDGE_TASK_ID = "Mjlab-G1-Imitation-Bridge"
+BRIDGE_EXPERIMENT = "g1_imitation_bridge"
 
 
 def bridge_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
@@ -153,7 +159,7 @@ def bridge_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       desired_kl=0.015,
       max_grad_norm=1.0,
     ),
-    experiment_name="g1_bridge",
+    experiment_name=BRIDGE_EXPERIMENT,
     save_interval=200,
     num_steps_per_env=24,
     max_iterations=15_000,
@@ -166,3 +172,11 @@ register_mjlab_task(
   play_env_cfg=bridge_env_cfg(play=True, split="eval"),
   rl_cfg=bridge_ppo_runner_cfg(),
 )
+
+BRIDGE = BridgeSpec(
+  kind="imitation",
+  task_id=BRIDGE_TASK_ID,
+  experiment=BRIDGE_EXPERIMENT,
+  env_cfg=bridge_env_cfg,
+)
+"""What bridges.resolve hands to a transition script that asked for this architecture."""

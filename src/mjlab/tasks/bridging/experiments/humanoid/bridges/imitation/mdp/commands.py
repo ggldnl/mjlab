@@ -35,7 +35,7 @@ import torch
 from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
-from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.datasets.dataset import (
   DEFAULT_DATASET,
   ROOT_STATE_DIM,
   Dataset,
@@ -1335,7 +1335,7 @@ class BridgeCommandCfg(CommandTermCfg):
   One filter, not one per end. A window is a contiguous stretch of a single rollout, so
   both ends are always the same source, and asking for a start from one skill and a target
   from another describes nothing this dataset contains. Covering a posture family is a
-  matter of what went into the corpus, which is the job of datasets/tracker.py.
+  matter of what went into the corpus, which is the job of dataset/tracker.py.
   """
 
   duration_s_range: tuple[float, float] = (0.3, 1.2)

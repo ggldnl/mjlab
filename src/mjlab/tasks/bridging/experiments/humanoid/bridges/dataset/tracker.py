@@ -50,11 +50,11 @@ Run
 2. Collect. With no arguments this walks every run under g1_tracking and asks each tracker
    only for the clip it was trained on, read back from the config the run wrote.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.tracker
 
    If you use custom experiment names:
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker \
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.tracker \
       --motions "('data/lafan1/motions/walk1_subject1.npz',)" \
       --checkpoints "('logs/rsl_rl/g1_walk1_subject1/<walk-run>/model_3000.pt',)"
 
@@ -62,20 +62,20 @@ Run
    then serves one as a ghost: green either side, red across the stretch the bridge has to
    invent. A clip with states and no windows contributed nothing.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.view
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.view \
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.view \
       --source walk1_subject1
 
 4. See how the corpus sits against what a hand-over requires. Nothing to edit afterwards:
    the requirements are physical and do not follow the corpus.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate \
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.evaluate \
       --diagnose True
 
 5. Train the bridge.
 
-    uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
+    uv run train Mjlab-G1-Imitation-Bridge --env.scene.num-envs 4096
 """
 
 from __future__ import annotations
@@ -88,8 +88,8 @@ import numpy as np
 import tyro
 
 import mjlab
-from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets import dataset
-from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.datasets import dataset
+from mjlab.tasks.bridging.experiments.humanoid.bridges.datasets.dataset import (
   TRACKER_DATASET,
   RolloutCfg,
 )

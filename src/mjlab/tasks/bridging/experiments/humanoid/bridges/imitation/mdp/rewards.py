@@ -41,7 +41,7 @@ from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
-from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.mdp.commands import (
   BridgeCommand,
   arrival_score,
   channel_errors,

@@ -25,15 +25,15 @@ Run
 
 1. Build the corpus.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.tracker
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.tracker
 
 2. Train.
 
-    uv run train Mjlab-G1-Bridge --env.scene.num-envs 4096
+    uv run train Mjlab-G1-Imitation-Bridge --env.scene.num-envs 4096
 
 3. Watch.
 
-    uv run play Mjlab-G1-Bridge
+    uv run play Mjlab-G1-Imitation-Bridge
 """
 
 from __future__ import annotations
@@ -54,10 +54,10 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
-from mjlab.tasks.bridging.experiments.humanoid.bridge import mdp
-from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.datasets.dataset import (
   DEFAULT_DATASET,
 )
+from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation import mdp
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig

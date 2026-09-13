@@ -5,21 +5,21 @@ Run
 1. Score a checkpoint against the statue baseline. The newest checkpoint is picked when
    none is named, and the path is printed.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.evaluate
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate \
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.evaluate \
       --episodes 2048 \
-      --checkpoint logs/rsl_rl/g1_bridge/<run>/model_5000.pt
+      --checkpoint logs/rsl_rl/g1_imitation_bridge/<run>/model_5000.pt
 
 2. Measure the statue on its own, before there is anything to compare it to.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridge.evaluate --policies "('statue',)"
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.evaluate --policies "('statue',)"
 
 3. Watch instead of read. The player draws the target as a translucent robot and leaves it
    standing, so the gap to the real robot at the deadline is the arrival error.
 
-    uv run play Mjlab-G1-Bridge
-    uv run play Mjlab-G1-Bridge --agent zero
+    uv run play Mjlab-G1-Imitation-Bridge
+    uv run play Mjlab-G1-Imitation-Bridge --agent zero
 
 Reading the table
 
@@ -51,12 +51,15 @@ import tyro
 import mjlab
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
-from mjlab.tasks.bridging.experiments.humanoid.bridge import BRIDGE_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.datasets.dataset import (
   DEFAULT_DATASET,
   LOG_ROOT,
 )
-from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation import (
+  BRIDGE_EXPERIMENT,
+  BRIDGE_TASK_ID,
+)
+from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.mdp.commands import (
   CHANNELS,
   BridgeCommand,
   BridgeCommandCfg,
@@ -69,7 +72,7 @@ COMMAND = "bridge"
 @dataclass
 class EvalCfg:
   checkpoint: str | None = None
-  """Explicit checkpoint. Empty takes the newest under logs/rsl_rl/g1_bridge and prints
+  """Explicit checkpoint. Empty takes the newest under logs/rsl_rl/g1_imitation_bridge and prints
   the path, because picking by modification time has loaded the wrong policy here before."""
 
   episodes: int = 1024
@@ -143,11 +146,11 @@ def _find_checkpoint(explicit: str | None) -> Path:
       raise SystemExit(f"No checkpoint at {path}.")
     return path
   found = sorted(
-    (LOG_ROOT / "g1_bridge").rglob("model_*.pt"), key=lambda p: p.stat().st_mtime
+    (LOG_ROOT / BRIDGE_EXPERIMENT).rglob("model_*.pt"), key=lambda p: p.stat().st_mtime
   )
   if not found:
     raise SystemExit(
-      f"No checkpoint under {LOG_ROOT / 'g1_bridge'}. Train one with "
+      f"No checkpoint under {LOG_ROOT / BRIDGE_EXPERIMENT}. Train one with "
       f"`uv run train {BRIDGE_TASK_ID}`."
     )
   return found[-1]
@@ -306,7 +309,7 @@ def diagnose(env: ManagerBasedRlEnv, cfg: EvalCfg) -> None:
   requirements are physical now and stay put. This only says where the task sits against
   them.
   """
-  from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import (
+  from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.mdp.commands import (
     arrival_score,
     channel_errors,
   )
