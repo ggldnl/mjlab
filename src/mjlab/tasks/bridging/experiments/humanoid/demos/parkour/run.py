@@ -14,7 +14,8 @@ Everything else lives beside this file:
     arena.py       the environment, and the bare model the scene viewer serves
     pool.py        the skills, each wrapping one frozen policy
     bridge.py      the bridge, aimed at a pose
-    controller.py  the rules, the alignment, and the phase machine
+    approach.py    where the robot has to stand before a traversal will work
+    controller.py  the plan, and the loop that runs it one action at a time
 
 Run
 
@@ -24,11 +25,13 @@ Run
     uv run python -m ...demos.parkour.run --viewer native
     uv run python -m ...demos.parkour.run --viewer none
     uv run python -m ...demos.parkour.run --config my_course.yml
+    uv run python -m ...demos.parkour.run --bridge imitation
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import dataclasses
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -37,6 +40,11 @@ import tyro
 
 import mjlab
 from mjlab.envs import ManagerBasedRlEnv
+from mjlab.tasks.bridging.experiments.humanoid.bridges import (
+  DEFAULT_BRIDGE,
+  BridgeKind,
+  resolve,
+)
 from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.arena import (
   Focus,
   course_env_cfg,
@@ -47,6 +55,7 @@ from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.bridge import Bridg
 from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.controller import (
   CRUISE_SKILL,
   DECISION_HEADER,
+  ENTRIES,
   ROSTER,
   Controller,
   plan,
@@ -57,7 +66,14 @@ from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.course import Setti
 from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.course import (
   generate as generate_course,
 )
-from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.pool import SkillPool
+from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.pool import (
+  SkillPool,
+  with_bridge,
+)
+from mjlab.tasks.bridging.experiments.humanoid.tests.entry_tolerances import (
+  ToleranceOverrides,
+)
+from mjlab.tasks.bridging.experiments.humanoid.tests.stage import BRIDGE_GROUP
 
 
 @dataclass(frozen=True)
@@ -68,6 +84,49 @@ class Config:
   """Which course to draw. None to take the seed from the config."""
   count: int | None = None
   """How many obstacles. None to take the count from the config."""
+
+  bridge: BridgeKind = DEFAULT_BRIDGE
+  """Which bridge architecture switches the skills. See bridges/__init__.py.
+
+  The course is built on the chosen one's play config, so this picks the observation the
+  bridge policy reads along with the checkpoint it loads. The skills are untouched by it."""
+
+  ##
+  # The hand-over. Every one of these overrides config.yml, and each is the same quantity
+  # the transition scripts carry under the same name: see tests/stage.py Config.
+  ##
+
+  hold_back: float | None = None
+  """Metres short of the pose a skill needs that the walk stops, leaving the rest to the
+  bridge. tests/stage.py calls this fire_at. None keeps config.yml."""
+  window: float | None = None
+  """Seconds the bridge gets to cross. Has to sit inside the range it trained on, which is
+  BridgeCommandCfg.duration_s_range. None keeps config.yml."""
+  blend_steps: int | None = None
+  """Control steps to ramp out of the parting policy's last action at every switch. Zero is
+  a hard switch. None keeps config.yml."""
+  count_in: bool | None = None
+  """Whether the entering tracker's clip marches up to its entry frame during the crossing
+  instead of being rewound under it at the hand-over. None keeps config.yml."""
+  entries: dict[str, int] = field(default_factory=dict)
+  """Which clip frame to enter a skill at, by skill name, overriding controller.ENTRIES.
+  The nearest recorded entry wins:
+
+      --entries "{'jump': 78, 'climb': 49}"
+  """
+  tolerances: ToleranceOverrides = field(default_factory=ToleranceOverrides)
+  """Override individual channels of the arrival tolerance the bridge is held to, which
+  otherwise comes from tests/entry_tolerances.py by skill and frame."""
+
+  ##
+  # Which policies. Named after the skill rather than after its role, as the transition
+  # scripts are, because the newest run under a log directory has been the wrong one before.
+  ##
+
+  bridge_checkpoint: Path | None = None
+  walk_checkpoint: Path | None = None
+  jump_checkpoint: Path | None = None
+  climb_checkpoint: Path | None = None
 
   scene: bool = False
   """Draw the course and stop. No robot, no policies, no simulation."""
@@ -124,10 +183,64 @@ def needed(steps) -> None:
   )
 
 
+def tuned(settings: Settings, cfg: Config) -> Settings:
+  """config.yml with whatever the command line overrode.
+
+  The flags and the file hold the same quantities, so the file stays the place the numbers
+  are written down and explained, and a flag is how one of them is moved for a single run.
+  """
+  changed = {
+    name: value
+    for name, value in (
+      ("hold_back", cfg.hold_back),
+      ("window_s", cfg.window),
+      ("blend_steps", cfg.blend_steps),
+      ("count_in", cfg.count_in),
+    )
+    if value is not None
+  }
+  if not changed:
+    return settings
+  for name, value in changed.items():
+    print(f"approach.{name} = {value} (overridden)")
+  return dataclasses.replace(
+    settings, approach=dataclasses.replace(settings.approach, **changed)
+  )
+
+
+def aimed_at(entries: dict[str, int]) -> None:
+  """Move which clip frame a skill is entered at, for this run.
+
+  Refused rather than ignored for a skill the demo does not drive, because a typo here
+  looks exactly like the flag doing nothing.
+  """
+  for skill, frame in entries.items():
+    if skill not in ENTRIES:
+      raise SystemExit(
+        f"'{skill}' is not one of the skills this demo hands over to. It drives "
+        f"{', '.join(sorted(ENTRIES))}."
+      )
+    print(f"{skill} entered at frame {frame} rather than {ENTRIES[skill]} (overridden)")
+    ENTRIES[skill] = frame
+
+
+def chosen(cfg: Config) -> dict[str, Path]:
+  """Checkpoints named on the command line, by skill. Empty means search for each."""
+  named = (
+    (CRUISE_SKILL.name, cfg.walk_checkpoint),
+    ("jump", cfg.jump_checkpoint),
+    ("climb", cfg.climb_checkpoint),
+    (BRIDGE_GROUP, cfg.bridge_checkpoint),
+  )
+  return {name: path for name, path in named if path is not None}
+
+
 def main(cfg: Config) -> None:
   import mjlab.tasks  # noqa: F401  (populates the task registry)
 
-  course = generate_course(Settings.load(cfg.config), seed=cfg.seed, count=cfg.count)
+  settings = tuned(Settings.load(cfg.config), cfg)
+  aimed_at(cfg.entries)
+  course = generate_course(settings, seed=cfg.seed, count=cfg.count)
   steps = plan(course)
   for line in plan_lines(course, steps):
     print(line)
@@ -145,26 +258,38 @@ def main(cfg: Config) -> None:
   if cfg.dry:
     return
 
+  # The architecture first, because it is the cheapest thing to be wrong about and a stub
+  # says so plainly, then the entry table the controller needs to aim at
+  spec = resolve(cfg.bridge)
   needed(steps)
 
   torch.manual_seed(cfg.torch_seed)
   device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
 
   # Before the simulation, because a missing checkpoint is the one thing this demo cannot
-  # work around and finding out after the arena is up costs a minute per attempt
-  for name, path in SkillPool.resolve(ROSTER).items():
+  # work around and finding out after the arena is up costs a minute per attempt. The bridge
+  # is in this list rather than found later, since an untrained architecture is exactly what
+  # --bridge makes easy to ask for
+  explicit = chosen(cfg)
+  for name, path in SkillPool.resolve(with_bridge(ROSTER, spec), explicit).items():
     print(f"{name:<8} {path}")
 
   focus = Focus(names=obstacle_names(course))
   env = ManagerBasedRlEnv(
-    cfg=course_env_cfg(ROSTER, course, focus, scored=cfg.scored), device=device
+    cfg=course_env_cfg(ROSTER, course, focus, spec, scored=cfg.scored), device=device
   )
-  pool = SkillPool.load(ROSTER, env, device)
+  pool = SkillPool.load(ROSTER, env, device, spec, checkpoints=explicit)
   for line in pool.lines():
     print(line)
 
   env.reset()
-  controller = Controller(env, pool, Bridge(env, pool), course, steps, focus)
+  controller = Controller(
+    env, pool, Bridge(env, pool), course, steps, focus, tolerances=cfg.tolerances
+  )
+  # The compiled plan, with the coordinates the approach solve produced. plan_lines above
+  # printed which skill each obstacle asks for; this is where the robot will actually go
+  for line in controller.lines():
+    print(line)
   print("")
   print("\n".join(DECISION_HEADER))
 
@@ -204,6 +329,7 @@ def main(cfg: Config) -> None:
       controller,
       viser_server=server,
       info_provider=lambda _: controller.driving,
+      record_name=f"parkour-seed-{course.seed}",
     ).run()
   for line in controller.report():
     print(line)

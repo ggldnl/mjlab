@@ -43,7 +43,7 @@ from mjviser import ViserMujocoScene
 
 import mjlab
 from mjlab.asset_zoo.robots.unitree_g1.g1_constants import get_spec
-from mjlab.tasks.bridging.experiments.humanoid.bridges.datasets.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.dataset import (
   DEFAULT_DATASET,
   ROOT_STATE_DIM,
   Dataset,

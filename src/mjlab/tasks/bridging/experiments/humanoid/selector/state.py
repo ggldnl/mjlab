@@ -16,7 +16,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.dataset import (
   ROOT_STATE_DIM,
 )
 from mjlab.utils.lab_api.math import (

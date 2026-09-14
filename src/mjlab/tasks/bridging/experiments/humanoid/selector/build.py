@@ -47,7 +47,7 @@ import torch
 import tyro
 
 import mjlab
-from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.dataset import (
   Dataset,
   load_dataset,
 )
@@ -243,6 +243,13 @@ class BuildCfg:
   sample: int = 1024
   """Rows a slice's medoid is searched over. See medoid."""
 
+  segment_steps: int = 10
+  """How many frames before each entry to keep as the merge the bridge rides in on.
+
+  Match BridgeCommandCfg.segment_s times the control rate, or the bridge refuses the
+  segment as the wrong width. Ten ticks is 0.2 s at 50 Hz.
+  """
+
   seed: int = 0
   """Every draw this file makes: the medoid subsample, and the one achievable takes
   before its quantile. Nothing else here is random."""
@@ -298,6 +305,60 @@ def build(cfg: BuildCfg) -> EntryTable:
   return EntryTable(entries=tuple(entries), fps=data.fps, rates=rates)
 
 
+def run_up(
+  trajectory: torch.Tensor, frame: torch.Tensor, center: int, count: int
+) -> torch.Tensor | None:
+  """The count rows ending at center, contiguous in its own rollout. Earliest first.
+
+  What the bridge merges onto: the frames this skill was passing through just before the
+  entry, so a bridge that rides them arrives already carrying the motion about to continue.
+
+  None where the rollout does not reach back far enough. A medoid landing that near the
+  start of its recording has no run-up to offer, and an entry without one is dropped rather
+  than padded: a merge that repeats its first frame would teach the bridge to stand still
+  and then jump.
+  """
+  if count < 1:
+    raise ValueError("A merge is at least one frame")
+  wanted = int(frame[center]) - torch.arange(
+    count - 1, -1, -1, device=frame.device, dtype=frame.dtype
+  )
+  if int(wanted[0]) < 0:
+    return None
+  same = (trajectory == trajectory[center]).nonzero().flatten()
+  lookup = torch.full(
+    (int(frame[same].max()) + 1,), -1, dtype=torch.long, device=frame.device
+  )
+  lookup[frame[same]] = same
+  found = lookup[wanted.clamp(max=lookup.numel() - 1)]
+  return None if bool((found < 0).any()) else found
+
+
+def leads(trajectory: torch.Tensor, step: torch.Tensor, count: int) -> torch.Tensor:
+  """Mask of rows with count contiguous recorded frames ending at them.
+
+  Recording drops the settle steps after every reset, so a rollout's earliest recorded step
+  is the settle count and never zero. A row within count of that has nothing to look back
+  at, however far into its clip it is.
+
+  This is what the medoid is searched over, rather than a test applied to the medoid after
+  the fact. Picking first and checking second threw away whole windows: the skills whose
+  window sits at the opening of their clip had every entry dropped, whatever the thousands
+  of rows beside it could have offered.
+  """
+  if count < 1:
+    raise ValueError("A merge is at least one frame")
+  index = trajectory.long()
+  first = torch.full(
+    (int(index.max()) + 1,),
+    torch.iinfo(step.dtype).max,
+    dtype=step.dtype,
+    device=step.device,
+  )
+  first = first.scatter_reduce(0, index, step, reduce="amin")
+  return step - (count - 1) >= first[index]
+
+
 def for_skill(
   data: Dataset,
   everything: torch.Tensor,
@@ -318,12 +379,22 @@ def for_skill(
   # record.py writes the step count here, which resumes nothing and still orders the
   # window
   phase = data.phase[rows] if data.phase is not None else data.frame[rows]
+  # The run-up is contiguous in the recording, so it is indexed by the step count within
+  # the rollout and not by the clip phase: a tracker resets into a sampled frame, so two
+  # rows one step apart differ by one in frame and by one in phase alike, but only frame
+  # starts at zero for every rollout
+  step = data.frame[rows]
+  # body_pos_b is only recorded by a corpus built after commit 912afa51, so it is read
+  # off the dataset rather than assumed onto it
+  body_pos = getattr(data, "body_pos_b", None)
+  bodies = None if body_pos is None else body_pos[rows]
   # What the skill was being asked for. Carried onto the entry and never used to pick
   # one: a crouch is a crouch whatever distance it is crouching for
   commands = data.commands_of(skill)
   commands = None if commands is None else commands[rows]
 
   feat = features(states)
+  able = leads(trajectory, step, cfg.segment_steps)
   rollouts = int(torch.unique(trajectory).numel())
   found: list[Entry] = []
 
@@ -335,9 +406,30 @@ def for_skill(
       print(f"[selector] {skill}: no rollout was at frames {low}-{high}, slice dropped")
       continue
 
+    # The entry is drawn from the rows that can hand a run-up over, and the slice is still
+    # described by all of them: coverage and spread answer what the window holds, not what
+    # was picked out of it
+    usable = members[able[members]]
+    if usable.numel() == 0:
+      print(
+        f"[selector] {skill}: no row at frames {low}-{high} has a "
+        f"{cfg.segment_steps} frame run-up behind it, slice dropped. Recording discards "
+        f"the settle steps after every reset, so nothing before step {int(step.min())} "
+        f"exists: either this window opens too early to be entered at, or record with a "
+        f"shorter settle"
+      )
+      continue
+
     here = feat[members]
-    center = int(members[medoid(here, cfg.sample, cfg.seed + index)])
+    center = int(usable[medoid(feat[usable], cfg.sample, cfg.seed + index)])
     pose = states[center].cpu().numpy().astype(np.float32)
+    merge = run_up(trajectory, step, center, cfg.segment_steps)
+    if merge is None or bodies is None:
+      print(
+        f"[selector] {skill}: frame {int(phase[center])} has no "
+        f"{cfg.segment_steps} frame run-up, entry dropped"
+      )
+      continue
     found.append(
       Entry(
         skill=skill,
@@ -357,6 +449,8 @@ def for_skill(
         reference=references[center].cpu().numpy().copy(),
         motion_file=str(data.motion_file[int(rows[center])]),
         motion_scale=float(data.motion_scale[rows[center]]),
+        segment=states[merge].cpu().numpy().astype(np.float32),
+        segment_bodies=bodies[merge].cpu().numpy().astype(np.float32),
       )
     )
 

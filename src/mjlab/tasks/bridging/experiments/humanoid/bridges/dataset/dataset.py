@@ -55,6 +55,7 @@ from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_rl_cfg, load_runner_cls
+from mjlab.utils.lab_api.math import quat_apply_inverse
 
 ROBOT = "robot"
 
@@ -143,6 +144,20 @@ def control_rate(env_cfg: ManagerBasedRlEnvCfg) -> float:
   return 1.0 / (env_cfg.sim.mujoco.timestep * env_cfg.decimation)
 
 
+def body_pos_b(robot: Entity) -> torch.Tensor:
+  """Every body's position in the root frame. (N, B, 3).
+
+  Forward kinematics of the joint angles, so it carries nothing the state does not already
+  hold, and it carries it where the error is felt: a small angle error at the hip is
+  centimetres at the foot. selector/build.py indexes entries by it and the diffusion bridge
+  predicts it alongside the angles.
+  """
+  data = robot.data
+  offset = data.body_link_pos_w - data.root_link_pos_w.unsqueeze(1)
+  quat = data.root_link_quat_w.unsqueeze(1).expand(-1, offset.shape[1], -1)
+  return quat_apply_inverse(quat, offset)
+
+
 def entry_context(env: ManagerBasedRlEnv) -> dict[str, np.ndarray]:
   """Record the preceding action and the reference paired with the current state."""
   from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.mdp.commands import (
@@ -151,6 +166,7 @@ def entry_context(env: ManagerBasedRlEnv) -> dict[str, np.ndarray]:
 
   context = {
     "previous_action": env.action_manager.action.detach().cpu().numpy().copy(),
+    "body_pos_b": body_pos_b(env.scene[ROBOT]).detach().cpu().numpy().copy(),
     "reference": np.full((env.num_envs, 7), np.nan, dtype=np.float32),
     "motion_file": np.full(env.num_envs, "", dtype="U1"),
     "motion_scale": np.ones(env.num_envs, dtype=np.float32),
@@ -383,6 +399,17 @@ class Dataset:
   motion_file: np.ndarray | None = None
   motion_scale: torch.Tensor | None = None
 
+  body_pos_b: torch.Tensor | None = None
+  """(N, B, 3) every body's position in the root frame, at that row.
+
+  Redundant with the joint angles, since it is their forward kinematics, and recorded
+  anyway. A small joint error compounds down the kinematic chain into a large body
+  position error, so a model that predicts only angles is not being told how wrong it is
+  where wrongness is felt. None for a corpus written before the column."""
+
+  body_names: tuple[str, ...] = ()
+  """(B,) which body each row of `body_pos_b` is, in that order."""
+
   def commands_of(self, skill: str) -> torch.Tensor | None:
     """The command column for one source, padding removed. (N, G_skill).
 
@@ -595,6 +622,10 @@ def load_dataset(
     motion_scale=torch.from_numpy(raw["motion_scale"]).to(device)[mask]
     if "motion_scale" in raw
     else None,
+    body_pos_b=torch.from_numpy(raw["body_pos_b"]).to(device)[mask]
+    if "body_pos_b" in raw
+    else None,
+    body_names=tuple(str(n) for n in raw["body_names"]) if "body_names" in raw else (),
   )
   print(f"[dataset] {loaded.states.shape[0]} states in '{split}' from {loaded.names}")
   return loaded

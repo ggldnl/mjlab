@@ -36,6 +36,8 @@ import numpy as np
 import tyro
 import yaml
 
+import mjlab
+
 BOX = "box"
 HURDLE = "hurdle"
 
@@ -127,22 +129,49 @@ class HurdleCfg:
 
 @dataclass(frozen=True)
 class ApproachCfg:
-  yaw_tolerance: float
-  lateral_tolerance: float
   hurdle_takeoff: float
+  hold_back: float
+  arrive_radius: float
+  yaw_tolerance: float
+  window_s: float
+  blend_steps: int
+  count_in: bool
 
   @staticmethod
   def of(raw: dict[str, Any]) -> ApproachCfg:
     return ApproachCfg(
-      yaw_tolerance=float(raw["yaw_tolerance"]),
-      lateral_tolerance=float(raw["lateral_tolerance"]),
       hurdle_takeoff=float(raw["hurdle_takeoff"]),
+      hold_back=float(raw["hold_back"]),
+      arrive_radius=float(raw["arrive_radius"]),
+      yaw_tolerance=float(raw["yaw_tolerance"]),
+      window_s=float(raw["window_s"]),
+      blend_steps=int(raw["blend_steps"]),
+      count_in=bool(raw["count_in"]),
+    )
+
+
+@dataclass(frozen=True)
+class TraverseCfg:
+  lift_height: float
+  land_height: float
+  stand_angle: float
+  settle_steps: int
+  patience: int
+
+  @staticmethod
+  def of(raw: dict[str, Any]) -> TraverseCfg:
+    return TraverseCfg(
+      lift_height=float(raw["lift_height"]),
+      land_height=float(raw["land_height"]),
+      stand_angle=float(raw["stand_angle"]),
+      settle_steps=int(raw["settle_steps"]),
+      patience=int(raw["patience"]),
     )
 
 
 @dataclass(frozen=True)
 class WalkCfg:
-  blend_radius: float
+  lookahead: float
   lateral_gain: float
   lateral_limit: float
   approach_gain: float
@@ -153,7 +182,7 @@ class WalkCfg:
   @staticmethod
   def of(raw: dict[str, Any]) -> WalkCfg:
     return WalkCfg(
-      blend_radius=float(raw["blend_radius"]),
+      lookahead=float(raw["lookahead"]),
       lateral_gain=float(raw["lateral_gain"]),
       lateral_limit=float(raw["lateral_limit"]),
       approach_gain=float(raw["approach_gain"]),
@@ -186,6 +215,7 @@ class Settings:
   box_yaw: Range
   hurdle: HurdleCfg
   approach: ApproachCfg
+  traverse: TraverseCfg
   walk: WalkCfg
   end: EndCfg
 
@@ -207,6 +237,7 @@ class Settings:
       box_yaw=_range(raw["box"]["yaw"]),
       hurdle=HurdleCfg.of(raw["hurdle"]),
       approach=ApproachCfg.of(raw["approach"]),
+      traverse=TraverseCfg.of(raw["traverse"]),
       walk=WalkCfg.of(raw["walk"]),
       end=EndCfg.of(raw["end"]),
     )
@@ -368,4 +399,4 @@ def main(
 
 
 if __name__ == "__main__":
-  tyro.cli(main)
+  tyro.cli(main, config=mjlab.TYRO_FLAGS)

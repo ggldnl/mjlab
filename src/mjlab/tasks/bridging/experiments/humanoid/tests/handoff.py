@@ -1,53 +1,11 @@
-"""What the bridge is being asked for, and what it would be worth, before there is a bridge.
+"""Compare cold handoff, exact physical arrival, and arrival with the recorded action.
 
 Run:
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.tests.handoff --couple walk2kick
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.tests.handoff
-    uv run python -m ...tests.handoff --couple walk2jump --walk-steps 200
-
-Needs the two skills' checkpoints and nothing else. No bridge policy and no bridge corpus.
-
-##
-# What it does
-##
-
-Walking is interrupted mid-stride, and from that one interrupt the same hand-over is run
-twice:
-
-    none      the entering skill takes over from wherever walking left the robot. No bridge.
-              This is the problem the project exists for, measured rather than asserted.
-    perfect   the robot is teleported into the entry state the selector asks for, and the
-              entering skill takes over from there. An oracle bridge, one that arrives
-              exactly, instantly and for free.
-
-Neither is a bridge. `perfect` is the ceiling a real one is chasing and `none` is the floor
-it has to clear, and the gap between them is the whole value of the component. If that gap is
-small the hand-over was never hard and this is the wrong couple to be testing against; if
-`perfect` itself fails, the entry state is wrong and no bridge will rescue it.
-
-Which is the point of running this first. A trained bridge that fails tells you nothing on
-its own, because a bad entry state and a bad bridge fail identically. This separates them
-while the bridge does not exist yet, so when one does, its number has two known-good
-reference points either side of it.
-
-##
-# Why walk to the punch combination
-##
-
-Because the combination's opening is not a standing pose. It is tracked from a LAFAN1 fight
-clip, and its tracker resets with the reference at frame zero, which is a guard: knees near
-seventy degrees, hips folded unevenly, torso turned into the lead shoulder, both elbows drawn
-in. Sixty-eight degrees from the robot's default pose at the worst joint.
-
-So the bridge is asked for a posture that walking never passes through and that no amount of
-standing up straight approximates. Compare that with handing over to walk or run, where the
-entry is the pose the robot is already more or less in whenever walking stops: a bridge can
-score well on those having learned nothing.
-
-Nothing is on the floor for this couple either. A ball or a crate makes a hand-over partly
-about where the robot ends up in the world, and a good arrival with the object out of place
-still fails. Here the only question left is whether the robot arrived in the pose and at the
-velocities the entry frame asks for, which is the question the bridge exists to answer.
+Requires fresh selector.record and selector.build outputs. All modes use the same entry
+placement as real transitions. Perfect restores the recorded preceding action;
+physical_only retains the outgoing action. Neither mode replaces the target with mocap.
 """
 
 from __future__ import annotations
@@ -61,35 +19,44 @@ import tyro
 import mjlab
 from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv
-from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges import (
+  DEFAULT_BRIDGE,
+  BridgeKind,
+  resolve,
+)
+from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.mdp.commands import (
   CHANNELS,
   Tolerances,
   arm_mask,
   channel_errors,
 )
 from mjlab.tasks.bridging.experiments.humanoid.selector import EntryTable
-from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.mdp.commands import (
-  JumpCommand,
+from mjlab.tasks.bridging.experiments.humanoid.selector import resume as entry_resume
+from mjlab.tasks.bridging.experiments.humanoid.selector.table import (
+  TABLE_PATH,
+)
+from mjlab.tasks.bridging.experiments.humanoid.selector.table import (
+  Entry as RecordedEntry,
 )
 from mjlab.tasks.bridging.experiments.humanoid.tests import actors
 from mjlab.tasks.bridging.experiments.humanoid.tests.stage import (
   ROBOT,
   Couple,
   Policy,
+  aim,
   arena,
-  crossing,
   defaults,
-  facing,
   find_checkpoint,
+  fresh_obs,
   state,
 )
 from mjlab.tasks.registry import load_rl_cfg
-from mjlab.utils.lab_api.math import yaw_quat
 
 COUPLES: dict[str, Couple] = {
   "walk2punch_combo": Couple(leaving=actors.WALK, entering=actors.PUNCH_COMBO),
   "walk2front_kick": Couple(leaving=actors.WALK, entering=actors.FRONT_KICK),
   "walk2jump": Couple(leaving=actors.WALK, entering=actors.JUMP, duration_s=0.7),
+  "walk2kick": Couple(leaving=actors.WALK, entering=actors.KICK),
 }
 """The couples worth staging this way: an entering skill whose opening is not a stand.
 
@@ -102,6 +69,7 @@ single clip so there is no goal to get wrong on top of the pose.
 @dataclass
 class HandoffCfg:
   couple: str = "walk2punch_combo"
+  table: Path = TABLE_PATH
   entry: int = 0
   """Which row of the entering skill's entry table to aim at, in table order."""
 
@@ -121,6 +89,13 @@ class HandoffCfg:
   """How long the entering skill drives once it has taken over."""
   speed: float = 1.0
   """Forward command for the walk, in m/s."""
+
+  bridge: BridgeKind = DEFAULT_BRIDGE
+  """Which bridge architecture's arena this is staged in. See bridges/__init__.py.
+
+  No bridge policy is loaded here, since neither mode crosses anything. It still decides the
+  robot and the terrain the two skills run on, so the ceiling this prints is the ceiling for
+  that architecture's arena."""
 
   device: str = "cuda:0"
   seed: int = 0
@@ -185,43 +160,6 @@ class Run:
     return False
 
 
-def reference_state(env: ManagerBasedRlEnv) -> torch.Tensor | None:
-  """Where a clip tracker says it wants the robot, right now. (1, 13 + 2J), or None.
-
-  For a skill trained by imitation this outranks anything the selector reconstructs, and the
-  difference is not small. `anchor_to_robot` takes the direction the clip should travel, and
-  a clip's travel direction is not the yaw its pelvis holds at frame zero: the two differ by
-  whatever the performer's hips were doing, and here that is most of a right angle. Aiming at
-  a state built by stripping the yaw off the clip and re-applying the robot's meant the robot
-  arrived turned away from its own reference, which the tracker reads as an enormous tracking
-  error on frame one and never recovers from. The oracle fell in half a second while the same
-  policy ran the whole clip cleanly in its own environment.
-
-  So the reference is asked instead of reconstructed. `body_quat_w` is the anchored clip's
-  actual world pose, which is the thing the tracking reward compares the robot against, and
-  therefore the only definition of "arrived" that skill agrees with.
-
-  None when the entering skill has no reference to ask, which is every skill that was trained
-  by reward rather than by imitation. Those keep the selector's own state.
-  """
-  if "motion" not in env.command_manager.active_terms:
-    return None
-  command = env.command_manager.get_term("motion")
-  if not isinstance(command, JumpCommand):
-    return None
-  return torch.cat(
-    [
-      command.body_pos_w[:, 0],
-      command.body_quat_w[:, 0],
-      command.body_lin_vel_w[:, 0],
-      command.body_ang_vel_w[:, 0],
-      command.joint_pos,
-      command.joint_vel,
-    ],
-    dim=-1,
-  )
-
-
 def teleport(env: ManagerBasedRlEnv, robot: Entity, target: torch.Tensor) -> None:
   """Put the robot exactly in this state. The oracle bridge.
 
@@ -273,36 +211,27 @@ def stage(cfg: HandoffCfg, couple: Couple, mode: str, env, policies, entry) -> O
   obs = _drive(env, policies[couple.leaving.name], obs, cfg.walk_steps)
 
   here = state(robot)
-  target = facing(entry.state, here)
-  target[:, 0:2] = crossing(here, target, entry.duration_s)
-
-  # Anchored once, here, at where the robot is meant to end up and with the heading it has
-  # now. Two details, each of which cost a run to find.
-  #
-  # A heading, not the robot's orientation. `anchor_to_robot` takes the direction the clip
-  # plays along, and a target pose carries the entry's own tilt: the guard leans, so handing
-  # it the full quaternion rotates the entire reference by that lean and the policy spends
-  # the episode chasing a clip pitched into the floor.
-  #
-  # And before the crossing, not after it. Anchoring again once the robot has arrived slides
-  # the clip onto wherever it actually got to, which erases the arrival error instead of
-  # leaving it for the entering skill to cope with. Erasing it is the one thing this test
-  # must not do: the arrival error is the entire subject.
-  heading = yaw_quat(here[:, 3:7])
-  if couple.entering.enter:
-    couple.entering.enter(
-      env, target[:, 0:3], heading, entry.frame, defaults(couple.entering)
-    )
-
-  # Now ask the entering skill where it actually wants the robot, and believe it over the
-  # reconstruction. See `reference_state`
-  reference = reference_state(env)
-  if reference is not None:
-    target = reference.clone()
-
-  if mode == "perfect":
+  target = aim(
+    env,
+    env.command_manager.get_term("bridge"),
+    couple.entering,
+    entry.state,
+    here,
+    entry.duration_s,
+    entry.frame,
+    couple.entering.arrive,
+    defaults(couple.entering),
+    recorded=entry.recorded,
+  )
+  if mode in ("perfect", "physical_only"):
+    previous = env.action_manager.action.clone()
     teleport(env, robot, target)
-    obs = env.get_observations()
+    if mode == "perfect":
+      previous = torch.as_tensor(
+        entry.recorded.previous_action, device=env.device, dtype=target.dtype
+      ).unsqueeze(0)
+    entry_resume.restore_action(env, previous)
+  obs = fresh_obs(env)
 
   errors = channel_errors(
     state(robot), target, arm_mask(tuple(robot.joint_names), env.device)
@@ -324,6 +253,7 @@ class Entry:
   name: str
   why: str
   duration_s: float
+  recorded: RecordedEntry
   frame: int
   """Step of the skill's own trajectory this state was recorded at. The oracle resumes the
   entering skill there rather than at its first frame."""
@@ -369,8 +299,8 @@ def report(couple: Couple, entry: Entry, outcomes: list[Outcome]) -> None:
     return
   if ceiling.fell:
     print(
-      "The oracle fell. The entry state is wrong, or the entering skill cannot open from "
-      "it, and no bridge fixes either. Fix the table before training anything."
+      "The recorded-state oracle fell. Check entry reconstruction, object placement "
+      "and skill robustness in this environment before attributing this failure to the bridge."
     )
     return
   gap = ceiling.earned - floor.earned
@@ -393,17 +323,18 @@ def main(cfg: HandoffCfg) -> None:
 
   # Before the simulator: this is the one thing a couple can be missing, and building the
   # arena first means waiting a minute to be told a posture is not written down
-  table = EntryTable.load()
+  table = EntryTable.load(cfg.table)
+  rows = table.of(couple.entering.name)
+  row = rows[min(max(cfg.entry, 0), len(rows) - 1)]
+  entry_resume.require_context(row)
   for line in table.lines(couple.entering.name):
     print(line)
 
   torch.manual_seed(cfg.seed)
-  env_cfg = arena(couple)
+  env_cfg = arena(couple, resolve(cfg.bridge))
   env_cfg.scene.num_envs = 1
   env = ManagerBasedRlEnv(cfg=env_cfg, device=cfg.device)
   try:
-    rows = table.of(couple.entering.name)
-    row = rows[min(max(cfg.entry, 0), len(rows) - 1)]
     entry = Entry(
       state=torch.as_tensor(row.state[None], dtype=torch.float32, device=cfg.device),
       name=row.name,
@@ -412,6 +343,7 @@ def main(cfg: HandoffCfg) -> None:
         couple.duration_s if couple.duration_s is not None else cfg.duration_s
       ),
       frame=row.frame,
+      recorded=row,
     )
 
     policies = {}
@@ -424,7 +356,8 @@ def main(cfg: HandoffCfg) -> None:
       policies[actor.name] = Policy(actor.task, checkpoint, env, actor.name, cfg.device)
 
     outcomes = [
-      stage(cfg, couple, mode, env, policies, entry) for mode in ("none", "perfect")
+      stage(cfg, couple, mode, env, policies, entry)
+      for mode in ("none", "physical_only", "perfect")
     ]
     report(couple, entry, outcomes)
   finally:

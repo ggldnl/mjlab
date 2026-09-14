@@ -5,16 +5,846 @@ Changelog
 Upcoming version (not yet released)
 -----------------------------------
 
+Added
+^^^^^
+
+- The parkour demo takes the hand-over controls the transition scripts have, under the same
+  names, each overriding ``config.yml`` for one run: ``--hold-back`` (metres short of the
+  pose a skill needs that the walk stops, which ``tests/stage.py`` calls ``fire_at``),
+  ``--window`` (seconds the bridge gets), ``--blend-steps``, ``--count-in``, ``--entries``
+  (which clip frame to enter a skill at, by name), ``--tolerances.*`` (per channel arrival
+  tolerance), and a checkpoint flag per skill plus ``--bridge-checkpoint``. ``--bridge``
+  already chose the architecture.
+
+  Two of those are new behaviour rather than a newly exposed number. ``blend_steps`` ramps
+  out of the parting policy's last action at every switch, which is the action seam;
+  ``count_in`` marches the entering tracker's clip up to its entry frame during the crossing
+  so it arrives there as control changes, which is the observation seam and leaves the
+  rewind afterwards with nothing to do. ``count_in`` is on. ``blend_steps`` defaults to 0
+  here and not to stage's 8: the climb loses the box at any ramp at all, while a course of
+  hurdles clears at 8. The numbers are in ``config.yml``.
+
+- ``demos/parkour/approach.py``, the geometry the parkour demo used to carry inside its
+  controller: given an obstacle's pose, where the robot has to stand for a traversal skill
+  to work, and where the walk stops short of that so the bridge can cover the rest. The box
+  is a solve rather than a distance, because the climb's reference carries its own obstacle
+  rigidly and only lines up at one pose, and it is solved once per obstacle instead of every
+  control step.
+
+- ``bridges/diffusion`` is no longer a stub. It is BeyondMimic's second stage over this
+  repo's tracker rollouts: a denoising diffusion model fitted offline on 64 tick windows of
+  the shared corpus, carrying states and actions together, and steered at inference by
+  pinning the start of the window and pulling its deadline column onto the target. Nothing
+  about a crossing enters training, so one frozen model answers crossings it was never
+  trained on and a new kind of demand is a new cost function rather than a new run.
+
+  Registered as ``Mjlab-G1-Diffusion-Bridge``, logging to ``logs/rsl_rl/g1_diffusion_bridge``
+  and running in the imitation bridge's arena so the two are scored on the same windows by
+  the same code. Train it with::
+
+      uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.train
+
+  ``uv run train Mjlab-G1-Diffusion-Bridge`` refuses with that message: there is no reward
+  and no episode behind this architecture. Everything that loads a bridge by task id drives
+  it unchanged, ``uv run play`` and ``bridges/evaluate.py --bridge diffusion`` included,
+  because ``DiffusionRunner`` answers the same loader interface an rsl_rl runner does.
+  Sampling is an inference choice and lives on ``diffusion/policy.py``'s ``ControlCfg``:
+  ``replan_every``, ``sample_steps``, ``strength`` and ``hold``.
+
+- ``body_pos_b``, every body's position in the root frame, is recorded again by
+  ``dataset.entry_context`` and loaded onto ``Dataset``. The column was in the corpus on
+  disk and in neither the recorder nor the loader, so ``selector/build.py`` read ``None``
+  for it and dropped every entry it was about to write. The diffusion bridge predicts it
+  beside the joint angles, which is what BeyondMimic's representation ablation asks for: a
+  small angle error at the hip is centimetres at the foot and an angle loss cannot see that.
+
+- Every transition script takes a checkpoint flag per skill, named after the skill rather
+  than after its role: ``tests.transitions.walk2kick`` takes ``--walk-checkpoint`` and
+  ``--kick-checkpoint``, ``walk2front_kick`` takes ``--front-kick-checkpoint``. Each
+  defaults to the newest checkpoint under that skill's own experiment, which is what
+  ``find_checkpoint`` already picked and what has silently picked the wrong run before, so
+  naming one pins a comparison to a particular pair of policies. The bridge's own is
+  ``--bridge-checkpoint``, renamed from ``--checkpoint`` now that it is one of three.
+  ``tests.stage.config_for`` builds the flags from the couple, so a new transition script
+  gets them by naming its two actors.
+
+- The panel of every transition script carries a ``bridge`` dropdown, which swaps which
+  architecture crosses. ``--bridge`` is now where it starts rather than the whole choice:
+  every architecture with a checkpoint under its experiment is loaded, and the dropdown
+  offers what loaded. One with no code yet, or nothing under its log directory, is dropped
+  with a line saying which, since an untrained architecture is the normal state of one of
+  them. ``--bridges`` narrows the set, and ``--bridges "('imitation',)"`` is the old
+  behaviour.
+
+  The three share one arena because they differ in their window term and their observation
+  and in nothing else, so ``tests.stage.arena`` gives each its own observation group and
+  builds the command from the most specific window among them, which serves the rest
+  because the specific one subclasses the general one. Two that subclassed it in
+  incompatible ways would be refused by name rather than served by whichever came first.
+  The swap lands at the next hand-over, not immediately: one architecture's opening and
+  another's follow through are not a crossing anybody performed. The Active line names
+  whoever is driving, so the dropdown's position is not something to remember.
+
+  Checkpoints are resolved before the simulator is built, which is also why a missing one
+  is now a message in the first second of a run rather than after a minute of arena.
+
+- The panel of every transition script carries a ``switch step`` slider and a
+  ``fire on the step above`` checkbox, which pin the control step the hand-over fires on.
+  Off by default: choosing the moment is what the button is for. On, the crossing repeats
+  at the same instant every episode, which together with the ``entry`` slider is what a
+  formal comparison needs, since the entry fixes the state being crossed to and the instant
+  fixes the state being crossed from. A button pressed by hand lands on a different stride
+  every time, so the bridge starts from a different velocity and phase and two runs differ
+  in more than what is being compared. ``--auto N`` sets the slider and turns the checkbox
+  on, so a run can start pinned.
+
+  ``tests.transitions.walk2kick_robust_test`` had both controls and has lost them to
+  ``tests.stage``, which is where they belonged: it is down to the one dropdown that swaps
+  which kick catches the robot. Its ``--switch-step`` and ``--max-switch-step`` are gone,
+  and ``--auto`` does that job for every couple.
+
+Fixed
+^^^^^
+
+- The parkour walk stopped going forward after a tilted obstacle and crabbed sideways
+  instead, which is what a robot that has stopped mid-walk looks like from outside.
+  ``go_to`` drove at the mark along a diagonal and split the error in the approach frame, so
+  a robot level with the mark but half a metre to the side of it had no forward distance to
+  cover: the forward command read zero and the whole error was left to the sideways command,
+  which the walk caps at 0.35 m/s and barely acts on. A traversal over a turned obstacle
+  lands the robot in exactly that state, which is why it never happened before the first one.
+
+  ``go_to`` now follows a carrot a lookahead ahead on the approach line, so it converges onto
+  the line and arrives pointing down it, and it splits the error in the frame it is being
+  pointed at rather than in the approach frame. Over five hurdles turned to the configured
+  limit: 0 stalled steps out of 2835, against stalls on every leg before. Fixing the approach
+  also fixed the climb, which now starts from a robot that arrived rather than one still
+  crabbing: the demo clears a box and a hurdle end to end for the first time.
+
+- ``selector.build`` dropped every entry of any skill whose window sits at the opening of
+  its clip, which was climb, pass and walk: all three built zero entries, and the parkour
+  demo then refused to start with a message telling you to record them, which would not
+  have helped. Recording discards the ``settle`` steps after every reset and ``Dataset.frame``
+  keeps the absolute step index, so a rollout's earliest recorded row is step 25 and not
+  step 0. ``run_up`` only guarded against a negative frame, so for any entry within
+  ``settle + segment_steps`` of the start it looked up frames that were never recorded and
+  returned None.
+
+  The medoid is now searched over the rows that can supply a run-up rather than picked
+  first and discarded after, which is what threw whole windows away while thousands of
+  usable rows sat beside them. climb, pass and walk get their first entries, jump and
+  front_kick gain one each, and a slice with no usable row is reported with the cause and
+  the two remedies instead of one line per dropped entry.
+
+- ``demos.parkour.ENTRIES`` names the clip frame to enter each skill at rather than an index
+  into the entry table. An index is not stable across a rebuild: adding one entry to the
+  jump shifted every later one, so the demo's measured choice of frame 87 would have
+  silently become frame 78.
+
+- ``tests/entry_tolerances.py`` frames are back in step with the rebuilt table. Only kick
+  124 is measured and it did not move; the rest are provisional baselines.
+
+- The parkour hurdle was taller and longer than the jump can clear. Measured from the jump's
+  own entry state, the lowest foot peaks at 0.185 m and is back down 0.7 m later, against a
+  bar that was 0.20 m tall and 1.00 m long: the robot either tripped on it or landed on top
+  of it, every time. It is now 0.10 m by 0.40 m, sized off that trace. The failure was
+  invisible before because a traversal ended when its clip ran out, so a jump that hit the
+  bar still counted as one that had happened.
+
+- The parkour lane did not leave room for the hand-over. With ``first_run_up`` at 1.0 m the
+  first hold point solved to x = -0.04, behind the start line, so the robot reversed into its
+  own first switch. The run up and the spacing now clear the metre a hold point needs.
+
+- The parkour demo entered the jump at the entry the selector rates easiest, which is the
+  one standing still at the start of the crouch, and the bridge cannot reproduce a crouch
+  pose it has not begun. Over one hurdle it arrived 0.135 m off and the robot fell; entered
+  at the third entry instead it arrives 0.039 m off and clears. Reachability is not the same
+  question as which phase of a skill to resume at.
+
+- ``--bridge distillation`` works on the transition scripts and the parkour demo.
+  ``tests.stage.arena`` built its aimed command by copying every field of the chosen
+  architecture's window config into ``AimedCfg``, a hard-coded subclass of
+  ``BridgeCommandCfg``: the distillation bridge's ``MaskedBridgeCommandCfg`` carries four
+  more fields, so the copy was refused, and had it gone through the arena would have held a
+  plain ``BridgeCommand`` with no answer for the observation term the student reads.
+  ``tests.stage.aimed_cfg`` now derives the config and the command from whatever the
+  architecture declares, reading the command class off ``build``'s return annotation, with
+  ``Aimed`` first in the bases so its overrides still win and ``isinstance(command, Aimed)``
+  still holds. The distillation arena's bridge observation is 408 wide against imitation's
+  180, which is the three keyframe slots, and every bit of them reads off: a window aimed
+  from outside has no recorded interior, so what the student gets is the deployment pattern
+  it was trained for.
+
+  A checkpoint saved before ``TRACKING_ITERATIONS`` holds a teacher and no student and is
+  still refused by name.
+
+Changed
+^^^^^^^
+
+- The parkour demo's controller is a plan rather than a phase machine. A course is compiled
+  once into a flat list of actions, ``go_to``, ``cross`` and a traversal per obstacle, and
+  the run is an index walking down that list; every action answers the same four questions
+  and the loop asks nothing else. The walk is no longer asked to be accurate: it stops
+  ``approach.hold_back`` short of the pose a skill needs and the bridge covers the rest
+  inside a fixed ``approach.window_s``, which replaces the per step crossing solve, the
+  alignment gate and the entry effort window sizing.
+
+  A traversal now ends on the robot rather than on its clip. Both skills leave the ground
+  and come back, so the lowest foot rising past ``traverse.lift_height`` arms the action and
+  returning below ``traverse.land_height`` upright ends it. There is no bridge on the way
+  out: a traversal ends standing at about zero velocity, which is inside the walk's own
+  initiation set.
+
+- The imitation bridge's actor and critic are LSTM rather than plain MLP
+  (``Mjlab-G1-Imitation-Bridge``). A single frame of root and joint state does not say which
+  foot is loaded or where in the stride the robot is, and no observation term carries
+  contact, so the memory is there to infer phase. Config only: the MLP trunk keeps its
+  ``hidden_dims`` and sits behind the recurrent encoder. Backpropagation through time
+  reaches ``num_steps_per_env`` back, 0.48 s at the bridge's rate. Checkpoints trained
+  before this change do not load into the new model.
+
+- The bridge is now one architecture among several. ``bridge/`` became ``bridges/``, a
+  package with one sub-package per architecture and the shared corpus beside them. What
+  used to be the whole bridge is ``bridges/imitation``, under ``Mjlab-G1-Imitation-Bridge``
+  and logging to ``g1_imitation_bridge``. ``bridges/diffusion`` and
+  ``bridges/distillation`` are stubs: selectable, and refused by ``bridges.resolve`` with a
+  message naming the package to write.
+
+  ``logs/rsl_rl/g1_bridge`` was renamed to ``logs/rsl_rl/g1_imitation_bridge`` with its
+  runs intact, so the newest checkpoint is still what every script picks up.
+
+- Every script that drives a bridge takes ``--bridge``, which is a choice between the
+  registered architectures: the transition scripts through ``tests.stage``, the parkour
+  demo, ``tests.handoff``, ``tests.end2end.bridge_delivery`` and
+  ``tests.end2end.error_shapes``. The name is the whole selection. ``bridges.resolve``
+  turns it into the task id a policy loads from, the experiment name its newest checkpoint
+  is found under, and the env config the arena is built on, so the two skills either side
+  of a hand-over are untouched by it and two architectures are comparable on one
+  transition. An architecture with no code behind it is refused before the simulator
+  starts.
+
+  ``tests.end2end.bridge_delivery`` and ``tests.end2end.error_shapes`` took a required
+  checkpoint path, one of them hard-coded to a run under the old log directory. Both now
+  default to the newest checkpoint of the chosen architecture.
+
+- The corpus moved from ``bridge/datasets/`` to ``bridges/datasets/``, since what a bridge
+  is asked to cross does not depend on how its policy is produced. Two architectures read
+  the same windows, which is what makes their scores comparable.
+
+- ``bridges/datasets/skills.py`` is deleted, along with ``SKILLS_DATASET``. It built the
+  corpus out of the skill pool's own rollouts, which trained and served the bridge from
+  one distribution and made it a function of the pool; ``tracker.py`` replaced it and had
+  been the default for some time. ``tests.resume`` read its ``SKILLS`` roster for a skill
+  name to task id map and now reads ``skills.SKILLS``, which is the same map without the
+  second copy, taking each experiment name off the registered task instead of a hand
+  written tuple.
+
+- ``tests/entry_tolerances.py`` is back in step with the entry table. Every frame it
+  registered was one or two off what ``data/selector/entries.npz`` holds, so aiming at
+  most entries raised "No bridge tolerance profile". Five of the six skills in the table
+  were affected, not just the kick: only ``kick`` 98, 115 and 140 and ``front_kick`` 40
+  and 56 still resolved. The table is written by ``selector.build`` and is not in git, so
+  it had been rebuilt and every entry had moved.
+
+  Frames are now ``jump`` 68, 76, 87, 96, 106; ``kick`` 98, 106, 115, 124, 133, 140;
+  ``front_kick`` 40, 56; ``punch_combo`` 37, 44, 51; ``pass`` 34; ``walk`` 55. The kick's
+  measured entry is frame 124, between the 123 and 125 the arm insensitivity was measured
+  at, so both measurements still describe it.
+
+  Keying on the recorded frame is what made this an error rather than frame 123's profile
+  quietly applied to frame 124, and it stays. The refusal now prints the frames the file
+  does have and says a rebuilt table is the usual cause. The two tests that pinned a kick
+  frame read one out of ``ENTRY_TOLERANCES`` instead, so the next rebuild is one edit.
+
+- ``tests.transitions.walk2kick_robust_test`` takes every flag
+  ``transitions.walk2kick`` does. It parsed its own ``--variants`` and ``--checkpoints``
+  and then handed the same command line to ``stage.main``, which parses a different
+  config, so ``--viewer``, ``--auto`` and ``--entry`` were rejected as unrecognized before
+  the arena was built: the dropdown could only ever be watched on whichever entry the
+  selector happened to pick. It now takes its own flags and passes the rest down, so a
+  comparison can pin the entry both kicks are judged on. An unknown flag is still an
+  error, from the second parse rather than the first.
+
+  ``transitions.walk2kick`` says the variant script exists, which nothing did before.
+
+- The bridge is back to commit 912afa51 and both later generations are parked. The
+  reference tracker, which put the spliced reference in the observation and widened it to
+  463, is ``bridge_experimental`` under ``Mjlab-G1-Bridge-Experimental``, logging to
+  ``g1_bridge_experimental``. The segment work that followed 912afa51, which took the
+  observation to 327, is in ``git stash@{0}``. ``bridge`` and ``Mjlab-G1-Bridge`` are the
+  committed 180 wide task again: ``26 + 2J`` of command on 96 of proprioception.
+
+  All three generations wrote to ``logs/rsl_rl/g1_bridge``, so telling their checkpoints
+  apart needs the observation width in ``actor_state_dict``. The six tracker runs are
+  deleted. What loads now is ``2026-09-12_00-10-00_clock``,
+  ``2026-09-12_10-49-02_short-windows`` and ``2026-09-12_15-18-03``, all 180 wide. Prefer
+  ``2026-09-12_00-10-00_clock/model_2800.pt``: ``short-windows`` trained on 0.1 to 0.2 s
+  windows against this config's 0.3 to 1.2, and ``15-18-03`` diverged after iteration
+  1600, taking policy std from 0.209 to 1.94.
+
+  Callers came back with it. ``tests.stage.aim`` and ``demos.parkour.Bridge.aim`` write
+  ``command.target`` and open the window with ``duration_s`` alone, the end of a window is
+  ``out_of_patience``, and ``duration_s_range`` is read off the config. ``selector.build``
+  reads ``body_pos_b`` off the dataset rather than assuming it, so a corpus from either
+  bridge loads.
+
+  Seven entries below describe the parked work and not the code in the tree: the three
+  value clock, the corpus rate check, arrival paid once at the hand-over, ``mdp.approach``,
+  the terminal segment, ``body_pos_b`` with ``Segments.draw`` bounds, and ``entropy_coef``
+  0.001. This bridge has a two value clock, no rate check, arrival on a running best, no
+  approach term, no segment, and ``entropy_coef`` 0.005. Restore ``stash@{0}`` to make them
+  true again.
+
+- The bridge clock carries the window length as well, so it is three values: seconds left,
+  fraction spent, and the seconds the crossing was given. The total is recoverable from the
+  other two, since seconds left is the total times one minus the fraction, but that
+  division degenerates exactly at the hand-over where both go to zero, which is the tick
+  the precision is wanted at. The observation is ``12 + S * (15 + 2J)`` wide.
+
+  All three are seconds or dimensionless, never control ticks, which is what they always
+  were: a tick count is a property of the decimation rather than of the task, so a policy
+  conditioned on one would mean something different the moment the simulator was configured
+  differently.
+
+- The bridge refuses a corpus recorded at a rate the environment does not step at. ``fps``
+  came from the dataset while the simulator stepped at its own rate and nothing compared
+  them, so a mismatch would have converted every window between seconds and ticks with the
+  wrong divisor: the clock would have reported a number the simulator did not agree with
+  and every duration in the config would have quietly meant something else. They agree
+  today at 50 Hz; now they have to.
+
+- The bridge arrival is paid once, at the instant control transfers, and nowhere else.
+  ``mdp.arrival`` used to pay the improvement on a running best, clamped at zero, which
+  summed over an episode to the best arrival the crossing ever reached whenever it reached
+  it. Leaving the target cost nothing because the clamp floored it, returning and beating
+  the old best paid again, so a trajectory sweeping through the target region twice drew
+  two samples and kept the better, and standing in the right place at the hand-over was
+  worth nothing at all because time appeared nowhere in the sum. The result is visible: the
+  robot arrives early, adjusts, and hands over mid-fidget, a stutter in what should read as
+  one motion.
+
+  ``mdp.approach`` takes over the dense half, paying the change in the arrival score every
+  step with no clamp and against the previous tick rather than a running maximum. That is
+  potential based shaping in the sense of Ng, Harada and Russell 1999: it telescopes to the
+  score at the end minus the score at the start, leaves the optimal policy unchanged, and
+  makes a round trip out and back cost exactly what it pays.
+
+  ``patience_scale`` drops from 1.5 to 1.0, because "the last instant" names nothing while
+  the episode runs half again as long as the window. The episode is now exactly the window,
+  and the policy is told when that ends by the clock it already reads.
+
+  ``arrived``, ``fixed_arrived`` and ``score`` now describe the hand-over instead of the
+  best moment of the window. They will read lower, and that is the measurement changing
+  rather than the policy getting worse. ``arrival_s`` is kept and is paid nothing: read
+  against ``window_s`` it is the overshoot detector, and a robot doing nothing scores 0.32.
+
+- The bridge sees the end of its window, not just its last state. ``segment_steps`` frames
+  of the recorded crossing reach the observation, ``segment_samples`` of them evenly
+  spaced, the last being the target. A target is a state, and a state says where to be
+  without saying what the robot will be doing when it gets there; these are the frames the
+  entering skill is about to continue, so a bridge that can see them can arrive moving the
+  way that motion moves rather than arriving at a pose and stopping.
+
+  Input only. Nothing is scored against the segment and the reward is unchanged. The last
+  sampled frame is the target, so the previous layout is a suffix of this one and anything
+  indexing from the end still lands where it did. The observation is
+  ``11 + S * (15 + 2J)`` wide, 230 at the defaults, so earlier checkpoints cannot be
+  resumed. ``place`` and ``open_window`` take a ``segment`` keyword; omitting it repeats
+  the target, which is exactly the observation this task had before.
+
+  This is what survives of a larger attempt. Scoring the segment instead of the target,
+  with a fixed hand-over and a duration curriculum, was tried over three runs and never
+  trained: the best of them had ``merge_error`` rising monotonically from 0.040 at
+  iteration 0 to 0.117 at 800, against 0.033 for a robot that does nothing, with every
+  objective term flat and the regularizers running 22x and 641x their old per tick cost.
+  That work is reverted. The segment as an input is the part worth keeping.
+
+- ``entropy_coef`` drops from 0.005 to 0.001. At 0.005 a run diverged: once the task
+  gradient flattened the entropy bonus was the largest term left, and over iterations 1800
+  to 2075 the policy std went 0.209 to 0.362 while every arrival metric came apart with it.
+  Safe to lower, because exploration was never the binding constraint here; reopening std
+  from 0.177 to 0.30 mid-run walked straight back to the identical optimum. Watch
+  ``Policy/mean_std``.
+
+- The bridge corpus records body positions in the root frame, and ``Segments.draw`` accepts
+  ``min_steps`` and ``max_steps``. Neither is read by the bridge today. Both are there for
+  the next attempt at scoring a trajectory, and the corpus already carries the column.
+
+- The selector records the ten frames before each entry, so a live hand-over can hand the
+  bridge the entering skill's own run-up rather than a single pose. An entry whose
+  recording does not reach back that far is dropped. Rebuild the table with
+  ``selector.build``.
+
+- The bridge tolerance curriculum is replaced. It was one multiplier range shared by all
+  eight channels, log-uniform, both bounds sliding from (5, 10) to (0.5, 4) on the
+  environment step counter. Three things were wrong with it. The eight draws were
+  independent, so half of all windows asked the arms for more precision than the legs,
+  which is the case where a perfect arm is worth nothing. ``arm_joint_pos`` ended up asked
+  for 0.025 to 0.2 rad against a kick that shrugs at 0.8, up to 32 times tighter than any
+  consumer has wanted, while carrying the joint highest reward weight. And it tightened on
+  a step counter whether or not anything was being learned, which across four runs it was
+  not: the worst channel sat at 5.5 times its limit for thousands of iterations.
+
+  In its place, each channel has a band in multiples of the baseline. Root and legs use
+  ``core_band``, 4x down to 0.6x; the arms use ``support_band``, 16x down to 4x. The two
+  do not overlap and a draw never leaves its row, so the arms are never asked for more
+  precision than the legs, for any window, at any point. Each window picks one channel to
+  be strict and relaxes the other seven toward the wide end by ``focus_relax``, so a
+  window asks one question; the policy is told which, for free, since the observation
+  already carries the requested tolerances. A channel's band position moves only when the
+  windows that focused it are met outside ``success_band``, which is Florensa's reverse
+  curriculum per channel: above the upper rate the channel is solved and is asked for
+  more, below the lower it is past what the policy can do and is asked for less.
+
+  The baseline ``Tolerances`` is unchanged and is now only the unit, not the requirement.
+  Two of its values no longer cover the kick, measured at 8 directions rather than 3, and
+  the band floor of 0.6x covers both. ``tolerance_initial_range``, ``tolerance_final_range``
+  and ``tolerance_steps`` are gone. ``level_<channel>`` and ``focus_rate_<channel>`` are
+  logged. The band positions are evidence rather than a step count, so a resume does not
+  recover them: read ``level_<channel>`` off the run and pass ``level_init``.
+
+- Every entry in ``tests/entry_tolerances.py`` now asks 0.2 rad and 3.0 rad/s on the arms,
+  which is the tightest the bridge is ever trained to deliver there. The unmeasured skills
+  asked for the baseline, 0.05 rad, which after the band change is something no training
+  window contains. This is what the bridge can do, not a robustness claim about those
+  skills.
+
+- The bridge reads a clock again: the command carries the seconds left of the crossing
+  and the fraction of it already spent, so the observation is 26 + 2J wide and earlier
+  checkpoints cannot be resumed. It had none, and a target that is a pose and a momentum
+  at one moment cannot be reached without one: a 0.3 second window and a 1.2 second one
+  were the same question, so the policy could only ever learn one average approach. That
+  is what it learned. Freezing the tolerance curriculum, reopening the policy noise,
+  removing the start perturbation and keeping the guidance reward alive each left the
+  arrival error within a few percent of where it started, because all four addressed the
+  search and none of them the missing input.
+
+  Timing was removed once before because a demo had to estimate how long a crossing would
+  take and estimated it badly. The clock does not bring that back: a caller fixes the
+  window it asks for rather than solving for one, and ``arrival_s`` read against it says
+  whether the crossing used the time it was given.
+
+- The two leg arrival tolerances tighten: ``leg_joint_vel`` from 1.50 to 0.80 rad/s and
+  ``leg_joint_pos`` from 0.10 to 0.08 rad. ``leg_joint_vel`` was the one channel declared
+  looser than a skill accepts, so a bridge could meet the requirement and still hand over
+  a robot that does not track. Both now sit a fifth below what ``entry_margin`` measured
+  on the kick, which held its clip at 0.10 rad and 1.00 rad/s and left it by 0.15 and
+  1.50: the measured values were the last rung that passed rather than the edge of
+  anything, and they were measured one channel at a time. The other six channels were
+  already tighter than the kick needs and are unchanged, leaving every channel covered
+  with at least 1.22x margin. Retrain to pick this up; requests spanning 0.5x to 4x of
+  the baseline move with it.
+
+- The bridge logs ``reach_*`` per channel, plus ``worst_channel`` and ``channels_met``.
+  ``reach_*`` is that channel's arrival error over its requirement, so 1.0 is the limit
+  whatever the units were and the eight are comparable to each other; ``worst_channel``
+  is the largest of them and ``channels_met`` counts how many of the eight are inside.
+  All three are against the fixed baseline, like ``score``, so a falling curve means the
+  crossing improved rather than the curriculum letting go.
+
+- ``arrival_score`` aggregates log distances and squashes once, as
+  ``benchmarks/objective-proposal.md`` specified, instead of blending a per channel
+  ``exp(-z^2)``. The Gaussian was flat to machine zero a few tolerances out, so the
+  worst channel carried none of the gradient and the bottleneck term was a constant:
+  measured on a trained bridge leaving six tolerances of leg joint position error, that
+  channel held 0.00% of the objective's sensitivity and now holds 46%. Scores are not
+  comparable across the change, and a crossing with every channel exactly on its limit
+  moves from 0.368 to 0.591.
+
+Added
+^^^^^
+
+- ``skills/tolerance.py``, which measures the other half of a hand-over: given a skill and
+  one selector entry, how wrong a state it can be handed and still get back on its clip. One
+  channel is displaced at a time along a ladder, over both signs and several directions, each
+  case in its own env. A displacement counts as tolerated while the skill's own tracking
+  error stays within ``--margin`` of what that entry produces undisturbed.
+
+  Explicitly not a survival test, which is the distinction that makes the number worth
+  having. A skill handed a bad state usually stays upright, wanders off its reference and
+  finishes the motion as something else: a success for a fall check and a failure for
+  composition. Termination is reported in its own column and is never the criterion. On the
+  kick at entry 3 it never fired at all, so every limit there is a trajectory being lost.
+
+  It prints a ``Tolerances`` block to paste into ``tests/entry_tolerances.py``, which closes
+  the loop with ``bridges/evaluate.py``: measure what the skill accepts, then score what the
+  bridge delivers against it.
+
+  This is ``tests/end2end/entry_margin.py``, moved, generalised past the kick and made
+  runnable again. It had been dead since the ``benchmarks`` package left the tree, and its
+  displacement machinery is reimplemented here rather than imported. It also no longer builds
+  its policy after placing the robot: ``RslRlVecEnvWrapper`` resets the env on construction,
+  which put every displaced robot back on its reference, and the measurement read as a skill
+  that tolerated the entire ladder on all eight channels.
+
+- The kick at entry 3, clip frame 124, has a measured entry profile in
+  ``tests/entry_tolerances.py`` instead of the provisional one: 0.06 m, 0.15 rad, 0.10 m/s,
+  1.2 rad/s, 0.10 rad, 1.5 rad/s, 0.8 rad, 6.0 rad/s. The arm position limit is a floor,
+  since that ladder ran out without failing.
+
+Changed
+^^^^^^^
+
+- ``BridgeCommandCfg.landing_s``: how near the duration a window asked for an arrival has
+  to be to count, in seconds. ``None`` keeps the old behaviour, the best moment of the whole
+  window whenever it happened, and imitation stays on it. The distillation bridge sets
+  0.15 s.
+
+  This closes a gap between what the policy reads and what it is paid for. The observation
+  carries a clock, seconds left of the crossing and the fraction spent, and nothing happened
+  when it ran out: the arrival could be scored anywhere in ``patience_scale`` times the
+  duration, so a third of every episode was time in which arriving was neither early nor
+  late but untimed.
+
+  Measured before the band existed, on the first full distillation run: the best moment
+  already landed at 1.02 times the asked duration in the median, and scoring at exactly that
+  duration instead moved the aggregate from 0.406 to 0.394. So the freedom was not being
+  exploited, which is not the same as saying it costs nothing to leave open. The same run
+  put each channel's own minimum a median of 4 to 8 control steps from the scored instant,
+  and a band is what forces the eight to coincide rather than letting the aggregate pick a
+  compromise between them.
+
+  A band and not a single instant, because the original argument against a fixed deadline
+  holds: a target carries momentum, so it is a state the robot passes through, and a
+  crossing that went through it perfectly three ticks early is a good crossing.
+
+  Safe in the distillation task and not in imitation, which is why it is opt in. Distillation
+  covers the approach with ``guidance`` densely and never anneals it, so gating the arrival
+  term costs no early gradient. imitation relies on arrival being dense from the first step,
+  which is the whole argument for paying the improvement rather than a terminal score.
+
+- ``arrival_score``'s channel weights now read root before legs before arms, 6 to 3 to 1,
+  where they used to read the reverse: the four joint channels carried 2.0 and 1.5 against
+  the root's 1.0. The old ordering was argued from which channel is easy rather than which
+  one matters. The measurement settled it: against the kick's measured envelope at entry 3,
+  root linear velocity is the channel furthest outside on 74% of crossings and neither arm
+  channel on any of them, while the weights had the arms at four times the root.
+
+  Scores are not comparable across the change. A crossing exactly on every limit still reads
+  0.591, since the weights are normalised by their own sum, but any uneven crossing moves.
+
+- ``bridges.imitation.mdp.guidance`` takes ``bottleneck_weight``, defaulting to the 0.2 it
+  was hard-coded at, so an architecture that keeps its reference can be held to its worst
+  channel instead of to an average.
+
+- The distillation teacher's tracking reward is a tracking objective rather than a hint:
+  ``tolerance_scale`` 4.0 to 2.0 and ``bottleneck_weight`` 0.2 to 0.5, on top of the weight
+  it already carried. The first full run plateaued at 6500 of 11000 iterations with its worst
+  channel still four times its requirement, which is inside a kernel evaluated at four times
+  that requirement and aggregated as an average: there was almost no gradient left where the
+  errors actually were.
+
+- ``UNITS`` moved next to ``CHANNELS`` in ``bridges/imitation/mdp/commands.py``. Both
+  evaluators print channels in physical units and two copies were two chances to mislabel a
+  number.
+
+Added
+^^^^^
+
+- ``bridges/evaluate.py`` gained a hand-over section, which is what the script is actually
+  for. A bridge is a means: what decides whether it worked is whether the policy taking over
+  can resume from where it was left, and that policy tolerates some envelope of error. The
+  section scores the delivery against each envelope, reporting the share of crossings that
+  land inside it as written and, for a given share, the multiple the envelope would have to
+  be widened by. That multiple is taken from the worst channel of each crossing, so it is a
+  statement about all eight at once rather than eight separate marginal ones, and the gap
+  between it and the per channel column is the price of needing every channel right at the
+  same moment.
+
+  Each envelope also gets ``blocks the hand-over``: the share of crossings where that
+  channel is the one furthest outside. That is the fix list, in order.
+
+  Envelopes come from ``tests/entry_tolerances.py`` and are deduplicated by value, since
+  printing one row per skill would suggest one measurement per skill where there is
+  currently one profile shared by all nineteen entries.
+
+- ``bridges/evaluate.py``, one delivery report for every architecture. Takes ``--bridge``,
+  draws windows from the eval split of the shared corpus, and reports the gap left standing
+  at the best moment of each crossing in the units the gap is measured in: metres, metres
+  per second, radians, radians per second, with the angular channels also in degrees. A
+  robot holding its default pose is scored beside it in the same run, because the channel
+  errors have no absolute meaning and are only ever a number next to another number.
+
+  Per channel it gives the requirement, the median, the ninth decile, the median as a
+  multiple of the requirement so the eight are comparable across their units, and the share
+  of crossings that met it. Then the joints: which one is worst in its group how often, and
+  its error on the crossings where it is. That last table is not per joint medians, which do
+  not reconcile with a channel that is a worst-joint maximum and read like a contradiction.
+
+  ``--start-noise`` scores the policy from a perturbed start rather than exactly on a corpus
+  row, which is the condition a bridge actually runs in, and collapses the perturbation ramp
+  so the setting takes effect inside one evaluation.
+
+  Every run writes ``logs/benchmarks/<bridge>/<run>_<checkpoint>.md``, one file per
+  architecture per checkpoint. ``bridges.imitation.evaluate`` stays as it is: it carries the
+  statue diagnosis of the corpus, which is about the corpus rather than about a policy.
+
+- ``bridges/distillation`` is written, so ``--bridge distillation`` has a task behind it:
+  ``Mjlab-G1-Distillation-Bridge``, logging to ``logs/rsl_rl/g1_distillation_bridge``. It is
+  MaskedMimic's second stage applied to the bridge, and it runs as one job in two phases on
+  ``MjlabTeacherStudentRunner``. Phase one is PPO on a teacher that reads the recorded
+  crossing frame by frame, which makes it a tracking problem rather than a two point
+  boundary value problem. Phase two freezes that teacher and regresses a student onto it
+  over the student's own rollouts, with the student reading only a randomly masked subset of
+  the same crossing.
+
+  The window's interior becomes ``keyframes`` constraint slots, evenly spaced strictly
+  inside it, each carrying the gap to the recorded state at that tick, the seconds until it,
+  and two bits: ``core`` for the root and the legs, ``arms`` for the shoulders, elbows and
+  wrists. Masked channels are zeroed and the bits say so. The target is never in there: it
+  reaches the policy through the base command as it always did, so with every bit off the
+  student's observation is the imitation bridge's observation followed by a block of zeros.
+  That bare pattern is drawn outright on ``bridge_prob`` of windows and is the only one play
+  shows, because it is the question the student is deployed on.
+
+  Widths on the G1 with three keyframes: student 408, teacher and critic 482, against
+  imitation's 180.
+
+  The environment is ``bridges.imitation.env_cfg.bridge_env_cfg``, not a copy: the robot,
+  the terrain, the sensor, the action term, every reward, every termination and the corpus
+  come from there, and ``MaskedBridgeCommandCfg`` carries every field of
+  ``BridgeCommandCfg`` across. So ``score``, ``fixed_arrived``, ``reach_*`` and
+  ``worst_channel`` are computed by the same code against the same baseline and a number
+  from one architecture is comparable to a number from the other. Two metrics are added:
+  ``visible_slots`` and ``bridge_pattern``.
+
+  Two deliberate differences from imitation, both following from the teacher being thrown
+  away after phase one. ``guidance`` is weighted 8 rather than 2, and
+  ``MaskedBridgeCommand.guide_scale`` holds it at one instead of annealing it to zero: the
+  network that has to run without a reference is the student, which this reward never
+  touches.
+
+  No latent. MaskedMimic's student is a conditional VAE and that is their answer to the
+  multimodality the bare mask leaves; this student is a deterministic regression and will
+  aim between two equally good crossings. The package docstring says what to measure before
+  writing one.
+
+  ``tests.stage`` and the parkour demo drive it, which they could not when it was written.
+  See the ``--bridge distillation`` entry under Fixed.
+
+- ``skills.recover``, which finetunes a tracking skill to get back on its reference fast
+  after a bad hand-over at one entry point, rather than to survive a wide reset anywhere in
+  the clip the way ``skills.finetune`` does. Three pieces. A share of every reset batch
+  becomes a rehearsal: it resets inside the frames around a chosen selector entry, with the
+  per-channel noise a hand-over actually delivers, while the rest of the batch resets the
+  way the task always did, which is what keeps the other nine tenths of the clip in the
+  training distribution. A potential shaping term on the tracking error pays per step for
+  closing it, which is the only part of the reward that reads at all at the error the bridge
+  leaves: the task's summed ``exp(-e^2/s^2)`` kernels are pinned near zero there, so nothing
+  told the policy that a smaller error was better until it was nearly back. The shaping
+  telescopes over an episode, so by Ng, Harada and Russell it cannot move the converged
+  skill, only supply gradient through the transient. And ``motion_far`` is opened at a
+  rehearsal reset and closed back to the task's own threshold over a quarter second, without
+  which the reset offset alone trips the termination before the policy has acted and the
+  episode collects the termination penalty for a state it was handed.
+
+  ``benchmarks.kick.transitions`` reports what the run trains: ``recovery_steps`` to get the
+  worst tracked body back within ``recovered_m`` of the reference, the peak and final errors,
+  and ``track_error_auc_ms``, the integral over the kick. It also takes ``--kick-variants``,
+  which resolves one checkpoint per named version of the skill, so comparing the baseline
+  against the finetune is ``--kick-variants "('base','recover')"`` and each row carries the
+  ``kick_label`` it was run under.
+
+- Added ``tests.end2end.error_shapes``, which records the joint errors a trained bridge
+  actually arrives with, and a ``--shapes`` flag on ``entry_margin`` that displaces the
+  four joint group channels along one of them instead of along a random direction. Both
+  are renormalized so the worst joint of the group lands on the same rung, so the two
+  ladders ask for the same channel error and differ only in how it is spread over the
+  rest of the group. The bridge's misses are about twice as concentrated as a random
+  draw: worst joint over median joint is 4.0 against 1.9. ``cases.intervention`` takes
+  the recorded direction as a keyword after ``arms``, so existing positional callers are
+  unaffected.
+
+- Added ``tests.end2end.reset_std``, which copies a checkpoint with the policy's action
+  noise reopened and nothing else touched. A converged policy and one that has stopped
+  exploring both read as a plateau; resuming from the copy keeps the learned mean
+  behaviour and widens only the search around it, so the two can be told apart.
+
+- Added ``tests.end2end.bridge_delivery``, which walks the robot at the ball, hands
+  over to the bridge, and scores the arrival against a selector entry using the
+  tolerances ``entry_margin`` measured, one column per window the bridge is given.
+  The kick's target is fixed by the ball rather than by the window, so a duration is
+  swept by solving ``crossing_time`` for when to hand over rather than by moving the
+  target. Prints the paired statue baseline alongside, on the same walk and the same
+  hand-over tick.
+
+- Added ``tests.entry_margin``, which measures per channel how far a skill can be
+  displaced at one selector entry and still track its clip. It grades the skill's own
+  body tracking error against the reference rather than against an undisturbed sibling
+  rollout, since the strike is chaotic and two rollouts of one entry part company within
+  half a second. Every case runs as its own env in parallel, over both signs and several
+  random directions, and a limit is read from the bottom of the ladder up. Reports a
+  tolerance per channel in that channel's own unit.
+
+- Added a resumable walk2kick entry 3 experiment with a one second bridge allowance,
+  measured and jointly validated tolerance profiles, whole skill kick finetuning,
+  pinned checkpoint provenance, raw rollouts and a combined before and after report.
+  The finetune's reset widths are read off the baseline measurement rather than
+  configured: each channel is opened to the chosen quantile of the error the bridge
+  actually left there, times a margin, floored so a satisfied channel is still trained
+  and capped so a delivery the skill cannot be trained to absorb is reported instead of
+  producing an untrainable run. The after stage repeats the bridge sweep under the
+  baseline profile as well as its own, since the bridge reads its request and acts on
+  it, so a plain before against after would carry a changed bridge as well as a changed
+  kick. The report ends with the two side by side.
+
+- Transition tests now select hardcoded bridge tolerances by skill and entry frame.
+  Kick entries relax arm position and velocity while retaining strict root and leg
+  limits. Handoff output reports both requested and fixed scores. Explicit tolerance
+  overrides remain available; parkour uses the same profiles.
+
+- The restored bridge samples tolerance profiles independently per target and channel,
+  with a configurable curriculum from broad to tighter requests. Reward, observation
+  and arrival checks share each window's profile. ``open_window``, ``place`` and the
+  handoff wrappers accept explicit physical tolerances. Fixed baseline metrics remain
+  available to compare progress as the requests change. The command stays ``24 + 2J``
+  wide; the shared error based width adaptation is replaced by profile sampling.
+
 .. admonition:: Breaking API changes
    :class: attention
+
+   - The selector's automatic scoring is removed: ``selector.entries``,
+     ``selector.rank`` and ``selector.selector`` are deleted, along with the
+     fitted scorer they produced. ``selector.query`` is renamed to
+     ``selector.reach``; ``nearest``, ``best``, ``Cost`` and ``RateCost`` are
+     gone and ``reach(table, skill, index, state, seconds)`` replaces them.
+     ``stage.Config.mode`` is removed and the entry slider is always shown.
+
+   - ``finetune.Config.position_scale`` and ``velocity_scale`` are replaced by
+     ``finetune.Config.scales``, a per-channel ``Scales``. Checkpoints trained
+     before this used a uniform 4 and 2; the new defaults differ per channel.
 
    - ``CollisionCfg`` now requires ``contype``, ``conaffinity``, ``condim``,
      and ``priority`` to be explicit instead of silently defaulting to
      MuJoCo's values, and dict values for these fields must cover every
      matched geom (add a catch-all ``".*"`` entry).
 
+   - ``Mjlab-G1-Bridge`` has no deadline any more, and its observation changed
+     width from ``17 + 2J`` to ``24 + 2J``. The two clock channels are gone,
+     replaced by the best reward score and eight reward width scales,
+     so existing bridge checkpoints do not load. ``mdp.approach`` and
+     ``mdp.deadline_reached`` are removed; the termination is now
+     ``mdp.out_of_patience``. On the command term, ``deadline`` is ``patience``,
+     ``duration_s`` is ``patience_s``, ``reached`` is gone, ``score`` is now the
+     best moment of the window rather than the state at a deadline, and
+     ``errors_now`` no longer latches anything: ``advance`` does.
+
+   - The bridge observation changes again from ``24 + 2J`` to ``16 + 3J``. The
+     adaptive reward widths are removed and replaced by the target preceding
+     action gap. ``BridgeCommand.open_window`` and ``place`` now require that
+     target action context. Bridge checkpoints from the earlier objective do not
+     load into this task.
+
 Fixed
 ^^^^^
+
+- A recurrent policy driven outside the training loop kept its hidden state across the
+  auto-reset, so it entered every episode after the first remembering the last one. PPO
+  clears it on every done while collecting rollouts and inference did not, which for the
+  bridge means entering a crossing with memory of a different one. ``reset_policy`` in
+  ``mjlab.utils.torch`` is that call, now made by the viewer loop and by the three places
+  that drive a bridge policy in their own loop: ``bridges/evaluate.py``,
+  ``bridges/imitation/evaluate.py`` and ``tests/end2end/error_shapes.py``. No-op for a
+  feedforward model, so nothing else changes.
+
+- Nothing under ``mjlab.tasks`` imported at all. The corpus package was renamed from
+  ``bridges/datasets/`` to ``bridges/dataset/`` without its importers following, so thirteen
+  modules named a package that does not exist and ``import mjlab.tasks`` stopped at the
+  first of them. Paths updated, ``tests/test_bridge_dataset.py`` included.
+
+- The parkour demo ended every course on the way up the first box. Its fall check
+  measured the torso's lean against vertical and gave it 60 degrees, but a climb
+  mount doubles the body over on purpose: the reference itself reaches 78 degrees
+  at frame 147, so a robot tracking the clip correctly was called down at frame
+  133 of 455. The lean is now measured against whatever the traversal's own
+  reference is doing, so the check stays live through a climb instead of being
+  switched off for it. Height is still measured against the world and is what
+  covers a fall off a box.
+
+- The parkour demo could not end a traversal. ``Controller.past`` asks for a metre
+  of floor beyond the obstacle's far face and neither clip covers that: the climb
+  ends 0.13 m past its box and the jump lands with nothing left to travel. So
+  every traversal ran to ``TRAVERSE_PATIENCE`` instead, and 300 steps ran out with
+  the climb's reference still on top of the box, handing the walk a robot up
+  there. A traversal now ends when its clip does, ``past`` stays as the answer for
+  a traversal skill with no clip, and patience is counted past the end of a
+  reference rather than in total.
+
+- The parkour demo's controller had no ``reset``, so the viewer's reset button put
+  the robot back on the start line and left the phase machine where it was: the
+  run carried on from whichever obstacle it had reached, under whichever skill was
+  driving. ``Controller.reset`` restarts the course, and ``Bridge.reset`` forgets
+  the target the last crossing was aimed at.
+
+- Bridge training now terminates and pays a success event at the first
+  simultaneous entry into all fixed state and preceding-action tolerances.
+  Progress uses a long-tail closest score initialized from the actual perturbed
+  start, while imitation shaping and alive reward are removed. Duration and start
+  noise advance only after measured strict success. Reward and termination state
+  is refreshed after the final physics substep, and PPO timeouts bootstrap from
+  the terminal observation captured before auto reset.
+
+- Bridge arrival increments now retain their intended reward amount after timestep
+  scaling. Reward widths remain fixed within each episode, and fixed-tolerance
+  evaluation keeps its own best state. The command observes the actual reward
+  baseline and eight width scales, increasing its width to ``24 + 2J``. Earlier
+  bridge checkpoints require retraining; skill checkpoint layouts are unchanged.
+
+- Selector recordings now retain the preceding action, reference placement, clip
+  identity and scale. Handoffs move the recorded robot and reference together,
+  preserving tracking offsets. Re-run ``selector.record`` and ``selector.build``
+  before using older entries for handoffs. The oracle now uses the same target as
+  the bridge and compares recorded versus outgoing preceding actions.
+
+- The bridge was optimizing the wrong term and never arrived. ``arrival`` was an
+  8 channel kernel under a ``progress ** 3`` ramp, which put most of its mass in
+  the last fifth of a window, and 70% of what was left rode on whichever single
+  channel happened to be worst. The broad ``approach`` term meant to cover the
+  rest of the window collected more than the objective did: at convergence over a
+  12868 iteration run, ``approach`` was worth 0.238 an episode and ``arrival``
+  0.114, ``alive`` alone was worth 0.169, root linear velocity error had not
+  improved since iteration 0 (0.520 to 0.556), and ``Metrics/bridge/arrived`` read
+  0.000 for the whole run. The policy had correctly learned what it was paid for,
+  which was to hover near the target and not fall over.
+
+  ``arrival`` now pays how much the arrival score beat the best already reached
+  this window, so an episode's total is the best arrival the crossing ever
+  managed. It is dense, it has no instant to hit, and it pays nothing for
+  returning to a target already passed, which matters because a target carrying
+  momentum is one the robot cannot stay on: scored at a fixed tick, a crossing
+  that went through the target perfectly three ticks early read as a miss.
+  ``approach`` is deleted rather than reweighted, since the broad early gradient
+  it existed for is what the tolerance curriculum already provides.
+
+  The deadline goes with it. Nothing is scored at an instant, so the policy is no
+  longer told the time and no longer trades accuracy for punctuality; the duration
+  a window's ends were drawn at now only buys ``patience_scale`` times as much
+  patience before an unsuccessful crossing is abandoned. How long a crossing takes
+  became an output, reported as ``Metrics/bridge/arrival_s``.
+
+- The transition viewer still had a ``duration_s`` slider and a "solve the
+  duration" checkbox, which now offered a window the bridge is not given. Both
+  are gone from the panel, and the lines the run prints no longer say the bridge
+  gets a number of seconds: a duration still places a target that nothing else
+  fixes and still buys patience, so it is reported as how far ahead the target was
+  placed. ``Run.verdict`` dropped its "outside the range it trained on" clause for
+  the same reason and keeps the acceleration check, which was always physics.
+  ``Config.duration_s`` stays for a run that wants to pin it.
+
+- A hand-over fired on the clock rather than on the crossing. ``Bridge.done`` and
+  the transition arena both switched skills when the window's last tick elapsed,
+  which handed over at the same moment whether the bridge had arrived or not. Both
+  now end the bridge phase on arrival or on patience running out, and say which:
+  ``Bridge.succeeded`` is the branch a controller should read, and the demo prints
+  ``arrived`` or ``gave up`` with the best score it managed.
+
+- ``BridgeCommand`` only updated itself from a reward term, so in the transition
+  arena and the parkour demo, neither of which has a bridge reward manager, none
+  of it ran. That was survivable while the state it kept was only reported; it is
+  not now that the best score of the window is half of what the policy reads, so
+  ``_update_command`` calls ``advance`` too and the call is idempotent within a
+  step. The tolerance curriculum is off wherever there is no corpus, which is
+  inference, so the observed score means the same thing there as in training.
 
 - A static box from ``get_box_cfg`` floated half its own height above the ground.
   ``get_box_spec`` lifted the geom by half a height inside the body so that a box
@@ -27,6 +857,89 @@ Fixed
 
 Added
 ^^^^^
+
+- ``skills.finetune``, which widens a tracking skill's reset noise and continues
+  training it, so the skill survives being handed a robot instead of resetting into
+  one. The reset already places the robot on the reference plus noise, and that noise
+  was far narrower than what a hand-over delivers: measured at kick entry 3, the
+  bridge misses the worst leg joint by 4.3 arrival tolerances while the reset perturbs
+  it by 0.5 and the skill stops working past 2. Noise width is one knob per group in
+  multiples of the arrival tolerances, ramped from the task's own values, with the
+  task's curricula pinned at the stage the loaded checkpoint was trained at rather
+  than rewound to their first stage. Nothing else about the task changes, so a
+  finetuned skill stays independent of any bridge.
+
+- ``joint_velocity_range`` on ``JumpCommandCfg``, joint velocity written at reset on
+  top of the reference's own. Zero by default, which is what every tracking task had
+  before: joint velocity was the one channel a reset never perturbed, and it is one a
+  hand-over cannot deliver.
+
+- ``--kick-checkpoints`` in the fixed entry walk2kick transitions script, which runs
+  the whole sweep against several kick policies and records which one each trial used.
+  A robustness finetune is then read as the difference between two groups of otherwise
+  identical trials, controls included.
+
+- Skill finetuning takes one noise scale per bridge channel instead of one for
+  positions and one for velocities, defaulted to what the bridge measurably delivers
+  at kick entry 3. Root orientation drops to twice its tolerance, which is the pitch
+  limit, so the ramp stops over-stressing the channel the robot actually falls in.
+
+- ``tests.transitions.walk2kick_robust_test`` loads a baseline and a finetuned kick
+  together and adds a dropdown to swap between them plus a slider to pin the switch
+  instant, so two policies can be watched on the same crossing. ``stage.main`` takes
+  an optional panel hook and ``Run.switch_at`` is mutable where ``Config.auto`` is not.
+
+- The selector no longer chooses an entry. ``selector.query`` is now ``selector.reach``
+  and reports what a named entry would cost to reach, in table order, without ranking
+  anything. The parkour demo names its entry per skill in ``controller.ENTRIES`` and the
+  staging arena puts it on a slider, so ``stage.Config.mode`` is gone and manual is the
+  only behaviour. ``nearest`` and ``best`` are removed.
+
+- Group scoped joint disturbances in the resumption benchmark. ``leg_joint_pos``,
+  ``leg_joint_vel``, ``arm_joint_pos`` and ``arm_joint_vel`` use the bridge arm mask
+  and default to the bridge arrival tolerance for that channel, so a scale is a
+  multiple of the requirement. Every trial also records the eight bridge channel
+  errors it injected. ``benchmarks.tolerance`` turns a sweep into the per-channel
+  displacement the next skill actually survives, graded on outcome quality rather
+  than the skill's own generous success bar.
+
+- ``benchmarks.objective``, an offline audit of the bridge arrival objective against
+  recorded crossings. Reports per channel how close it ever got, where it ended, and
+  what share of the reward's sensitivity it carries, alongside the same share under
+  the potential in ``objective-proposal.md``. ``--relax`` rescores against multiplied
+  tolerances.
+
+- ``--repair-channels`` in the fixed entry walk2kick transitions script. Replays a real
+  bridge crossing, puts the named channels back on target and leaves every other error
+  as the bridge produced it, which separates a channel that caused a bad handoff from
+  one that came along with it.
+
+- Restricted bridge capability benchmark with fixed start and target pairs,
+  recorded action reachability controls, isolated training runs and evaluation
+  on reserved starts. The kick package builds cases for selector entry 3.
+
+- Reusable skill resumption benchmarks with shared disturbance and action-sensitivity
+  trials, separate climb and kick outcome evaluators, paired replay checks, saved
+  trajectories and summaries that distinguish baseline failures from incomplete runs.
+
+- ``tests.resumption`` compares uninterrupted skill execution with reconstruction
+  of its entry in the same environment, reporting observation, action and motion
+  differences. It supports kick and climb without a bridge checkpoint.
+
+- A Record box in the Viser viewer's Controls tab writes the episode to an mp4
+  while it plays, so ``play`` and the transition scripts under
+  ``bridging/experiments/humanoid/tests`` can produce a video without a rerun. The
+  panel holds the output folder, a frame size and one button; the file is
+  ``<folder>/<name>-<timestamp>.mp4``, under the run's ``videos/play`` for
+  ``play`` and under ``videos/`` for a transition. This is separate from
+  ``play --video``, which records a fixed number of steps from the start with no
+  way to say when.
+
+  Frames come from an offscreen MuJoCo camera rather than from the browser, so
+  they carry the debug visualizers (the bridge's target ghost, the entry states)
+  and cost a few ms each. They are taken on sim time rather than wall clock, so
+  the file plays back at real speed however slowly the viewer runs, and the speed
+  buttons record as slow motion or fast forward.
 
 - ``Mjlab-G1-Climb`` is a new skill: the G1 climbs onto a 0.65 m box, crosses it
   and steps down the far side, tracking one OmniRetarget clip. Getting on and

@@ -114,6 +114,19 @@ class Entry:
   reference: np.ndarray | None = field(default=None, compare=False)
   motion_file: str = ""
   motion_scale: float = 1.0
+  segment: np.ndarray | None = field(default=None, compare=False)
+  """(K, 13 + 2J) the frames this skill passed through just before this one.
+
+  What the bridge merges onto. The entry is the last of them, so a bridge that rides this
+  segment arrives already carrying the motion the skill is about to continue, and the
+  hand-over is continuous because the two sides are literally the same motion rather than
+  two motions blended at a seam.
+
+  Earliest first, contiguous in one rollout. None where the recording does not reach back
+  far enough, which is an entry too near the start of its own clip to have a run-up."""
+  segment_bodies: np.ndarray | None = field(default=None, compare=False)
+  """(K, B, 3) the same frames as body positions in the root frame. What the merge reward
+  is measured in. See bridge.dataset.dataset.bodies."""
 
   @property
   def why(self) -> str:
@@ -253,6 +266,8 @@ class EntryTable:
         reference=raw["reference"][i] if "reference" in raw else None,
         motion_file=str(raw["motion_file"][i]) if "motion_file" in raw else "",
         motion_scale=float(raw["motion_scale"][i]) if "motion_scale" in raw else 1.0,
+        segment=raw["segment"][i] if "segment" in raw else None,
+        segment_bodies=raw["segment_bodies"][i] if "segment_bodies" in raw else None,
       )
       for i in range(raw["states"].shape[0])
     )
@@ -286,6 +301,15 @@ class EntryTable:
         [e.motion_scale for e in self.entries], dtype=np.float32
       ),
     }
+    # All or nothing. A table where some entries carry a merge and others do not would
+    # have the bridge silently fall back to the point target on the ones that do not
+    if all(e.segment is not None for e in self.entries):
+      columns["segment"] = np.stack(
+        [e.segment for e in self.entries if e.segment is not None]
+      ).astype(np.float32)
+      columns["segment_bodies"] = np.stack(
+        [e.segment_bodies for e in self.entries if e.segment_bodies is not None]
+      ).astype(np.float32)
     for column in COLUMNS:
       columns[column] = np.asarray(
         [getattr(e, column) for e in self.entries], dtype=np.float32

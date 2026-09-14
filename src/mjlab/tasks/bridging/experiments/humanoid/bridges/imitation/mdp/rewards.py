@@ -82,7 +82,10 @@ def arrival(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
 
 
 def guidance(
-  env: ManagerBasedRlEnv, command_name: str, tolerance_scale: float = 4.0
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  tolerance_scale: float = 4.0,
+  bottleneck_weight: float = 0.2,
 ) -> torch.Tensor:
   """How near the robot is to the crossing the tracker recorded across this window.
 
@@ -96,8 +99,14 @@ def guidance(
   crossing is often unreachable from where the robot actually is. A term that scored it
   would pay for imitating one answer instead of for arriving.
 
-  Deliberately wide and light: tolerance_scale times the requirements, and the approach
-  bottleneck weight. A hint about a whole motion, not a requirement about a state.
+  Deliberately wide and light at the defaults: tolerance_scale times the requirements, and
+  a bottleneck weight well under the arrival term's. A hint about a whole motion, not a
+  requirement about a state.
+
+  Both are arguments for shaping a policy that will end up with no reference. A teacher
+  that keeps the reference forever wants neither: tighten tolerance_scale toward 1 and
+  raise bottleneck_weight, and the term stops being a hint and becomes a tracking
+  objective. bridges/distillation does exactly that.
 
   Measured against the fixed requirements, not the reward curriculum. The two arrival
   terms chase terminal accuracy and should sharpen as the policy does. This one asks
@@ -114,7 +123,7 @@ def guidance(
     return torch.zeros(env.num_envs, device=env.device)
   errors = channel_errors(command.state_now(), command.reference_now(), command.arms)
   score = arrival_score(
-    errors, command.tolerances * tolerance_scale, bottleneck_weight=0.2
+    errors, command.tolerances * tolerance_scale, bottleneck_weight=bottleneck_weight
   )
   return scale * score * command.has_reference
 

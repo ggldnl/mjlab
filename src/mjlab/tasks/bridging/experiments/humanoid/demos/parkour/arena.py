@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import copy
 import math
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Literal
@@ -50,8 +50,10 @@ import torch
 from mjlab.entity import EntityCfg
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
-from mjlab.tasks.bridging.experiments.humanoid.bridge.env_cfg import bridge_env_cfg
-from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp import BridgeCommandCfg
+from mjlab.tasks.bridging.experiments.humanoid.bridges import BridgeSpec
+from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.mdp import (
+  BridgeCommandCfg,
+)
 from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.course import (
   Color,
   Course,
@@ -66,7 +68,7 @@ from mjlab.tasks.bridging.experiments.humanoid.tests.stage import (
   BRIDGE_GROUP,
   ROBOT,
   Actor,
-  AimedCfg,
+  aimed_cfg,
 )
 from mjlab.tasks.registry import load_env_cfg
 
@@ -313,10 +315,11 @@ def course_env_cfg(
   actors: tuple[Actor, ...],
   course: Course,
   focus: Focus,
+  bridge: BridgeSpec,
   scored: str | None = None,
   supplied: tuple[str, ...] = SUPPLIED,
 ) -> ManagerBasedRlEnvCfg:
-  """The bridge's play environment, with every skill's machinery and the course in it.
+  """The chosen bridge's play environment, with every skill's machinery and the course in it.
 
   `focus` is handed to the climb's obstacle observation, so the skill reads whichever
   obstacle the controller points it at. Passed in rather than made here because the
@@ -325,17 +328,19 @@ def course_env_cfg(
   `scored` names one skill whose reward terms are carried, so a hand-over into it can be
   judged the way the selector judged an entry. One skill and not all of them, because a
   reward manager is built once and a course has many entering skills.
+
+  `bridge` says which architecture the course is built on. Its play config decides the robot,
+  the terrain and the observation the bridge policy reads, so the skills are untouched by it.
   """
-  cfg = bridge_env_cfg(play=True)
+  assert bridge.env_cfg is not None  # resolve refuses a stub before it gets here
+  cfg = bridge.env_cfg(play=True)
 
   # The bridge command with its target supplied from outside instead of drawn from a corpus.
-  # Same fields, so the policy reads what it trained on
+  # Derived from whatever window the chosen architecture declares, so an architecture that
+  # subclasses it keeps its own fields and its own command here
   trained = cfg.commands["bridge"]
   assert isinstance(trained, BridgeCommandCfg)
-  aimed = {f.name: getattr(trained, f.name) for f in fields(trained)}
-  aimed["debug_vis"] = True
-  aimed["dataset_path"] = None
-  cfg.commands["bridge"] = AimedCfg(**aimed)
+  cfg.commands["bridge"] = aimed_cfg(trained)
   cfg.observations = {BRIDGE_GROUP: cfg.observations["actor"]}
 
   # A fall is the result of the demo, not an error to recover from, and a reset mid-course

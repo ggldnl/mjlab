@@ -1,6 +1,6 @@
 """Bridge MDP terms: commands (the window), rewards, terminations."""
 
-from mjlab.tasks.bridging.experiments.humanoid.bridges.datasets.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.dataset import (
   ROOT_STATE_DIM as ROOT_STATE_DIM,
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.mdp.commands import (

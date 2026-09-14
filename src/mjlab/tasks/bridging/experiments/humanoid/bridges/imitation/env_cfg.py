@@ -54,7 +54,7 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
-from mjlab.tasks.bridging.experiments.humanoid.bridges.datasets.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.dataset import (
   DEFAULT_DATASET,
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation import mdp

@@ -35,7 +35,7 @@ import torch
 from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
-from mjlab.tasks.bridging.experiments.humanoid.bridges.datasets.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.dataset import (
   DEFAULT_DATASET,
   ROOT_STATE_DIM,
   Dataset,
@@ -64,6 +64,19 @@ CHANNELS = (
   "arm_joint_vel",
 )
 """The 8 ways an arrival can be wrong. See the module header for why they stay apart."""
+
+UNITS: dict[str, str] = {
+  "root_pos": "m",
+  "root_ori": "rad",
+  "root_lin_vel": "m/s",
+  "root_ang_vel": "rad/s",
+  "leg_joint_pos": "rad",
+  "leg_joint_vel": "rad/s",
+  "arm_joint_pos": "rad",
+  "arm_joint_vel": "rad/s",
+}
+"""What each channel is measured in. Lives beside CHANNELS because everything that reports
+a channel needs it, and two copies would be two chances to mislabel a number."""
 
 ARM_JOINT = re.compile(r"(shoulder|elbow|wrist)")
 """What counts as an arm. Everything else, legs and waist alike, is the supporting chain."""
@@ -124,7 +137,7 @@ class Tolerances:
 
   Not the requirement any more, only the unit it is quoted in. What training asks for is
   core_band and support_band, in multiples of these numbers, and two of these values no
-  longer cover the one skill that has been measured: entry_margin at 8 directions puts the
+  longer cover the one skill that has been measured: skills.tolerance at 8 directions puts the
   kick at 0.041 m and 0.101 m/s, under the 0.05 and 0.15 here. Left alone deliberately.
   Moving the baseline moves the observation scaling and the fixed_ metrics with it, so no
   run would be comparable to any earlier one; the band floor of 0.6x reaches 0.030 m and
@@ -156,7 +169,7 @@ class Tolerances:
   This was the one channel declared looser than a skill turned out to accept: at 1.50 a
   bridge could meet the requirement and still hand over a robot that does not track.
 
-  Both leg bounds sit a fifth below what tests.end2end.entry_margin measured on the kick,
+  Both leg bounds sit a fifth below what skills.tolerance measured on the kick,
   which held its clip at 0.10 rad and 1.00 rad/s and left it by 0.15 and 1.50. So the
   measured values were the last rung that passed rather than the edge of anything, and
   they were measured one channel at a time. The margin is for the eight moving together,
@@ -249,9 +262,24 @@ def arrival_score(
       average      every channel at once, so a policy that is bad everywhere still knows
                    which way to move
 
-  The four joint channels outweigh the four root ones in the average. One root state can
-  be reached by many postures, so the root channels are the easy half, and left equal they
-  are where the policy spends its capacity.
+  The average weights the eight by what a hand-over actually needs, root before legs before
+  arms, 6 to 3 to 1. Read the ordering off skills/tolerance: the kick at entry 3 accepts
+  0.8 rad on its worst arm joint without leaving its clip and 0.10 m/s on its root linear
+  velocity, a difference of two orders of magnitude in how much each channel is worth. A
+  hand-over is a body arriving somewhere carrying something; where the hands are is the
+  part the next skill can fix for itself.
+
+  This replaced the reverse ordering, which gave the joint channels 2.0 and 1.5 against the
+  root's 1.0 on the argument that the root is reachable from many postures and would
+  otherwise be solved first. That argument is about which channel is easy, not about which
+  one matters, and the measurement settled it: against the kick's measured envelope, root
+  linear velocity is the channel furthest outside on 74% of crossings and the two arm
+  channels on none of them, while the weights had the arms at four times the root.
+
+  Scores are not comparable across this change, the same way they were not across the
+  logarithm below. A crossing with every channel exactly on its limit still reads 0.591,
+  since the weights are normalised by their own sum, but any crossing that is uneven across
+  the channels moves.
 
   The logarithm is the whole point and it replaced a per channel exp(-z^2). That kernel is
   flat to machine zero a few tolerances out, and a trained bridge was leaving six
@@ -264,7 +292,8 @@ def arrival_score(
   Scores are not comparable across that change. A crossing with every channel exactly on
   its limit used to read 0.368 and now reads 0.591.
   """
-  weights = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0, 1.5, 2.0, 1.5], device=errors.device)
+  # Root, legs, arms at 6 to 3 to 1. In CHANNELS order
+  weights = torch.tensor([3.0, 3.0, 3.0, 3.0, 1.5, 1.5, 0.5, 0.5], device=errors.device)
   reach = torch.log1p(errors / tolerances)
   distance = (
     bottleneck_weight * reach.amax(dim=-1)
@@ -521,6 +550,30 @@ class BridgeCommand(CommandTerm):
     return self.step >= self.patience
 
   @property
+  def in_landing(self) -> torch.Tensor:
+    """Whether this step is one the arrival may be scored on. (num_envs,) bool.
+
+    Everything, when landing_s is None, which is the behaviour this grew out of: the best
+    moment of the whole window counts, whenever it happens.
+
+    With a band, only the steps within landing_s of the duration the window asked for. The
+    policy already reads that duration on its clock, so a band is what makes the clock mean
+    something: before it, the reward agreed that arriving at any moment was equally good,
+    while the observation carried a deadline nothing enforced.
+
+    Symmetric, not one-sided. A target carries momentum, so it is a state the robot passes
+    through and not one it can sit in, and a crossing that went through it perfectly three
+    ticks early is a good crossing. What the band rules out is the other three tenths of the
+    patience overrun, where an arrival is not early or late but untimed.
+    """
+    if self.cfg.landing_s is None:
+      return torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+    slack = self.steps_for(torch.tensor(self.cfg.landing_s, device=self.device))
+    return (self.step >= self.window_steps - slack) & (
+      self.step <= self.window_steps + slack
+    )
+
+  @property
   def score(self) -> torch.Tensor:
     """Best fixed-tolerance score reached this window, zero before scoring."""
     return self.fixed_best
@@ -685,19 +738,30 @@ class BridgeCommand(CommandTerm):
     errors = channel_errors(self.state_now(), self.target, self.arms)
     self._check_tolerances(errors)
 
-    score = arrival_score(errors, self.window_tolerances)
-    improvement = (score - self.best).clamp(min=0.0)
-    fixed_score = arrival_score(errors, self.tolerances)
-    better = (fixed_score > self.fixed_best) | ~self._has_scored
-    self._has_scored[:] = True
+    # Which environments may be scored this step. Everything, unless a landing band is
+    # configured. See in_landing
+    landing = self.in_landing
+    first = ~self._has_scored
 
-    self.best = torch.maximum(self.best, score)
-    self.fixed_best = torch.maximum(self.fixed_best, fixed_score)
-    self.arrived = torch.maximum(
-      self.arrived, arrived(errors, self.window_tolerances).float()
+    score = arrival_score(errors, self.window_tolerances)
+    improvement = (score - self.best).clamp(min=0.0) * landing
+    fixed_score = arrival_score(errors, self.tolerances)
+    better = landing & (first | (fixed_score > self.fixed_best))
+    self._has_scored |= landing
+
+    self.best = torch.where(landing, torch.maximum(self.best, score), self.best)
+    self.fixed_best = torch.where(
+      landing, torch.maximum(self.fixed_best, fixed_score), self.fixed_best
     )
-    self.fixed_arrived = torch.maximum(
-      self.fixed_arrived, arrived(errors, self.tolerances).float()
+    self.arrived = torch.where(
+      landing,
+      torch.maximum(self.arrived, arrived(errors, self.window_tolerances).float()),
+      self.arrived,
+    )
+    self.fixed_arrived = torch.where(
+      landing,
+      torch.maximum(self.fixed_arrived, arrived(errors, self.tolerances).float()),
+      self.fixed_arrived,
     )
 
     # The errors and the step of the best moment, so every reported number describes one
@@ -706,7 +770,11 @@ class BridgeCommand(CommandTerm):
     now = self.state_now()
     q = slice(ROOT_STATE_DIM, ROOT_STATE_DIM + self.num_joints)
     qd = slice(ROOT_STATE_DIM + self.num_joints, ROOT_STATE_DIM + 2 * self.num_joints)
-    wide = better.unsqueeze(-1)
+    # Latched at the best scored moment once there is one, and following the live errors
+    # until then. Without the second half an episode that fell before its band opened would
+    # report the zeros _open left behind, which read as a perfect arrival
+    show = better | first
+    wide = show.unsqueeze(-1)
     self.final = torch.where(wide, errors, self.final)
     self.final_joint_pos = torch.where(
       wide, (now[:, q] - self.target[:, q]).abs(), self.final_joint_pos
@@ -1350,6 +1418,34 @@ class BridgeCommandCfg(CommandTermCfg):
   conversion.
   """
 
+  landing_s: float | None = None
+  """How near the asked duration an arrival has to be to count, in seconds, or None for
+  anywhere in the window.
+
+  None is what this task has always done and what imitation still does: the best moment of
+  the whole window is the score, whenever it happened. That was argued from the target
+  carrying momentum, which makes it a state the robot passes through rather than one it can
+  sit in, so a fixed instant would read a perfect crossing three ticks early as a miss.
+
+  The argument is sound and the conclusion overshot. It also handed the policy the whole
+  patience overrun, 1.5 times the duration, with no reason to hit the mark at the time it
+  was asked for, while the observation carried a clock counting down to a deadline nothing
+  enforced. A band keeps the protection and removes the rest.
+
+  Measured on the first full distillation run before any band existed: the best moment
+  landed at 1.02 times the asked duration in the median, p10 0.94 and p90 1.19, and scoring
+  at exactly the asked duration instead of at the free best moment moved the aggregate from
+  0.406 to 0.394. So the freedom was not being exploited by that policy, which is not the
+  same as saying a policy trained without it would be no better: the same run put each
+  channel's own minimum a median of 4 to 8 control steps away from the scored instant, and a
+  band is what forces the eight to coincide.
+
+  Interacts with the shortest windows. 0.15 s is 8 control steps, which is half of a 0.3 s
+  crossing and an eighth of a 1.2 s one, so the band is loose for short windows by
+  construction. That is a statement about how short those crossings are, not a defect: a
+  hand-over's timing slack is physical and does not scale with how long the approach took.
+  """
+
   patience_scale: float = 1.5
   """How much longer than the drawn duration a window is allowed to run.
 
@@ -1377,7 +1473,7 @@ class BridgeCommandCfg(CommandTermCfg):
   core_band: tuple[float, float] = (4.0, 0.6)
   """Widest and tightest multiple of the baseline asked of root and legs, in that order.
 
-  0.6 is the floor because it is what the one measured consumer needs. entry_margin at 8
+  0.6 is the floor because it is what the one measured consumer needs. skills.tolerance at 8
   directions puts the kick at entry 3 at 0.67 times the baseline on root_lin_vel, which is
   the binding channel; 0.6 clears it, and clears root_pos at 0.82 with room to spare.
 

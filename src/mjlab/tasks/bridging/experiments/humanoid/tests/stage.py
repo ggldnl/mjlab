@@ -11,6 +11,54 @@ Run:
     # headless, firing the switch on step 120 instead of waiting for a button
     uv run python -m ...transitions.walk2jump --viewer none --auto 120
 
+    # which architecture crosses. Any of the three, on any couple
+    uv run python -m ...transitions.walk2kick --bridge distillation
+
+    # only this one, instead of loading every architecture into the dropdown
+    uv run python -m ...transitions.walk2kick --bridges "('imitation',)"
+
+    # which policies drive. One flag per skill of the couple, plus the bridge's
+    uv run python -m ...transitions.walk2kick --kick-checkpoint logs/rsl_rl/g1_kick/x/model_1.pt
+
+Three flags make two runs comparable, and a formal test sets all three. `--bridge` fixes
+the architecture, `--entry` fixes the state being crossed to, and the third fixes the state
+being crossed from, because pressed by hand the button lands on a different stride every
+time and the bridge starts from a different velocity and phase.
+
+What that third flag is depends on whether the entering skill has an object, and the
+difference is not cosmetic. A skill with one is entered at a *place*: `Actor.arrive` says
+where the robot has to stand for the swing to meet the ball, the ball does not move, and so
+the whole of choosing when is walking onto that spot. `--fire-at` says how far before it to
+fire and `--duration-s` says how long the bridge then gets, and both are read off the same
+line the viewer counts down.
+
+    uv run python -m ...transitions.walk2kick --bridge imitation --entry 3 \
+        --fire-at 0.5 --duration-s 0.6
+
+A step is the wrong handle for that skill and was being used as one. `--auto 130` lands
+wherever two and a half seconds of walking happened to put the robot, which moves with the
+commanded speed, with where the ball spawned and with how much turning the approach needed,
+so two runs differing only in approach speed were crossing from different places. Firing
+half a metre out means the same thing in both.
+
+For a skill with nothing on the floor there is no spot, so `--auto` is still the handle and
+still fixes the control step.
+
+    uv run python -m ...transitions.walk2jump --bridge imitation --entry 3 --auto 130
+
+Under a viewer all of it is on the panel: the `bridge` dropdown, the `entry` slider, and
+then either `fire at, m` with `window, s` or `switch step`, whichever the couple takes. The
+switch stays on the button until the checkbox beside them is turned on, which for a skill
+with an object it is by default.
+
+Every architecture that has a checkpoint is loaded, not only the one that drives, so the
+dropdown swaps which one crosses without rebuilding anything. They can share one arena
+because they differ in their window term and their observation and in nothing else: one
+robot, one floor, one action convention, one corpus. The swap lands at the next hand-over
+rather than immediately, since one architecture's opening and another's follow through are
+not a crossing anybody performed, and the Active line names whoever is driving. An
+architecture with no code or no checkpoint is dropped with a line saying which.
+
 Three phases:
 
     leaving    the first skill drives, steered from the panel
@@ -18,21 +66,21 @@ Three phases:
     entering   the second skill drives, from wherever the bridge left the robot
 
 The viewer's Active line names whoever is driving, a skill by its own name or "bridge".
+Each selected entry requests the profile in tests/entry_tolerances.py. Override one channel
+with --tolerances.arm-joint-pos 0.1; other channels keep that entry's values. The profile
+is frozen when the crossing starts and used by the bridge's arrival check at handoff.
 From the moment a target is chosen a translucent robot stands in it and stays there after
 the hand-over, so the gap to the real robot is the arrival error. Scene > Debug Viz >
 Bridge turns it off.
 
 The target is a single state: a pose, a height, a tilt, joint angles and every velocity at
 one instant, which is what the bridge trains on. It comes off the entering skill's table in
-the selector package, and `--mode` says who picks it:
+the selector package, and the `entry` slider says which one, over the whole of that skill's
+window, in the order selector.view draws it.
 
-    auto     the selector does, every step. The entry easiest to reach from where the robot
-             is right now. No slider: nothing to choose
-    manual   the `entry` slider does, over the whole of that skill's window, in the order
-             selector.view draws it
-
-auto is what the selector is for and what a controller would call. manual is for looking at
-one particular posture, including the ones the ranking would never reach for.
+Choosing is the point of the arena, so nothing chooses for you. The selector used to rank
+the entries by reachability and hand back the easiest; that answer is gone, and what is
+left is the effort of whichever entry you asked for, printed beside it.
 
 The rest of that skill's window is drawn with it, paler, and that is the difference from a
 target standing on its own. An entry is one moment of a sequence, so the whole sequence is
@@ -120,6 +168,49 @@ measure what a hand-over is worth, before spending a bridge on it:
     uv run python -m mjlab.tasks.bridging.experiments.humanoid.tests.handoff
 
 ##
+# The seam, which no score in here reports
+##
+
+A hand-over can be correct and still look wrong, and until recently every one staged here
+did. A joint position target is default + scale * action, so the action a policy emits is
+the PD setpoint; when the driver changes, the setpoint jumps by whatever the two policies
+disagree about, in a single control step, and the actuators answer with a torque spike.
+Measured on walk2kick at entry 3 that jump was three times the median change of the steps
+around it, and up to thirteen times on the arrangement the end2end testbench started from.
+
+Nothing else in this file sees it. The arrival score measures a state, the entering skill's
+discounted return measures the seconds after, and both are blind to one bad step: across a
+full ablation on walk2kick every crossing struck the ball while the seam varied by a factor
+of seventeen. `--seam` is the only view of it. It prints the steps either side of the switch
+and the switch step against its own neighbours.
+
+Three settings, and they cure two different things:
+
+    blend_steps   ramp out of the parting policy's last action over this many steps. The
+                  action seam. Two policies fitted separately can agree about the state and
+                  still disagree about what to command in it, and nothing handed across the
+                  switch makes them agree, so the disagreement is spent over several steps
+                  instead of one. Applied at both switches, not only the hand-over
+    count_in      walk the entering tracker's clip up to its entry frame during the crossing
+                  so it arrives there as control changes. The observation seam. Left off, the
+                  clip plays on for the length of the window and is rewound at the hand-over,
+                  which steps 29 reference angles, 29 reference rates, the phase and the
+                  anchor error at once
+    seam          measure it
+
+What the action manager is left holding is the third piece and it needs no setting, because
+this file already does the right thing by doing nothing: `resume` never writes the action
+manager, so the entering skill reads the bridge's last action, which is the setpoint the
+joints are actually tracking. Writing the entry's own recorded action there instead, which
+looks like the tidier choice, is worse: it is consistent with the recording and inconsistent
+with the robot that was delivered, and it measured twice the seam.
+
+Both defaults are on. Turn them off to see what they fix:
+
+    uv run python -m ...transitions.walk2kick --viewer none --auto 130 --entry 3 \
+        --seam True --blend-steps 0 --count-in False
+
+##
 # Two things that are easy to get wrong
 ##
 
@@ -141,9 +232,10 @@ is pinned to where the robot is supposed to be. Whatever gap is left is the real
 from __future__ import annotations
 
 import copy
-from dataclasses import asdict, dataclass, field, fields, replace
+from dataclasses import asdict, dataclass, field, fields, make_dataclass, replace
+from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Literal, NamedTuple
+from typing import Annotated, Any, Callable, Literal, NamedTuple, cast, get_type_hints
 
 import mujoco
 import numpy as np
@@ -154,14 +246,19 @@ from mjlab.entity import Entity, EntityCfg
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
-from mjlab.tasks.bridging.experiments.humanoid.bridge import BRIDGE_TASK_ID
-from mjlab.tasks.bridging.experiments.humanoid.bridge.env_cfg import (
-  bridge_env_cfg,
+from mjlab.tasks.bridging.experiments.humanoid.bridges import (
+  BRIDGE_KINDS,
+  DEFAULT_BRIDGE,
+  BridgeKind,
+  BridgeSpec,
+  resolve,
 )
-from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.mdp import (
+  CHANNELS,
   ROOT_STATE_DIM,
   BridgeCommand,
   BridgeCommandCfg,
+  Tolerances,
   arrival_score,
   channel_errors,
 )
@@ -169,13 +266,24 @@ from mjlab.tasks.bridging.experiments.humanoid.selector import (
   Entry,
   EntryTable,
   Reach,
-  nearest,
+  reaches,
 )
-from mjlab.tasks.bridging.experiments.humanoid.selector.query import (
-  lines as ranking_lines,
+from mjlab.tasks.bridging.experiments.humanoid.selector import resume as entry_resume
+from mjlab.tasks.bridging.experiments.humanoid.selector.reach import (
+  lines as entry_lines,
 )
 from mjlab.tasks.bridging.experiments.humanoid.selector.table import (
   TABLE_PATH,
+)
+from mjlab.tasks.bridging.experiments.humanoid.selector.table import (
+  Entry as RecordedEntry,
+)
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.mdp.commands import (
+  JumpCommand,
+)
+from mjlab.tasks.bridging.experiments.humanoid.tests.entry_tolerances import (
+  ToleranceOverrides,
+  entry_tolerances,
 )
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.utils.lab_api.math import quat_apply, quat_conjugate, quat_mul, yaw_quat
@@ -207,10 +315,11 @@ The horizon a hand-over is judged over. Nothing in the selector fixes it, becaus
 the selector scores a hand-over: it says where a skill can be entered and stops there."""
 
 DEFAULT_DURATION_S = 0.6
-"""The window a hand-over gets when nothing more specific says, in seconds.
+"""How far ahead a target is placed when nothing more specific says, in seconds.
 
-Near the middle of what the bridge trained on. A couple that sheds or builds more momentum
-than most says so itself, and `Config.duration_s` overrides both."""
+Near the middle of how far apart the corpus cuts a pair, which is where the entry states a
+crossing has to reach were measured. A couple that sheds or builds more momentum than most
+says so itself, and `Config.duration_s` overrides both."""
 
 PROBE_S = 1.0
 """The window entries are ranked over, in seconds.
@@ -218,6 +327,23 @@ PROBE_S = 1.0
 An effort is a required rate over an achievable one, so it scales with 1/seconds and the
 probe decides the numbers rather than the order: the ranking is the same at 0.3 s and at
 1.2 s. One second, because that makes an effort read as the seconds the entry needs."""
+
+DEFAULT_SWITCH_STEP = 130
+"""Where the panel's switch step starts when nothing asked for one, in control steps.
+
+The timing transitions/walk2kick measures, which is a walk-up of about two and a half
+seconds. It is a starting point for the slider and nothing reads it otherwise: the switch
+stays on the button until the checkbox beside it is turned on."""
+
+SWITCH_STEP_MAX = 400
+"""How far out the panel's switch step reaches, in control steps. Eight seconds at 50 Hz,
+which is longer than any approach here and short enough that the slider still resolves a
+single stride. A larger --auto widens it rather than being clamped to it."""
+
+SMOOTH_S = 0.30
+"""Time constant of the root velocity the steering and the switch are decided on, in
+seconds. About half a stride: long enough that the swing and stance halves of a step average
+out, short enough that it still follows the walk turning onto the spot."""
 
 MAX_ACCEL = 3.0
 """What a humanoid root sustains, in m/s^2, roughly.
@@ -387,13 +513,13 @@ class Couple:
   entering: Actor
 
   duration_s: float | None = None
-  """How long the bridge gets, in physical seconds, or None to take it from the entry itself.
+  """How far ahead this couple places its target, in physical seconds, or None to solve it.
 
-  None is the right default now that an entry carries its own duration: a crouch and a stand
-  are not equally far from wherever a walk leaves the robot, and a selector that hands back a
-  state without a time has only answered half the question. Set it per couple to override,
+  None is the right default now that an entry carries its own figure: a crouch and a stand
+  are not equally far from wherever a walk leaves the robot. Set it per couple to override,
   which is a real decision worth making by hand when one pair sheds more momentum than the
-  entry's own figure assumed."""
+  entry's own figure assumed. See `Config.duration_s` for why this is not a window the
+  bridge is given."""
 
   overshoot: float = 0.0
   """This couple's measured overshoot. See `Config.overshoot` for what it means and how to
@@ -461,15 +587,30 @@ class Aimed(BridgeCommand):
     """
     return (self._env.episode_length_buf - self._opened).clamp(min=0)
 
-  def open_window(self, env_ids: torch.Tensor, duration_s: torch.Tensor) -> None:
+  def open_window(
+    self,
+    env_ids: torch.Tensor,
+    duration_s: torch.Tensor,
+    previous_action: torch.Tensor | None = None,
+    *,
+    tolerances: Tolerances | torch.Tensor | None = None,
+  ) -> None:
     """Start the clock on a target that was placed from outside.
 
     The base class does everything except note when the window opened, which it has no need
     of: in training a window is an episode and the environment's own counter is the clock.
     See `step` for why that is not true here.
+
+    previous_action is what the entering skill last did. place writes it from the dataset
+    when it teleports; a live hand-over teleports nobody and still has to, or the last
+    action the policy reads is the leaving skill's. None leaves it alone, and so does a
+    probe env with no action manager, which is what the unit tests drive this with.
     """
-    super().open_window(env_ids, duration_s)
+    super().open_window(env_ids, duration_s, tolerances=tolerances)
     self._opened[env_ids] = self._env.episode_length_buf[env_ids]
+    actions = getattr(self._env, "action_manager", None)
+    if previous_action is not None and actions is not None:
+      actions.action[env_ids] = previous_action
 
   def _debug_vis_impl(self, visualizer: DebugVisualizer) -> None:
     """The state the bridge is crossing to.
@@ -569,27 +710,51 @@ class Aimed(BridgeCommand):
 
 @dataclass(kw_only=True)
 class AimedCfg(BridgeCommandCfg):
+  """The imitation window, aimed from outside. Every other architecture derives its own."""
+
   def build(self, env: ManagerBasedRlEnv) -> Aimed:
     return Aimed(self, env)
 
 
-def arena(couple: Couple) -> ManagerBasedRlEnvCfg:
-  """The bridge's own environment, with both skills' machinery merged into it.
+@lru_cache(maxsize=None)
+def aimed_type(cfg_cls: type[BridgeCommandCfg]) -> type[AimedCfg]:
+  """The aimed config class for one architecture's window, derived from that window.
 
-  Built on the bridge's play config rather than a skill's, so the robot, the terrain and the
-  bridge's observation are exactly what it trained against. Each skill then contributes what
-  it needs and nothing else: its entities, its commands, the sensors its observation reads,
-  and the observation itself.
+  An architecture is free to subclass the window, and the distillation bridge does: its
+  config carries the keyframe mask and its command answers the observation term that reads
+  the interior of the crossing. Copying only the base fields into AimedCfg dropped the
+  extra ones, and building a plain BridgeCommand from them left the student's observation
+  term with no command to read, which is why --bridge distillation used to stop here.
 
-  The observation is copied from the skill's own task verbatim. A checkpoint is tied to its
-  term list in order, and feeding it the same numbers shuffled does not fail, it acts on
-  nonsense. So the order comes from the one place that cannot disagree with the checkpoint,
-  rather than being restated here where it would go stale.
+  `Aimed` comes first in both base lists, so its overrides win over the architecture's and
+  `isinstance(command, Aimed)` still answers yes whichever architecture is loaded. The
+  command class is read off `build`'s return annotation rather than kept in a table, so an
+  architecture declares it in the one place it already had to.
+
+  Cached because a dataclass built twice is two types, and a config compared across them
+  is not equal to itself.
   """
-  cfg = bridge_env_cfg(play=True)
+  if issubclass(cfg_cls, AimedCfg):
+    return cfg_cls
+  if cfg_cls is BridgeCommandCfg:
+    return AimedCfg
+  command_cls = get_type_hints(cfg_cls.build)["return"]
+  aimed_cls = type(f"Aimed{command_cls.__name__}", (Aimed, command_cls), {})
+  return dataclass(kw_only=True)(
+    type(
+      f"Aimed{cfg_cls.__name__}",
+      (AimedCfg, cfg_cls),
+      {"build": lambda self, env, cls=aimed_cls: cls(self, env)},
+    )
+  )
 
-  trained = cfg.commands["bridge"]
-  assert isinstance(trained, BridgeCommandCfg)
+
+def aimed_cfg(trained: BridgeCommandCfg) -> AimedCfg:
+  """The architecture's own window config, with its target supplied from outside.
+
+  Same fields, so the policy reads what it trained on, and the two callers that stage a
+  crossing outside training, this module and the parkour demo, build it the same way.
+  """
   aimed = {f.name: getattr(trained, f.name) for f in fields(trained)}
   # Draws the target ghost, and gets the viewer to offer a Bridge checkbox under
   # Scene > Debug Viz that turns it off again
@@ -599,8 +764,79 @@ def arena(couple: Couple) -> ManagerBasedRlEnvCfg:
   # environment already knows. It also means a transition can be staged before the corpus
   # has been built, which is the order the work actually happens in
   aimed["dataset_path"] = None
-  cfg.commands["bridge"] = AimedCfg(**aimed)
-  cfg.observations = {BRIDGE_GROUP: cfg.observations["actor"]}
+  return aimed_type(type(trained))(**aimed)
+
+
+def bridge_group(kind: str) -> str:
+  """What one architecture's observation group is called in an arena hosting several.
+
+  The one that drives at startup keeps the plain name, so an arena built for a single
+  architecture is what it always was and every other caller of `arena` is untouched.
+  """
+  return f"{BRIDGE_GROUP}_{kind}"
+
+
+def widest_window(cfgs: dict[str, ManagerBasedRlEnvCfg]) -> BridgeCommandCfg:
+  """The one window config that serves every architecture here, or a refusal.
+
+  Several architectures in one arena share one command term, and they do not all want the
+  same one: the distillation bridge's observation reads the interior of the crossing and
+  only a MaskedBridgeCommand has one. So the term is the most specific of them, which
+  serves the others because the specific one is a subclass of the general one.
+
+  Two architectures subclassing the window in ways neither covers is not a thing to guess
+  at, so it is refused by name rather than served by whichever came first.
+  """
+  windows: dict[str, BridgeCommandCfg] = {}
+  for kind, cfg in cfgs.items():
+    window = cfg.commands["bridge"]
+    assert isinstance(window, BridgeCommandCfg)
+    windows[kind] = window
+  for window in windows.values():
+    if all(isinstance(window, type(other)) for other in windows.values()):
+      return window
+  raise SystemExit(
+    "These architectures do not share one window: "
+    + ", ".join(f"{k} wants {type(w).__name__}" for k, w in windows.items())
+    + ". Run them one at a time with --bridge."
+  )
+
+
+def arena(
+  couple: Couple, bridge: BridgeSpec, also: tuple[BridgeSpec, ...] = ()
+) -> ManagerBasedRlEnvCfg:
+  """The bridge's own environment, with both skills' machinery merged into it.
+
+  Built on the chosen bridge's play config rather than a skill's, so the robot, the terrain
+  and the bridge's observation are exactly what that architecture trained against. Each skill
+  then contributes what it needs and nothing else: its entities, its commands, the sensors
+  its observation reads, and the observation itself.
+
+  The observation is copied from the skill's own task verbatim. A checkpoint is tied to its
+  term list in order, and feeding it the same numbers shuffled does not fail, it acts on
+  nonsense. So the order comes from the one place that cannot disagree with the checkpoint,
+  rather than being restated here where it would go stale.
+
+  `also` names architectures that get an observation group here without driving, so a
+  viewer can swap between them on one crossing. They can share this arena because the three
+  of them differ in their window term and their observation and in nothing else: the robot,
+  the floor, the action convention and the corpus are the bridge problem's, not any one
+  architecture's, which is why bridges/dataset sits above all three. What that buys is a
+  comparison where the only thing that changed is the policy.
+
+  Empty is one architecture and the arena it always built.
+  """
+  assert bridge.env_cfg is not None  # resolve refuses a stub before it gets here
+  cfg = bridge.env_cfg(play=True)
+  built = {bridge.kind: cfg}
+  for spec in also:
+    assert spec.env_cfg is not None
+    built[spec.kind] = spec.env_cfg(play=True)
+
+  cfg.commands["bridge"] = aimed_cfg(widest_window(built))
+  cfg.observations = {BRIDGE_GROUP: cfg.observations["actor"]} | {
+    bridge_group(spec.kind): built[spec.kind].observations["actor"] for spec in also
+  }
 
   # Nothing should reset: a fall is the result of the test, not an error to recover from,
   # and a reset mid-run would move the robot out from under the phase machine
@@ -693,6 +929,54 @@ def find_checkpoint(experiment: str, explicit: Path | None = None) -> Path:
   if not found:
     raise SystemExit(f"No checkpoint under {root}. Train '{experiment}' first.")
   return found[-1]
+
+
+def offered_bridges(
+  wanted: tuple[str, ...], driving: str
+) -> tuple[tuple[BridgeSpec, Path], ...]:
+  """Every architecture the dropdown can offer, with the checkpoint each would load.
+
+  Resolved before the simulator is built, which is the whole reason this is separate from
+  loading them: the arena has to know which architectures it is hosting in order to carry
+  an observation group for each, and finding out by trying to load a policy needs the
+  environment that decision goes into.
+
+  The one that drives is first and is required. The rest are dropped with a line when the
+  package is a stub or its experiment holds no checkpoint, because an architecture nobody
+  has trained yet is the normal state of one of them and a run that refused on that would
+  be a run nobody could start.
+  """
+  order = (driving, *(kind for kind in wanted if kind != driving))
+  found: list[tuple[BridgeSpec, Path]] = []
+  for kind in order:
+    try:
+      spec = resolve(kind)
+      found.append((spec, find_checkpoint(spec.experiment)))
+    except SystemExit as missing:
+      if kind == driving:
+        raise
+      print(f"[bridge] {kind}: not offered, {missing}")
+  return tuple(found)
+
+
+BASE_VARIANTS = ("base", "baseline")
+"""Variant names meaning the skill's own experiment, with no suffix."""
+
+
+def variant_checkpoint(
+  experiment: str, variant: str, explicit: Path | None = None
+) -> Path:
+  """The newest checkpoint of one named version of a skill.
+
+  A variant is a suffix on the skill's experiment name, so for the kick "base" is g1_kick as
+  it was trained, "robust" is what skills/finetune.py wrote to g1_kick_robust and "recover"
+  is what skills/recover.py wrote to g1_kick_recover. One vocabulary for every script that
+  compares versions, so a version is named once instead of pasted as a path.
+  """
+  if explicit is not None:
+    return find_checkpoint(experiment, explicit)
+  suffix = "" if variant in BASE_VARIANTS else f"_{variant}"
+  return find_checkpoint(f"{experiment}{suffix}")
 
 
 class Policy:
@@ -870,6 +1154,39 @@ def defaults(actor: Actor) -> dict[str, float]:
   return {knob.name: knob.initial for knob in actor.controls}
 
 
+def entry_target(
+  env: ManagerBasedRlEnv,
+  entering: Actor,
+  entry: torch.Tensor,
+  here: torch.Tensor,
+  duration_s: float,
+  frame: int,
+  arrive=None,
+  values=None,
+  recorded: RecordedEntry | None = None,
+) -> torch.Tensor:
+  """Place one entry and its reference together, also used by previews and triggers."""
+  if recorded is not None:
+    entry_resume.prepare(env, recorded)
+  heading = yaw_quat(here[:, 3:7])
+  target = facing(entry, here)
+  target[:, :2] = (
+    arrive(env, frame)[:, :2]
+    if arrive is not None
+    else crossing(here, target, duration_s)
+  )
+  if entering.enter is not None:
+    entering.enter(env, target[:, :3], heading, frame, values or defaults(entering))
+  if "motion" in env.command_manager.active_terms and (
+    recorded is None or recorded.motion_file
+  ):
+    if isinstance(env.command_manager.get_term("motion"), JumpCommand):
+      if recorded is None:
+        raise ValueError("Tracking handoffs require the complete recorded entry")
+      target = entry_resume.target(env, recorded)
+  return target
+
+
 def aim(
   env: ManagerBasedRlEnv,
   command: Aimed,
@@ -880,68 +1197,27 @@ def aim(
   frame: int = 0,
   arrive: Callable[[ManagerBasedRlEnv, int], torch.Tensor] | None = None,
   values: dict[str, float] | None = None,
+  recorded: RecordedEntry | None = None,
+  *,
+  tolerances: Tolerances | torch.Tensor | None = None,
 ) -> torch.Tensor:
-  """Point the bridge at one state off the entering skill's window, moved to meet the
-  robot.
-
-  The target is the recorded state and nothing else. Every skill here is egocentric: it
-  reads its own body frame, and a tracker reads poses relative to an anchor it carries. So a
-  state produced facing one way is a state the skill can be in facing another, and where in
-  the world that happens does not enter into it. The move has to preserve everything the
-  pose says relative to the direction of travel: pelvis twist, roll and pitch, joint angles,
-  velocities. One yaw rotation, by the difference between the heading the rollout was
-  recorded in and the heading the robot has now, does exactly that. The height is recorded,
-  not chosen.
-
-  The state comes from the selector, not from the entering skill's reference. For a clip
-  tracker that reference is a retargeted human motion, which no robot is ever in. At frame 90
-  of the jump, clip against policy:
-
-      foot height     3.8 cm into the floor
-      root height     1.4 cm below where the policy holds it
-      joints          up to 0.42 rad apart
-      descent rate    0.28 m/s against the policy's 0.15
-
-  So the bridge was scored on arriving in a state its own entering skill never occupies.
-
-  `Actor.enter` is still called, still with where the robot is meant to be rather than where
-  it is, because a clip tracker has to be told where its clip goes. It just no longer says
-  what the target is. The clip lands under the arrival, so the skill takes over from a robot
-  sitting on its reference rather than the few centimetres off it the rollout was.
-
-  `frame` goes with the placement. The entry is a moment inside the skill's own trajectory,
-  so the skill resumes at that moment: a clip wound to that frame, under a robot the bridge
-  is about to put into the state recorded there.
-
-  `values` goes with it too, and is what the entering skill's controls are set to now. This
-  is the only moment a placement-time goal can be read, before the clip it selects is placed
-  and not a step later while the bridge is already crossing. None means the defaults, which
-  is what a caller with no panel wants.
-
-  One placement, not the two this used to need. The rotation alone settles the velocity to
-  arrive with, so the centre of the disc, where training put every target, is known before
-  anything is placed.
-  """
-  heading = yaw_quat(here[:, 3:7])
-  horizon = duration_s
-
-  target = facing(entry, here)
-  # Commanded if the caller says where the skill needs the robot, predicted otherwise.
-  # See Actor.arrive
-  if arrive is not None:
-    target[:, 0:2] = arrive(env, frame)[:, 0:2]
-  else:
-    target[:, 0:2] = crossing(here, target, horizon)
-
-  if entering.enter is not None:
-    entering.enter(env, target[:, 0:3], heading, frame, values or defaults(entering))
-
+  """Place the reference first, then transform the recorded robot with it."""
+  if tolerances is None:
+    tolerances = entry_tolerances(
+      entering.name, recorded.frame if recorded is not None else frame
+    )
+  target = entry_target(
+    env, entering, entry, here, duration_s, frame, arrive, values, recorded
+  )
   env_ids = torch.arange(command.num_envs, device=command.device)
+  # open_window crosses to the target the command already holds, so it is written first
   command.target[:] = target
   command.aimed = True
   # Seconds, not ticks. The command converts, and it is the only thing that should
   command.open_window(
-    env_ids, torch.full((command.num_envs,), duration_s, device=command.device)
+    env_ids,
+    torch.full((command.num_envs,), duration_s, device=command.device),
+    tolerances=tolerances,
   )
   return target
 
@@ -953,26 +1229,22 @@ def aim(
 
 @dataclass(frozen=True)
 class Config:
+  tolerances: ToleranceOverrides = field(default_factory=ToleranceOverrides)
+  """Override individual physical limits from tests/entry_tolerances.py."""
+
   duration_s: float | None = None
-  """How long the bridge gets, in seconds, or None to take it from the entry. It trained on
-  the configured duration range, so an override outside that range is being asked for
-  something it never saw, which `verdict` says out loud."""
+  """How far ahead to place a target nothing else fixes, in seconds, or None to solve it.
 
-  mode: Literal["auto", "manual"] = "auto"
-  """Who picks the state to aim at.
-
-  auto asks the selector every step and takes its answer, which is the entry easiest to
-  reach from where the robot is at that moment. That is the whole point of the component
-  and what a controller would do, so it is the default and there is no slider.
-
-  manual puts it on the slider instead, over the whole of the skill's window, because
-  looking at one particular posture is the only reason to be choosing at all."""
+  Not how long the bridge gets: it is given no duration at all. This places the target for a
+  skill with no object, and it buys the crossing patience before an unsuccessful one is
+  abandoned. A skill that says where it needs the robot ignores the first half of that.
+  """
 
   entry: int = 0
-  """Which state the slider starts on, in the order selector.view draws them. manual only.
+  """Which state to aim at, in the order selector.view draws them. The slider moves it.
 
-  Table order, not the ranking, so an index means one particular posture for the whole run:
-  a slider whose rows reordered as the robot moved would be a different state every step."""
+  Table order, so an index means one particular posture for the whole run: a list that
+  reordered as the robot moved would be a different state every step."""
 
   table: Path | None = None
   """Which file the states come from. None is what selector.build writes."""
@@ -1031,19 +1303,429 @@ class Config:
   Zero until measured. Every hand-over prints `travelled`, the distance actually covered
   over the distance the placement predicted. Set this to that number minus one."""
 
+  blend_steps: int = 8
+  """Control steps to ramp out of the parting policy's last action at each switch.
+
+  Zero is a hard switch, which is what this harness did and what makes a hand-over visible.
+  A joint position target is default + scale * action, so the action a policy emits is the
+  PD setpoint, and at a hard switch it jumps by whatever the two policies disagree about in
+  one control step. Measured on walk2kick at entry 3 that was eight to thirteen times the
+  median change of an ordinary step of the entering skill, and the body was thrown a step
+  later at nearly three times the ordinary joint velocity.
+
+  No amount of delivering the robot accurately removes it. The two policies were fitted
+  separately, so they can agree about the state and still disagree about what to command in
+  it. What a ramp does is spend that disagreement over several control steps instead of one,
+  which makes the joint targets continuous across the switch.
+
+  Eight is 0.16 s at 50 Hz. The seam is gone by four; sixteen starts to be a stretch of the
+  motion during which neither policy is in control. Set it to zero to see what it fixes.
+  """
+
+  count_in: bool = True
+  """Whether the entering tracker's clip counts up to its entry frame during the crossing.
+
+  Off, which is what this harness did, the clip plays on while the bridge crosses and is
+  rewound at the hand-over. Over a one second window that is fifty frames, and the rewind is
+  a step change in every observation term the entering policy reads off its motion: 29
+  reference angles, 29 reference rates, the phase and the anchor error.
+
+  On, the reference is held `left` frames short of the entry and marches forward one frame
+  per step, arriving exactly as control changes. The entering skill then reads a reference
+  that has been approaching it smoothly and there is no rewind to make. It is the cure for
+  the observation half of a seam and does nothing for the action half; the two are separate
+  and `blend_steps` is the other one.
+
+  Nothing for a skill with no reference, which the pass and the push are."""
+
+  seam: bool = False
+  """Measure every step and print the hand-over as a waveform when the run ends.
+
+  What this costs is a tensor per step, and what it buys is the only view of a transition
+  that shows whether the switch was visible. A hand-over can score perfectly and still snap:
+  across the full ablation on walk2kick every crossing struck the ball and the seam ranged
+  over a factor of seventeen, so nothing about the outcome reports it."""
+
+  slack: float = ARRIVE_SLACK
+  """How far off the crossing line the spot may sit when the switch fires, in metres.
+
+  The alignment half of the distance trigger. `steer` is what drives this down and this is
+  what waits for it, so a run where the walk cannot line up does not hand over at all, which
+  is a result and prints as one, rather than handing over sideways and blaming the bridge."""
+
+  steer: bool = True
+  """Whether the leaving skill is aimed at the spot the entering skill needs.
+
+  On, and only for a couple whose entering skill declares `Actor.arrive`, because only those
+  have a spot. It writes the leaving skill's heading control every step, so the heading
+  slider does nothing while it is on and the panel has a checkbox to hand it back.
+
+  This is the fix for the thing that made hand-overs into the kick miss the ball, and it is
+  not where anybody looks for it. The arrival was never far off: measured over eight
+  placements the robot landed within 12 cm of the spot, inside the arrival tolerance on most
+  channels, and the swing still passed 20 cm wide of the ball. What was wrong was sideways,
+  and sideways is the one error nothing downstream can absorb. Every frame of the anchored
+  clip lies on the same line, so no choice of resume frame moves the swing across it, and
+  the kick can only watch the ball go by.
+
+  What produces it is that a crossing travels along the mean of the robot's velocity and the
+  target's, and a kick entry is the middle of a run-up whose pelvis carries several degrees
+  of sideways velocity. So the crossing line leaves the body at an angle to the heading, and
+  a walk aimed at the spot puts the line past it. Aiming the line instead:
+
+      steered      8 of 8 placements score, sole 0.04 m across the ball at the strike
+      not          4 to 7 of 8, sole 0.09 to 0.13 m across it
+
+  See `off_line` for the correction and why it is fed back rather than solved.
+  """
+
+  window_s: float = 1.0
+  """Seconds the bridge gets when the switch fires on distance.
+
+  A second, measured, and it is not the 0.6 s that places a target for a skill with nothing
+  on the floor. Those are different jobs: that one is a guess about where momentum carries a
+  body, this one is how long the bridge is given to arrive somewhere it has been told about.
+
+  The difference is most of whether the kick works. At 0.6 s the crossing was bimodal over
+  five resets of walk2kick at entry 3, three landing 0.14 m from the spot and two at 0.33 m,
+  and the bad ones arrived travelling 0.05 m/s at a target that wants 0.93 and had sailed
+  half again as far as they were asked to. At 1.0 s the same five land 0.01 to 0.19 m, the
+  bimodality is gone, and the best of them arrives at 0.95 m/s against 0.93.
+
+  `duration_s` still overrides this, and did the measuring.
+  """
+
+  fire_at: float = 0.5
+  """How far from where the entering skill needs the robot to fire the switch, in metres.
+
+  What replaces the switch step for a skill with an object. An entry of a skill built around
+  one is a place, not a moment: `Actor.arrive` says where the robot has to stand for the
+  swing to meet the ball, the ball does not move, so the whole of choosing when is walking
+  onto that spot. Firing half a metre before it is a statement anybody can repeat and that
+  means the same thing at any approach speed.
+
+  The step is not. A hand-over pinned to control step 130 lands wherever two and a half
+  seconds of walking happened to put the robot, which moves with the walk's commanded speed,
+  with the ball's spawn and with how much turning the approach needed. Two runs that differ
+  only in approach speed were crossing from different places and being compared as though
+  they were not.
+
+  Read against the metres the viewer counts down beside the active skill, which is the same
+  number this fires on.
+  """
+
   auto: int | None = None
-  """Fire the switch after N steps regardless of the world. Needed headless for a skill with
-  no precondition of its own, and an override for one that has."""
+  """Fire the switch on control step N of every episode, regardless of the world.
+
+  Needed headless for a skill with no precondition of its own, and an override for one that
+  has. Under a viewer it is what the panel's switch step starts at, and setting it turns
+  that checkbox on, so a run started with --auto 130 repeats the same crossing every
+  episode until somebody turns it off. Which is what a formal comparison needs: the entry
+  fixes the state being aimed at, this fixes the state being aimed from."""
 
   patience: int = 900
   """Steps a headless run gets before it gives up waiting for the switch to fire."""
 
-  checkpoint: Path | None = None
-  """An explicit bridge checkpoint. The skills always come from their own logs."""
+  bridge: BridgeKind = DEFAULT_BRIDGE
+  """Which bridge architecture drives the hand-over to begin with. See bridges/__init__.py.
+
+  The arena is built on the chosen one's own play config, so switching this switches the
+  observation the bridge policy reads as well as the checkpoint it loads. The two skills are
+  untouched by it, which is what makes two architectures comparable on one transition.
+
+  Under a viewer this is the dropdown's starting position rather than the whole choice. See
+  `bridges`."""
+
+  bridges: tuple[BridgeKind, ...] = BRIDGE_KINDS
+  """Which architectures to load into the panel's bridge dropdown.
+
+  All of them, because comparing two on one crossing is the reason there is more than one,
+  and a dropdown that has to be asked for is a comparison nobody makes. One that has no
+  code yet, or no checkpoint under its experiment, is dropped with a line saying so rather
+  than failing the run: an untrained architecture is the normal state of one of them.
+  `bridge` is the exception and is required, since that is the one that was asked for.
+
+  Narrow it to spend less time loading, or to be sure a headless run is the architecture it
+  says it is:
+
+      uv run python -m ...transitions.walk2kick --bridges "('imitation',)"
+  """
+
+  bridge_checkpoint: Path | None = None
+  """An explicit checkpoint for the bridge, instead of the newest under its experiment.
+
+  Each skill has one of these too, named after the skill rather than after its role, so
+  walk2kick takes --walk-checkpoint and --kick-checkpoint. They are added per couple by
+  `config_for`, since which two skills exist is the couple's to say."""
 
   viewer: Literal["viser", "none"] = "viser"
   device: str | None = None
   seed: int = 0
+
+
+def checkpoint_flag(actor: Actor) -> str:
+  """What one skill's checkpoint flag is called. One place, so `main` and `config_for`
+  cannot spell it differently."""
+  return f"{actor.name}_checkpoint"
+
+
+def config_for(couple: Couple) -> type[Config]:
+  """Config, plus a checkpoint flag for each of this couple's two skills.
+
+  Named after the skill and not after its role, because that is how anybody running one of
+  these thinks about it: walk2kick takes --walk-checkpoint and --kick-checkpoint, and
+  --bridge-checkpoint is the third. Each defaults to the newest under that skill's own
+  experiment, which is what `find_checkpoint` picks and what has gone wrong before, so
+  naming one by hand is the way to pin a comparison to a particular pair of policies.
+
+  Built per couple rather than declared once as two role-shaped fields, so the flag a
+  script takes says which policy it swaps without anyone having to remember which skill is
+  leaving. Frozen like Config, since a non-frozen dataclass cannot inherit from one.
+  """
+  actors = (couple.leaving, couple.entering)
+  assert len({actor.name for actor in actors}) == len(actors), (
+    "A couple's two skills need different names, or their checkpoint flags collide"
+  )
+  built = make_dataclass(
+    f"{couple.leaving.name}2{couple.entering.name}",
+    [
+      (
+        checkpoint_flag(actor),
+        Annotated[
+          Path | None,
+          tyro.conf.arg(
+            help=f"Checkpoint for the {actor.name} policy. None is the newest one."
+          ),
+        ],
+        field(default=None),
+      )
+      for actor in actors
+    ],
+    bases=(Config,),
+    frozen=True,
+  )
+  return cast("type[Config]", built)
+
+
+class Seam:
+  """Every step of every env, kept so the hand-over can be read as a waveform.
+
+  The question this answers is not whether the kick recovered, which the sweep already
+  answers. It is whether anything happened at the instant control changed that would not
+  have happened if one policy had been driving throughout, because that is what somebody
+  watching the transition sees.
+
+  Four channels, and they are four different questions:
+
+      action   what was asked of the actuators. A joint position target is
+               default + scale * action, so a step change here is a step change in the PD
+               setpoint and in the torque that follows. This is the one that shows
+      joint    where the joints actually went. Lags the action by the actuator, so a spike
+               here one step after a spike there is the body being thrown rather than moved
+      vel      joint velocity, where a torque spike lands first
+      obs      what the entering policy read. A jump here would explain a jump in the
+               action without being one, and the two have different cures: an observation
+               seam is fixed by handing the skill a world consistent with the one it was
+               reading a step earlier, an action seam by what drives the actuators across
+               the switch
+
+  Only the worst channel of each is kept, per env per step. A hand-over is abrupt if any
+  joint is thrown, and a mean over 29 of them hides the one that was.
+  """
+
+  KEYS = ("action", "joint", "vel", "obs")
+
+  NEIGHBOURHOOD = 8
+  """How many steps either side of the switch the switch is judged against. See `ordinary`."""
+
+  def __init__(
+    self,
+    env: ManagerBasedRlEnv,
+    num_envs: int,
+    names: tuple[str, str, str] = ("leaving", "bridge", "entering"),
+  ) -> None:
+    self.env = env
+    self.names = names
+    """What to call each phase in the table. The couple's own, so a transition into the
+    pass does not print a column headed kick."""
+    self.steps: list[dict[str, torch.Tensor]] = []
+    self.switch = torch.full((num_envs,), -1, dtype=torch.long, device=env.device)
+    """Index into steps of the first step the entering skill drove, per env."""
+    self._last: dict[str, torch.Tensor] = {}
+
+  def record(
+    self,
+    action: torch.Tensor,
+    obs,
+    group: str,
+    clip: torch.Tensor,
+    phase: torch.Tensor,
+  ) -> None:
+    """One step, as it is about to be applied. `phase` is who is about to drive."""
+    robot = self.env.scene[ROBOT]
+    now = {
+      "action": action.detach(),
+      "joint": robot.data.joint_pos,
+      "vel": robot.data.joint_vel,
+      "obs": obs[group].detach(),
+    }
+    row = {"label": phase.clone(), "clip": clip.clone()}
+    for key, value in now.items():
+      before = self._last.get(key)
+      row["d_" + key] = (
+        torch.zeros(value.shape[0], device=value.device)
+        if before is None
+        else (value - before).abs().amax(dim=-1)
+      )
+    self._last = {key: value.clone() for key, value in now.items()}
+    first = (phase == 2) & (self.switch < 0)
+    self.switch = torch.where(first, len(self.steps), self.switch)
+    self.steps.append(row)
+
+  def _window(self, env_id: int, key: str, low: int, high: int) -> list[float]:
+    return [float(step[key][env_id]) for step in self.steps[low:high]]
+
+  def ordinary(self, env_id: int, key: str) -> float:
+    """The median size of this change over the steps either side of the switch.
+
+    The yardstick, and it is local on purpose. Abrupt means out of line with its neighbours,
+    so the switch step is judged against the steps around it rather than against a stretch
+    of motion half a second away.
+
+    Measuring against that stretch instead is what the first version did and it misreports
+    two cases badly. A skill that enters something quiet, which the pass does, has a settled
+    step a tenth the size of anything near the hand-over, so a switch that is smooth in
+    context reads as many times an ordinary step. A skill that falls out of the hand-over is
+    worse: it ends up motionless on the floor, the yardstick collapses towards zero, and the
+    worse the failure the larger the number. Neither says anything about the seam.
+
+    The switch step itself is left out of its own baseline, and both sides are included: the
+    steps before it are the bridge finishing and the steps after are the entering skill
+    starting, which are exactly the two things the switch has to be continuous between.
+    """
+    switch = int(self.switch[env_id])
+    if switch < 0:
+      return float("nan")
+    span = self.NEIGHBOURHOOD
+    values = sorted(
+      self._window(env_id, key, max(switch - span, 0), switch)
+      + self._window(env_id, key, switch + 1, switch + span + 1)
+    )
+    return values[len(values) // 2] if values else float("nan")
+
+  def settled(self, env_id: int, key: str) -> float:
+    """The same median over half a second of the entering skill, well clear of the switch.
+
+    Context rather than a yardstick. Read beside `ordinary`: a settled figure far below the
+    local one is a skill that has gone quiet, and far above is one that has run away.
+    """
+    switch = int(self.switch[env_id])
+    if switch < 0:
+      return float("nan")
+    values = sorted(self._window(env_id, key, switch + 25, switch + 75))
+    return values[len(values) // 2] if values else float("nan")
+
+  def ratio(self, env_id: int, key: str = "d_action") -> float:
+    """The switch step in units of a neighbouring step. One or less is invisible.
+
+    The number every intervention here is judged on. An absolute joint target jump means
+    nothing on its own: a kick throws a leg, and the same jump that is a snap during a
+    run-up is unremarkable during the swing. Always read it with the absolute beside it,
+    which is what `report` prints.
+    """
+    switch = int(self.switch[env_id])
+    if switch < 0:
+      return float("nan")
+    normal = self.ordinary(env_id, key)
+    return float(self.steps[switch][key][env_id]) / max(normal, 1e-6)
+
+  def jump(self, env_id: int, key: str = "d_action") -> float:
+    """The switch step's own change, in natural units. The absolute behind `ratio`.
+
+    Worth reading on its own wherever the neighbourhood is not a fair baseline, which the
+    observation channel is not: counting the reference in quiets the steps either side of
+    the switch as well as the switch itself, so the ratio can rise while the jump it is
+    made of falls by a factor of ten. For the action channel the neighbours are the two
+    policies commanding ordinary motion and the ratio is the better number.
+    """
+    switch = int(self.switch[env_id])
+    if switch < 0:
+      return float("nan")
+    return float(self.steps[switch][key][env_id])
+
+  def report(self, env_id: int, span: int = 8) -> None:
+    """The steps either side of the switch, against an ordinary step of the same run."""
+    switch = int(self.switch[env_id])
+    if switch < 0:
+      print()
+      print("no hand-over on the watched env, so there is no seam to read.")
+      return
+    names = self.names
+    print()
+    print(
+      f"the seam on env {env_id}, one step per line. d_ columns are the change from the "
+      "step before, worst channel of that step."
+    )
+    print()
+    print(
+      f"  {'step':>6}{'driver':>8}{'clip':>6}"
+      f"{'d_action':>10}{'d_joint':>9}{'d_vel':>9}{'d_obs':>9}"
+    )
+    low = max(switch - span, 1)
+    high = min(switch + span, len(self.steps))
+    for index in range(low, high):
+      step = self.steps[index]
+      mark = "   <- control changes here" if index == switch else ""
+      print(
+        f"  {index:>6}{names[int(step['label'][env_id])]:>8}"
+        f"{int(step['clip'][env_id]):>6}"
+        f"{float(step['d_action'][env_id]):>10.3f}"
+        f"{float(step['d_joint'][env_id]):>9.4f}"
+        f"{float(step['d_vel'][env_id]):>9.3f}"
+        f"{float(step['d_obs'][env_id]):>9.3f}{mark}"
+      )
+    print()
+    print(
+      f"  the switch step against the median of the {self.NEIGHBOURHOOD} steps either "
+      f"side of it, and against half a second of settled {names[2]}:"
+    )
+    print(f"    {'':>7} {'switch':>8}   {'nearby':>7}          {'settled':>8}")
+    for key in self.KEYS:
+      normal = self.ordinary(env_id, "d_" + key)
+      jump = float(self.steps[switch]["d_" + key][env_id])
+      print(
+        f"    {key:>7} {jump:8.3f} / {normal:7.3f} = {jump / max(normal, 1e-6):5.1f}x"
+        f"   {self.settled(env_id, 'd_' + key):8.3f}"
+      )
+
+
+def crossfade(
+  action: torch.Tensor,
+  parting: torch.Tensor,
+  steps: torch.Tensor,
+  since: torch.Tensor,
+) -> torch.Tensor:
+  """Ramp out of the bridge's parting action over the first `steps` of the kick.
+
+  The cure for an action seam that survives handing the entering skill a consistent world.
+  Two policies that agree about the state can still disagree about what to do in it, and
+  nothing about the hand-over can make them agree: they were fitted separately.
+
+  What a crossfade does is spend the disagreement over several control steps instead of one.
+  The joint targets are a continuous function of time across the switch, so the actuators
+  see a slew rather than a step, and the size of what is left is the disagreement divided by
+  the length of the ramp.
+
+  What it costs is that for those steps neither policy is in control, so the ramp has to be
+  short against the motion. Ten steps is a fifth of a second, which is most of the kick's
+  backswing; four is where this stops being visible and the kick has not yet moved.
+
+  Zero steps is a hard switch and the default this replaced.
+  """
+  weight = ((since.float() + 1.0) / steps.clamp(min=1.0)).clamp(0.0, 1.0)
+  fading = (steps > 0) & (since >= 0) & (since < steps)
+  mixed = weight.unsqueeze(-1) * action + (1.0 - weight.unsqueeze(-1)) * parting
+  return torch.where(fading.unsqueeze(-1), mixed, action)
 
 
 class Run:
@@ -1058,6 +1740,7 @@ class Run:
     policies: dict[str, Policy],
     table: EntryTable,
     cfg: Config,
+    bridges: dict[str, Policy] | None = None,
   ) -> None:
     self.env, self.couple, self.table, self.cfg = env, couple, table, cfg
     self.acts = (
@@ -1066,6 +1749,15 @@ class Run:
       policies[couple.entering.name],
     )
     self.names = (couple.leaving.name, BRIDGE_GROUP, couple.entering.name)
+    self.bridges: dict[str, Policy] = {
+      cfg.bridge: policies[BRIDGE_GROUP],
+      **(bridges or {}),
+    }
+    """Every architecture loaded, by name. The dropdown picks one of these."""
+    self.driving = cfg.bridge
+    """Which of them crosses next. Read by `cross` and not before, so a swap made while a
+    crossing is running shows one architecture's opening and another's follow through as
+    if they were one hand-over, which compares nothing."""
     self.robot: Entity = env.scene[ROBOT]
     command = env.command_manager.get_term("bridge")
     assert isinstance(command, Aimed)
@@ -1102,6 +1794,39 @@ class Run:
     self._ranked: tuple[Reach, ...] = ()
     self._ranked_at = -1
     self.fire = self.done = False
+    self.steer_walk = cfg.steer and couple.entering.arrive is not None
+    """Whether to aim the leaving skill at the spot. Off for a couple with no spot to aim
+    at, whatever the flag says."""
+    self.smoothed = state(env.scene[ROBOT])[:, 7:9].clone()
+    """Root ground velocity, low passed. The steering and the switch are both built out of
+    it, and a walking root's instantaneous velocity swings through a gait cycle hard enough
+    to make both of them oscillate at step frequency."""
+    self.decay = float(torch.exp(torch.tensor(-env.step_dt / SMOOTH_S)))
+    self.blend_steps = cfg.blend_steps
+    """Steps of crossfade at each switch. Mutable where Config is not, so the panel can put
+    it on a slider and the seam can be watched appearing and disappearing."""
+    self.by_distance = couple.entering.arrive is not None and cfg.auto is None
+    """Whether the switch fires on the metres left to the demanded spot rather than on a
+    step count. On for a skill with an object, which is the only kind that has a spot; off
+    when --auto named a step, since that is somebody asking for the old behaviour."""
+    self.fire_at = cfg.fire_at
+    self.window_s = (
+      cfg.duration_s
+      if cfg.duration_s is not None
+      else (couple.duration_s if couple.duration_s is not None else cfg.window_s)
+    )
+    """Seconds the bridge is given when the switch fires on distance. Pinned rather than
+    solved: the point of firing at a fixed place is that both ends of the crossing are
+    stated rather than inferred."""
+    self._gap = float("inf")
+    """Metres to the demanded spot on the previous step, so the switch can tell a robot
+    walking onto the spot from one that has already walked through it."""
+    self.switch_at: int | None = cfg.auto
+    """Control step the switch fires itself on, or None to wait for the button.
+
+    Mutable where Config is not, so a viewer can put the hand-over instant on a slider.
+    Comparing two skills on the same crossing needs it fixed, and a button cannot be
+    pressed twice on the same step."""
     self.phase = self.tick = self.until = 0
     self.earned, self.scored = 0.0, 0
     """Discounted reward the entering skill has collected since it took over, and over how
@@ -1118,6 +1843,15 @@ class Run:
     """Total discount weight in the scoring window. Divides `earned`, so a hand-over the skill
     falls out of forfeits what it did not collect rather than being rescaled back up."""
     self.fell = False
+    self.parting = torch.zeros_like(env.action_manager.action)
+    """The last action the actuators were given. What a crossfade ramps out of."""
+    self.fading = 0
+    """Blended steps still owed after the most recent switch. See `Config.blend_steps`."""
+    self.seam = (
+      Seam(env, env.num_envs, (couple.leaving.name, BRIDGE_GROUP, couple.entering.name))
+      if cfg.seam
+      else None
+    )
     # The entering skill first, so whatever it keeps per episode exists before anything
     # runs: a reference has to be anchored somewhere or its observation reads a clip that
     # was never placed. `arena` freezes every skill's resampling, so what its reset drew
@@ -1156,47 +1890,40 @@ class Run:
       )
 
   def ranked(self) -> tuple[Reach, ...]:
-    """The entering skill's entries, easiest to reach from where the robot is now first.
+    """Every entry of the entering skill, in table order, with what each costs from here.
 
-    The selector's answer to the only question this arena asks it. The table is ordered by a
-    property of the entering skill alone, which says where that skill can be started and
-    nothing about whether the bridge can get there; `nearest` reorders it by the rate of
-    change each entry demands of a body that is currently doing this.
-
-    So the order moves while the leaving skill drives, and it should: an entry out of reach
-    mid-stride is within it a moment later. Cached against the control step, because
-    `triggered` and `cross` both ask on the same one and must not get different answers.
+    Order is fixed, effort is not: the same entry is a different distance from a body
+    mid-stride than from one standing. Cached against the control step, because `triggered`
+    and `cross` both ask on the same one and must not get different answers.
     """
     if self._ranked_at != self.tick or not self._ranked:
       here = state(self.robot)[0].double().cpu().numpy()
-      self._ranked = nearest(self.table, self.couple.entering.name, here, PROBE_S)
+      self._ranked = reaches(self.table, self.couple.entering.name, here, PROBE_S)
       self._ranked_at = self.tick
     return self._ranked
 
   def chosen(self) -> Reach:
     """The entry the next crossing aims at, and what reaching it would demand.
 
-    In auto the ranking's own answer, recomputed as the robot moves, so what the bridge
-    aims at is whatever is easiest to reach at the moment the switch fires.
-
-    In manual whichever row the slider is on, looked up in the ranking for its effort. The
-    slider indexes the table and not the ranking on purpose: see `order`.
+    Whichever row the slider is on. Nothing picks for you: which phase of a skill to enter
+    is the thing this arena exists to let somebody look at.
     """
-    ranked = self.ranked()
-    if self.cfg.mode == "auto":
-      return ranked[0]
-    want = self.order[min(max(self.entry, 0), len(self.order) - 1)].name
-    return next(reach for reach in ranked if reach.entry.name == want)
+    return self.ranked()[min(max(self.entry, 0), len(self.order) - 1)]
 
   @property
   def duration_s(self) -> float:
-    """How long the bridge gets, in seconds. Three sources, most specific first.
+    """How long the bridge gets, in seconds. Four sources, most specific first.
+
+    Firing on distance wins, because that mode states both ends of the crossing by hand and
+    a window solved from the geometry would be the other half deciding itself.
 
     A number typed on the command line or written into the couple wins, because someone
     asked for it. Otherwise the solved one, which is the window that puts the robot where
     the entering skill needs it. Otherwise the one the ranking implies, which is the only
     answer available when the skill has no opinion about where the robot should stand.
     """
+    if self.by_distance:
+      return self.window_s
     if self.written_duration_s is not None:
       return self.written_duration_s
     if self.solved_duration_s is not None:
@@ -1254,8 +1981,7 @@ class Run:
     the box a ball skill was trained in, so the exact one is the one to walk towards.
 
     A frame it does not depend on is a line that collapses to a point, and that is correct
-    too. The pass shoves from a stand, so all three of its entries want the robot in the
-    same place and it draws three robots there.
+    too. The pass shoves from a stand and keeps a single early entry.
 
     The same call `aim` places the target with, so the target is one of these poses rather
     than something near them. That agreement is the point and it is why this is not a
@@ -1266,15 +1992,23 @@ class Run:
     if arrive is None:
       return None
     here = state(self.robot)
-    rows = torch.as_tensor(
-      np.stack([entry.state for entry in self.order]),
-      dtype=here.dtype,
-      device=here.device,
+    return torch.cat(
+      [
+        entry_target(
+          self.env,
+          self.couple.entering,
+          torch.as_tensor(entry.state[None], dtype=here.dtype, device=here.device),
+          here,
+          self.duration_s,
+          entry.frame,
+          arrive,
+          self.knobs[self.couple.entering.name],
+          entry,
+        )
+        for entry in self.order
+      ],
+      dim=0,
     )
-    placed = facing(rows, here[0:1].expand(rows.shape[0], -1))
-    for index, entry in enumerate(self.order):
-      placed[index, 0:2] = arrive(self.env, entry.frame)[0, 0:2]
-    return placed
 
   def triggered(self) -> bool:
     """Whether to start crossing on this step.
@@ -1302,10 +2036,22 @@ class Run:
     # A button press is still a hand-over that has to be given a window, so the solve below
     # runs first and this is read afterwards. Returning here on sight of the press would
     # hand `cross` whatever the previous step worked out, for a different chosen entry
-    pressed = self.fire or self.tick == self.cfg.auto
+    pressed = self.fire or self.tick == self.switch_at
 
     if self.arrive is not None:
-      want = self.arrive(self.env, self.chosen().entry.frame)[:, 0:2]
+      chosen = self.chosen().entry
+      target = entry_target(
+        self.env,
+        entering,
+        self.entry_state,
+        here,
+        self.duration_s,
+        chosen.frame,
+        self.arrive,
+        self.knobs[entering.name],
+        chosen,
+      )
+      want = target[:, :2]
       seconds, residual = crossing_time(here, target, want)
       low, high = self.command.cfg.duration_s_range
       if self.written_duration_s is None:
@@ -1318,6 +2064,8 @@ class Run:
         self.solved_duration_s = min(max(float(seconds.min()), low), high)
       if pressed:
         return True
+      if self.by_distance:
+        return self.arrived_at(here, want, residual)
       # `ready` is read and not called, and for a skill with a demand that is all it can be.
       # A precondition asks whether the object will be in its box when control changes, and
       # `want` is by construction the pose that puts it there, so calling it here answers
@@ -1356,6 +2104,33 @@ class Run:
       self.solved_duration_s = fits[len(fits) // 2]
     return True
 
+  def arrived_at(
+    self, here: torch.Tensor, want: torch.Tensor, residual: torch.Tensor
+  ) -> bool:
+    """Whether the robot has walked to within `fire_at` of the spot, on the line to it.
+
+    Three conditions and each rules out a hand-over that happens somewhere else.
+
+    Near enough, which is the one the operator sets. Closing, because the gap bottoms out
+    and grows again once the robot walks through its own ball, and a threshold on distance
+    alone fires a second time on the way out at a spot now behind the robot.
+
+    And on the line, which is the one that was missing and the one that made the swing miss.
+    A crossing travels along the mean of the two velocities, so a duration fixes how far it
+    goes and never which way; `residual` is how far off that line the spot sits, and no
+    window closes it. Firing anyway hands the bridge a target it has to reach sideways,
+    which it does badly. Measured over five resets of walk2kick at entry 3, distance alone
+    was bimodal, 0.14 m of standing error on three and 0.33 m on two, and the bad ones are
+    the ones that fired while still off the line. `steer` is what brings the residual down;
+    this is what waits for it.
+
+    The metres `status` prints are the first of the three, measured to the same spot `aim`
+    will place the target on, so what the viewer counts down and what fires agree.
+    """
+    gap = float((here[0, 0:2] - want[0]).norm())
+    closing, self._gap = gap < self._gap, gap
+    return closing and gap <= self.fire_at and float(residual[0]) <= self.cfg.slack
+
   def candidate_windows(self, count: int = 9) -> list[float]:
     """Durations to consider, across what the bridge was trained on.
 
@@ -1375,6 +2150,37 @@ class Run:
     out = here[:, 0:3].clone()
     out[:, 0:2] = crossing(here, target, duration_s, self.cfg.overshoot)
     return out
+
+  def aim_walk(self) -> None:
+    """Point the leaving skill so its crossing line runs through the spot.
+
+    Written into the leaving skill's own `heading` control rather than into the command
+    term, so the one place a skill's conditioning is applied stays `Actor.condition` and
+    this is just another thing setting the same dial.
+
+    Two terms. The first aims the body at the spot, which is the obvious half. The second is
+    the angle between the line the crossing will actually travel along and the direction of
+    the spot, and it is the half that matters: without it the residual sits between a tenth
+    and three tenths of a metre for the whole approach and the swing misses by most of that.
+
+    Fed back rather than solved, because solving it is a fixed point: turning the robot
+    turns the clip that is anchored along its heading, which moves the target's velocity,
+    which moves the line. A proportional term converges while the robot is still a second
+    away from needing it.
+    """
+    if not self.steer_walk or self.arrive is None:
+      return
+    knobs = self.knobs[self.couple.leaving.name]
+    if "heading" not in knobs:
+      return
+    here = state(self.robot)
+    spot = self.arrive(self.env, self.chosen().entry.frame)
+    target = facing(self.entry_state, here)
+    gap = spot[:, 0:2] - here[:, 0:2]
+    along = (self.smoothed + target[:, 7:9]) / 2.0
+    cross = along[:, 0] * gap[:, 1] - along[:, 1] * gap[:, 0]
+    lead = torch.atan2(cross, (along * gap).sum(dim=-1))
+    knobs["heading"] = float(torch.atan2(gap[0, 1], gap[0, 0]) + lead[0])
 
   def condition(self) -> None:
     """Tell whichever skill owns the world right now what it is being asked for.
@@ -1401,7 +2207,13 @@ class Run:
     What the viewer shows, and the phase name is not it. "entering" says a hand-over has
     happened and leaves you to remember which skill that was, which is the one thing
     somebody watching a transition is trying to read off the screen.
+
+    The bridge says which architecture too, when more than one is loaded. Two of them
+    crossing the same gap look alike enough that the dropdown's position is not something
+    to be trusted to memory.
     """
+    if self.phase == 1 and len(self.bridges) > 1:
+      return f"{BRIDGE_GROUP} ({self.driving})"
     return self.names[self.phase]
 
   @property
@@ -1421,7 +2233,12 @@ class Run:
     gap = float(
       (state(self.robot)[0, 0:2] - arrive(self.env, entry.frame)[0, 0:2]).norm()
     )
-    return f"{self.active}  {gap:.2f} m from '{entry.name}'"
+    if not self.by_distance:
+      return f"{self.active}  {gap:.2f} m from '{entry.name}'"
+    return (
+      f"{self.active}  {gap:.2f} m from '{entry.name}', firing at {self.fire_at:.2f} m "
+      f"into a {self.window_s:.2f} s window"
+    )
 
   def reset(self) -> None:
     """Start over, because the world just did.
@@ -1437,19 +2254,27 @@ class Run:
     settings.
     """
     self.fire = self.done = False
-    self.phase = self.tick = self.until = 0
+    self.phase = self.tick = self.until = self.fading = 0
     self.earned, self.scored, self.fell = 0.0, 0, False
+    self.parting.zero_()
+    self._gap = float("inf")
     self.command.aimed = False
     self.command.trail = None
     self.enter(self.couple.leaving)
 
   @torch.no_grad()
   def __call__(self, obs):
+    self.smoothed = (
+      self.decay * self.smoothed
+      + (1.0 - self.decay) * self.robot.data.root_link_lin_vel_w[:, 0:2]
+    )
+    if self.phase == 0:
+      self.aim_walk()
     self.condition()
 
     if self.phase == 0 and self.triggered():
       obs = self.cross()
-    elif self.phase == 1 and bool((self.command.step >= self.command.deadline).all()):
+    elif self.phase == 1 and self.crossed:
       obs = self.hand_over()
     elif self.phase == 2:
       self.watch()
@@ -1462,8 +2287,70 @@ class Run:
     if self.phase == 0:
       self.command.trail = self.demanded() if self.preview else None
 
+    # The reference walks up to the entry frame while the bridge crosses, so that the
+    # entering skill is handed one that has been approaching it rather than one that has to
+    # be rewound underneath it
+    if self.phase == 1 and self.cfg.count_in:
+      self.count_in()
+
     self.tick += 1
-    return self.acts[self.phase](obs)
+    action = self.acts[self.phase](obs)
+    action = self.faded(action)
+    self.parting = action.clone()
+    if self.seam is not None:
+      clip = torch.zeros(self.env.num_envs, device=action.device)
+      if "motion" in self.env.command_manager.active_terms:
+        motion = self.env.command_manager.get_term("motion")
+        if isinstance(motion, JumpCommand):
+          clip = motion.time_steps
+      phase = torch.full_like(clip, float(self.phase), dtype=torch.long)
+      self.seam.record(action, obs, self.couple.entering.name, clip, phase)
+    return action
+
+  def faded(self, action: torch.Tensor) -> torch.Tensor:
+    """Ramp out of the parting policy's last action over the steps a switch still owes.
+
+    Applied at both switches, not only the hand-over. A transition has two of them and both
+    are a change of driver, so both put a step into the joint targets; the one out of the
+    leaving skill is the less visible of the pair only because the bridge is the more
+    compliant of the two policies.
+
+    See `Config.blend_steps` and `crossfade`, which this is the single env form of.
+    """
+    steps = self.blend_steps
+    if self.fading <= 0 or steps <= 0:
+      return action
+    weight = float(steps - self.fading + 1) / float(steps)
+    self.fading -= 1
+    return weight * action + (1.0 - weight) * self.parting
+
+  def count_in(self) -> None:
+    """Hold the entering tracker's clip `left` frames short of its entry and march it in.
+
+    `left` comes off the window the crossing was given rather than off a clock kept here,
+    so a bridge that arrives early leaves the reference a few frames short and `resume`
+    closes that instead of fifty. Clamped at zero, so a crossing running into its patience
+    overrun finds the reference waiting at the entry frame rather than marching past it.
+
+    Nothing to do for an entering skill with no reference.
+    """
+    if "motion" not in self.env.command_manager.active_terms:
+      return
+    motion = self.env.command_manager.get_term("motion")
+    if not isinstance(motion, JumpCommand):
+      return
+    left = int((self.command.window_steps - self.command.step).clamp(min=0)[0])
+    entry_resume.rewind(self.env, max(self.aimed_frame - left, 0))
+
+  @property
+  def crossed(self) -> bool:
+    """Whether the bridge is finished, either by arriving or by running out of patience.
+
+    The switch out of the bridge phase. It used to be the clock, which handed over at the
+    same tick whether the crossing had worked or not; the bridge now says which, and
+    `hand_over` prints it.
+    """
+    return bool(self.command.arrived_now.all() or self.command.out_of_patience.all())
 
   def watch(self) -> None:
     """Score the entering skill while it drives, on its own terms.
@@ -1531,6 +2418,11 @@ class Run:
     """Aim the bridge at one state off the entering skill's window, draw the rest of that
     window behind it, place the skill and start the clock."""
     self.fire, self.phase = False, 1
+    self.fading = self.blend_steps
+    # Whichever architecture the dropdown is on, read here and nowhere else. Index two is
+    # left as it was found, because walk2kick_robust_test swaps the entering policy the
+    # same way and the two must not write over each other
+    self.acts = (self.acts[0], self.bridges[self.driving], self.acts[2])
     here = state(self.robot)
     chosen = self.chosen()
     self.left_from = here[:, 0:3].clone()
@@ -1549,6 +2441,8 @@ class Run:
       chosen.entry.frame,
       self.arrive,
       self.knobs[self.couple.entering.name],
+      recorded=chosen.entry,
+      tolerances=self.cfg.tolerances.for_entry(chosen.entry.skill, chosen.entry.frame),
     )
     # Frozen where it already was, for a skill with an object. `aim` placed the target with
     # the same call at the same tick, so the chosen entry's ghost is the target rather than
@@ -1567,74 +2461,64 @@ class Run:
       )
     )
     print(
-      f"\ncross: {self.duration_s:.2f} s to '{chosen.entry.name}', recorded at frame "
-      f"{chosen.entry.frame}, effort {chosen.effort:.2f} on {chosen.binding}"
-      f"{self.verdict(here)}"
+      f"\ncross: to '{chosen.entry.name}', recorded at frame {chosen.entry.frame}, "
+      f"placed {self.duration_s:.2f} s ahead, effort {chosen.effort:.2f} on "
+      f"{chosen.binding}{self.verdict(here)}"
+    )
+    profile = self.command.window_tolerances[0].tolist()
+    print(
+      "  tolerances: "
+      + ", ".join(
+        f"{name}={value:g}" for name, value in zip(CHANNELS, profile, strict=True)
+      )
     )
     return fresh_obs(self.env)
 
   def verdict(self, here: torch.Tensor) -> str:
-    """Whether the window just asked for is one the bridge has seen, and one a body could
-    cross at all. Two questions, two answers.
+    """Whether a body could cross this at all, in the time the placement assumed.
 
-    The band is what training drew: durations uniform over `duration_s_range` and nothing
-    else, because every window it saw was a stretch of one rollout that long. Outside that
-    band the bridge is being asked something it was never shown, so a bad score there is
-    evidence about the slider.
+    One question now, not two. There used to be a second, whether the window was one the
+    bridge had seen, and it no longer means anything: the bridge is given no duration, so
+    there is no band of them it was trained inside. `duration_s_range` describes how far
+    apart the corpus cuts a training pair and says nothing about what may be asked here.
 
-    The acceleration is physics, and the one thing the recordings cannot vouch for. At
-    inference the pair is not a recording: it is wherever the outgoing skill left the robot
-    and whichever frame of the entering skill was picked, and nothing stops those two from
-    being further apart than a body can travel in the time given.
+    The acceleration is physics and still holds. The placement puts the target where a body
+    changing velocity steadily would be after this long, and nothing stops the state the
+    selector picked from being further from the robot's current one than a body can travel
+    in that time.
     """
     change = float((self.target[0, 7:10] - here[0, 7:10]).norm())
-    cfg = self.command.cfg
     seconds = self.duration_s
     accel = change / seconds
+    # How far there is to go, which with a distance fired switch is the other half of the
+    # request and the half nothing else prints. `fire_at` and the window are independent
+    # once the switch stops solving for one of them, so a crossing can be asked for half a
+    # metre in a window that covers a fifth of it, and the only sign is the standing error
+    # after the fact
+    gap = float((self.target[0, 0:2] - here[0, 0:2]).norm())
 
-    said = f", sheds {change:.1f} m/s in {seconds:.2f} s ({accel:.1f} m/s^2)"
-    low, high = cfg.duration_s_range
-    if not low <= seconds <= high:
-      return (
-        f"{said}: {seconds:.2f} s is outside the {low:.2f}-{high:.2f} s it trained on"
-      )
+    said = (
+      f", {gap:.2f} m to cover, sheds {change:.1f} m/s in {seconds:.2f} s "
+      f"({accel:.1f} m/s^2)"
+    )
     if accel > MAX_ACCEL:
       return f"{said}: past the {MAX_ACCEL:.0f} m/s^2 a humanoid sustains"
     return said
 
   def resume(self) -> None:
-    """Wind the entering skill's reference back to the entry frame, at the instant it takes
-    over.
-
-    A clip does not wait. `JumpCommand._update_command` adds a step every step, to every
-    environment, whoever is driving, so the reference `cross` wound to the entry frame has
-    played the whole window forward by the time control changes:
-
-        window            0.70 s at 50 Hz, 35 frames
-        jump clip         212 frames
-        entry p38         recorded at frame 94, reference at 129 when the jump takes over
-
-    The bridge delivers the robot into the state recorded at frame 94. Handing the tracker a
-    reference at 129 is handing it a third of a jump it has not done, which is the out of
-    phase hand-over the entry frame exists to prevent, arriving by a different route.
-
-    So the placement is repeated, with the same target, the same heading and the same frame
-    `cross` used. The anchor is the identical rigid placement, only the phase moves, and
-    nothing is read off the robot: the arrival error stays exactly where the bridge left it.
-
-    Repeated rather than frozen for the window, because one call is enough. Nothing reads
-    the entering skill's reference while the bridge drives.
-
-    Every actor's `enter` is safe to run twice, and a skill without a reference wants this
-    anyway: the pass clears its ball-contact latch, and it should be clear at the moment the
-    pass takes over rather than a window earlier.
-    """
+    """Rewind the reference at its original placement and clear skill entry latches."""
     entering = self.couple.entering
     if entering.enter is None:
       return
+    entry_resume.rewind(self.env, self.aimed_frame)
+    position = self.target[:, :3]
+    if "motion" in self.env.command_manager.active_terms:
+      motion = self.env.command_manager.get_term("motion")
+      assert isinstance(motion, JumpCommand)
+      position = motion.body_pos_w[:, 0]
     entering.enter(
       self.env,
-      self.target[:, 0:3],
+      position,
       self.aimed_from,
       self.aimed_frame,
       self.knobs[entering.name],
@@ -1643,19 +2527,22 @@ class Run:
   def hand_over(self):
     """Report the arrival, then let the entering skill drive.
 
-    The score is the command's own metric against its own calibrated tolerances, so a
-    hand-over here and a line of evaluate.py read on one scale. Computed here rather than
-    read off the command because nothing in this arena is scored: the reward term that
-    latches an arrival in training never runs, so the command's `score` stays at zero.
+    Report the live state against the requested profile and the fixed baseline.
+    The command's score describes its best earlier state, not necessarily the handoff.
     """
     self.phase = 2
+    self.fading = self.blend_steps
     self.resume()
     self.until = self.tick + self.cfg.entering_steps
     self.earned, self.scored, self.fell = 0.0, 0, False
+    verdict = "arrived" if bool(self.command.arrived_now.all()) else "gave up"
     now, want = state(self.robot)[0], self.target[0]
     joints = slice(ROOT_STATE_DIM, ROOT_STATE_DIM + self.robot.num_joints)
     errors = channel_errors(now.unsqueeze(0), want.unsqueeze(0), self.command.arms)
-    score = float(arrival_score(errors, self.command.tolerances)[0])
+    profile = self.command.window_tolerances[:1]
+    score = float(arrival_score(errors, profile)[0])
+    fixed_score = float(arrival_score(errors, self.command.tolerances)[0])
+    worst_ratio = float((errors / profile).amax())
     # How far the body really went, over how far it was asked to go. Config.overshoot is
     # this minus one, and this is the only way to measure it: the placement is a model of a
     # walking body decelerating, and the body is the truth
@@ -1663,7 +2550,8 @@ class Run:
     asked = float((want[:2] - self.left_from[0, :2]).norm())
     travelled = f"  travelled {went / asked:.2f}x" if asked > 1e-3 else ""
     print(
-      f"  arrived: score {score:.3f}  "
+      f"  {verdict}: requested score {score:.3f}  fixed score {fixed_score:.3f}  "
+      f"worst error/tolerance {worst_ratio:.2f}  "
       f"{float((now[:3] - want[:3]).norm()):.2f} m off  "
       f"speed {float(now[7:10].norm()):.2f} vs {float(want[7:10].norm()):.2f} m/s  "
       f"joints {float((now[joints] - want[joints]).abs().max()):.2f} rad" + travelled
@@ -1739,6 +2627,18 @@ def panel(server, run: Run) -> None:
     button = server.gui.add_button(run.couple.entering.name)
     button.on_click(lambda _: setattr(run, "fire", True))
 
+    # Only when there is a choice to make. One architecture loaded is a dropdown with one
+    # entry, which says nothing and implies the others are missing rather than untrained
+    if len(run.bridges) > 1:
+      which = server.gui.add_dropdown(
+        "bridge",
+        tuple(run.bridges),
+        initial_value=run.driving,
+        hint="Which architecture crosses. Applied at the next hand-over, since swapping "
+        "one mid-crossing compares nothing. The Active line names whoever is driving.",
+      )
+      which.on_update(lambda _: setattr(run, "driving", str(which.value)))
+
     # Only for a skill with an object. Everything else has its entry states drawn at the
     # switch and nowhere to put them before it, so a checkbox there would be one that does
     # nothing until the moment it stops mattering
@@ -1752,67 +2652,149 @@ def panel(server, run: Run) -> None:
       )
       entries.on_update(lambda _: setattr(run, "preview", bool(entries.value)))
 
-    # No slider in auto: the selector answers this every step, and a control that only
-    # fought that answer would be a way to make the mode mean nothing
-    if run.cfg.mode == "manual":
-      entry = server.gui.add_slider(
-        "entry",
+    entry = server.gui.add_slider(
+      "entry",
+      min=0,
+      max=max(len(run.order) - 1, 1),
+      step=1,
+      initial_value=run.entry,
+      hint="Which state to aim at, in the order selector.view draws them.",
+    )
+    entry.on_update(lambda _: setattr(run, "entry", int(entry.value)))
+
+    # How much of the disagreement between the two policies reaches the actuators in one
+    # step. Live, because the seam it removes is a single control step and the only way to
+    # believe a number about it is to put it back and watch
+    fade = server.gui.add_slider(
+      "crossfade steps",
+      min=0,
+      max=24,
+      step=1,
+      initial_value=run.blend_steps,
+      hint="Control steps to ramp out of the parting policy's last action at each switch. "
+      "Zero is a hard switch and is what makes the hand-over visible. Applied at the next "
+      "switch, not the one running.",
+    )
+    fade.on_update(lambda _: setattr(run, "blend_steps", int(fade.value)))
+
+    if run.couple.entering.arrive is not None:
+      # A skill with an object is entered at a place, so the switch is a distance and not a
+      # step. See Config.fire_at. The step controls are not offered beside these: two ways
+      # to say when, one of which silently wins, is worse than either
+      distance = server.gui.add_slider(
+        "fire at, m",
+        min=0.0,
+        max=2.0,
+        step=0.05,
+        initial_value=run.fire_at,
+        hint="Metres from where the entering skill needs the robot, at which the switch "
+        "fires. The same number the line above counts down.",
+      )
+      distance.on_update(lambda _: setattr(run, "fire_at", float(distance.value)))
+
+      low, high = run.command.cfg.duration_s_range
+      window = server.gui.add_slider(
+        "window, s",
+        min=low,
+        max=high,
+        step=0.05,
+        initial_value=min(max(run.window_s, low), high),
+        hint="Seconds the bridge is given. Pinned rather than solved, because the point of "
+        "firing at a fixed place is that both ends of the crossing are stated.",
+      )
+      window.on_update(lambda _: setattr(run, "window_s", float(window.value)))
+
+      walked = server.gui.add_checkbox(
+        "fire on the distance above",
+        initial_value=run.by_distance,
+        hint="On, the same crossing repeats every episode: same entry, same metres out, "
+        "same window, whatever the approach did. Off hands the moment back to the button.",
+      )
+      walked.on_update(lambda _: setattr(run, "by_distance", bool(walked.value)))
+
+      aimed = server.gui.add_checkbox(
+        "steer the walk at the spot",
+        initial_value=run.steer_walk,
+        hint="On, the walk's heading is written every step so the crossing line runs "
+        "through where the entering skill needs the robot, and the heading slider does "
+        "nothing. Off hands the heading back. This is what decides whether the swing "
+        "meets the ball.",
+      )
+      aimed.on_update(lambda _: setattr(run, "steer_walk", bool(aimed.value)))
+    else:
+      # The other half of repeating a crossing, for a skill with nothing on the floor. The
+      # entry fixes the state being aimed at and this fixes the state being aimed from,
+      # which is what a hand pressed button cannot do: it lands on a different stride every
+      # time. There is no spot to walk onto here, so a step is the only thing left to pin
+      step = server.gui.add_slider(
+        "switch step",
         min=0,
-        max=max(len(run.order) - 1, 1),
+        max=max(SWITCH_STEP_MAX, run.switch_at or 0),
         step=1,
-        initial_value=run.entry,
-        hint="Which state to aim at, in the order selector.view draws them.",
+        initial_value=run.switch_at
+        if run.switch_at is not None
+        else DEFAULT_SWITCH_STEP,
+        hint="Control step the hand-over fires on, counted from the reset. Only read while "
+        "the checkbox below is on.",
       )
-      entry.on_update(lambda _: setattr(run, "entry", int(entry.value)))
-
-    low, high = run.command.cfg.duration_s_range
-    duration = server.gui.add_slider(
-      "duration_s",
-      min=low,
-      max=high,
-      step=0.05,
-      initial_value=run.duration_s,
-      hint="How long the bridge gets. Released, it is solved so the crossing lands where "
-      "the entering skill needs the robot, or falls back to the default window stretched "
-      "to whatever the chosen entry demands.",
-    )
-    duration.on_update(
-      lambda _: setattr(run, "written_duration_s", float(duration.value))
-    )
-
-    # A duration is something to release rather than only something to set: the object
-    # geometry can solve for one and the chosen entry puts a floor under one, and both are
-    # better answers than a number left on a slider from the last run
-    auto = server.gui.add_checkbox(
-      "solve the duration",
-      initial_value=run.written_duration_s is None,
-      hint="Let where the entering skill needs the robot decide the window, and the "
-      "chosen entry's effort decide how short it may be.",
-    )
-    auto.on_update(
-      lambda _: setattr(
-        run, "written_duration_s", None if auto.value else float(duration.value)
+      pinned = server.gui.add_checkbox(
+        "fire on the step above",
+        initial_value=run.switch_at is not None,
+        hint="On repeats the same crossing every episode, so two runs differ in nothing "
+        "but what is being compared. Off hands the moment back to the button.",
       )
-    )
+
+      def instant(_) -> None:
+        run.switch_at = int(step.value) if pinned.value else None
+
+      step.on_update(instant)
+      pinned.on_update(instant)
+
+    # No duration slider. The bridge is not given one: it reads the gap to its target and
+    # the best it has managed so far, and it is paid for the best moment of the window
+    # whenever that happens, so there is no window length to set for it. What a duration
+    # still decides is where a target with nothing to fix it gets placed, and how long an
+    # unsuccessful crossing is left running. Neither is a dial worth putting in front of
+    # somebody watching a hand-over: one is geometry and the other is a give-up timer.
+    # `Config.duration_s` is still there for a run that wants to pin it.
 
 
-def main(couple: Couple) -> None:
+def main(couple: Couple, extra: Callable[[Any, "Run"], None] | None = None) -> None:
+  """Run one transition. `extra` adds controls to the panel, for a variant of this arena."""
   import mjlab.tasks  # noqa: F401  (populates the task registry)
 
+  config_cls = config_for(couple)
   cfg = tyro.cli(
-    Config,
+    config_cls,
     default=replace(
-      Config(),
+      config_cls(),
       duration_s=couple.duration_s,
       overshoot=couple.overshoot,
     ),
     config=mjlab.TYRO_FLAGS,
   )
-  if cfg.viewer == "none" and cfg.auto is None and couple.entering.ready is None:
+  if (
+    cfg.viewer == "none"
+    and cfg.auto is None
+    and couple.entering.ready is None
+    and couple.entering.arrive is None
+  ):
     raise SystemExit(
-      f"--viewer none has nothing to press the button, and {couple.entering.name} has no "
-      f"precondition to fire on: pass --auto N."
+      f"--viewer none has nothing to press the button, and {couple.entering.name} has "
+      f"neither a precondition nor a spot to walk onto: pass --auto N."
     )
+
+  if cfg.bridge not in cfg.bridges:
+    raise SystemExit(
+      f"--bridge {cfg.bridge} is not one of --bridges {cfg.bridges}. The one that drives "
+      f"has to be among the ones offered."
+    )
+
+  # First, because an architecture that has no code behind it is the cheapest thing to be
+  # wrong about and the message says so plainly, and because the arena needs to know which
+  # architectures it is hosting before it is built
+  offered = offered_bridges(cfg.bridges, cfg.bridge)
+  spec = offered[0][0]
 
   torch.manual_seed(cfg.seed)
   device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -1824,27 +2806,42 @@ def main(couple: Couple) -> None:
   for line in table.lines(couple.entering.name):
     print(line)
 
-  env = ManagerBasedRlEnv(cfg=arena(couple), device=device)
-  bridge = Actor(BRIDGE_GROUP, BRIDGE_TASK_ID)
+  others = tuple(spec for spec, _ in offered[1:])
+  env = ManagerBasedRlEnv(cfg=arena(couple, spec, others), device=device)
+  bridge = Actor(BRIDGE_GROUP, spec.task_id)
   policies: dict[str, Policy] = {}
   for actor in (couple.leaving, couple.entering, bridge):
-    explicit = cfg.checkpoint if actor is bridge else None
+    explicit = (
+      cfg.bridge_checkpoint if actor is bridge else getattr(cfg, checkpoint_flag(actor))
+    )
     checkpoint = find_checkpoint(load_rl_cfg(actor.task).experiment_name, explicit)
     print(f"{actor.name:8s} {checkpoint}")
     policies[actor.name] = Policy(actor.task, checkpoint, env, actor.name, device)
 
+  # The rest of the dropdown. Each reads its own observation group, so the one thing that
+  # changes when the dropdown moves is the policy. A checkpoint that will not load is
+  # dropped here rather than at the moment somebody picks it, since an architecture whose
+  # network changed under its logs is the same normal state as one nobody has trained
+  alternatives: dict[str, Policy] = {}
+  for other, checkpoint in offered[1:]:
+    print(f"{other.kind:8s} {checkpoint}")
+    try:
+      alternatives[other.kind] = Policy(
+        other.task_id, checkpoint, env, bridge_group(other.kind), device
+      )
+    except Exception as broken:  # noqa: BLE001
+      print(f"[bridge] {other.kind}: not offered, {type(broken).__name__}: {broken}")
+
   env.reset()
-  run = Run(env, couple, policies, table, cfg)
-  if cfg.mode == "manual":
-    print(f"{len(run.order)} states on the slider:")
-    for index, entry in enumerate(run.order):
-      print(f"  {index:2d}. {entry.name:<8} {entry.why}")
-  else:
-    for line in ranking_lines(run.ranked()):
-      print(line)
+  run = Run(env, couple, policies, table, cfg, alternatives)
+  print(f"{len(run.order)} states on the slider:")
+  for index, entry in enumerate(run.order):
+    print(f"  {index:2d}. {entry.name:<8} {entry.why}")
+  for line in entry_lines(run.ranked()):
+    print(line)
   print(
-    f"{couple.entering.name}: {cfg.mode}, aiming at '{run.chosen().entry.name}' "
-    f"over {run.duration_s:.2f} s"
+    f"{couple.entering.name}: aiming at '{run.chosen().entry.name}', "
+    f"target placed {run.duration_s:.2f} s ahead"
   )
 
   if cfg.viewer == "none":
@@ -1857,6 +2854,8 @@ def main(couple: Couple) -> None:
       # A trigger that never fires is a result, not a hang. The robot walked past its
       # object or never lined up with it, and sitting here forever hides that
       print(f"\ngave up after {cfg.patience} steps in the '{run.label}' phase")
+    if run.seam is not None:
+      run.seam.report(0)
     env.close()
     return
 
@@ -1866,10 +2865,18 @@ def main(couple: Couple) -> None:
 
   server = viser.ViserServer(label=f"{couple.leaving.name}2{couple.entering.name}")
   panel(server, run)
+  if extra is not None:
+    extra(server, run)
   wrapped = RslRlVecEnvWrapper(
     env, clip_actions=load_rl_cfg(couple.entering.task).clip_actions
   )
   ViserPlayViewer(
-    wrapped, run, viser_server=server, info_provider=lambda _: run.status
+    wrapped,
+    run,
+    viser_server=server,
+    info_provider=lambda _: run.status,
+    record_name=f"{couple.leaving.name}2{couple.entering.name}",
   ).run()
+  if run.seam is not None:
+    run.seam.report(0)
   wrapped.close()

@@ -31,12 +31,26 @@ from __future__ import annotations
 import torch
 
 from mjlab.envs import ManagerBasedRlEnv
-from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp import ROOT_STATE_DIM
+from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.mdp import (
+  ROOT_STATE_DIM,
+  Tolerances,
+)
+from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.arena import command_name
 from mjlab.tasks.bridging.experiments.humanoid.demos.parkour.pool import (
   Skill,
   SkillPool,
 )
 from mjlab.tasks.bridging.experiments.humanoid.selector import Reach
+from mjlab.tasks.bridging.experiments.humanoid.selector import resume as entry_resume
+from mjlab.tasks.bridging.experiments.humanoid.selector.state import (
+  place_with_reference,
+)
+from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.mdp.commands import (
+  JumpCommand,
+)
+from mjlab.tasks.bridging.experiments.humanoid.tests.entry_tolerances import (
+  entry_tolerances,
+)
 from mjlab.tasks.bridging.experiments.humanoid.tests.stage import (
   ARRIVE_SLACK,
   BRIDGE_GROUP,
@@ -84,6 +98,18 @@ class Bridge:
     self.target: torch.Tensor | None = None
     """Where the last crossing was aimed. None before the first one."""
 
+  def reset(self) -> None:
+    """Forget the last crossing. Nothing is aimed until the next `aim`.
+
+    The command term survives a reset untouched, because `Aimed._resample_command` does
+    nothing on purpose: a target arrives from outside and is never drawn. So a stale target
+    would go on being drawn over a robot back at the start line, and `arrival` would report
+    the gap to a pose from a course that is over.
+    """
+    self.target = None
+    self.command.aimed = False
+    self.command.trail = None
+
   ##
   # What a window may be.
   ##
@@ -121,6 +147,23 @@ class Bridge:
     ).expand(at_xy.shape[0], -1)
     target = facing_yaw(entry.clone(), at_yaw)
     target[:, 0:2] = at_xy
+    motion = command_name(reach.entry.skill, "motion")
+    if motion in self.env.command_manager.active_terms:
+      entry_resume.prepare(self.env, reach.entry, motion)
+      command = self.env.command_manager.get_term(motion)
+      assert isinstance(command, JumpCommand)
+      reference = torch.cat(
+        [command.body_pos_w[:, 0], command.body_quat_w[:, 0]], dim=-1
+      )
+      turn = quat_mul(
+        quat_from_yaw(at_yaw), quat_conjugate(yaw_quat(reference[:, 3:7]))
+      )
+      reference[:, 3:7] = quat_mul(turn, reference[:, 3:7])
+      reference[:, :2] = at_xy
+      recorded = torch.as_tensor(
+        reach.entry.reference, device=self.env.device
+      ).unsqueeze(0)
+      target = place_with_reference(entry, recorded, reference)
     return target
 
   def solve(
@@ -144,6 +187,8 @@ class Bridge:
     duration_s: float,
     anchor_yaw: torch.Tensor | None = None,
     frame: int | None = None,
+    *,
+    tolerances: Tolerances | torch.Tensor | None = None,
   ) -> torch.Tensor:
     """Point the bridge at a pose and start the clock.
 
@@ -160,23 +205,33 @@ class Bridge:
     solves both together: see `Controller.place`.
     """
     del here  # the target is commanded, so where the robot is now does not place it
+    if tolerances is None:
+      tolerances = entry_tolerances(reach.entry.skill, reach.entry.frame)
+    motion = command_name(skill.name, "motion")
+    entry_resume.prepare(self.env, reach.entry, motion)
+    assert reach.entry.previous_action is not None
     target = self.target_state(reach, at_xy, at_yaw)
     pinned = at_yaw if anchor_yaw is None else anchor_yaw
     skill.enter(
       self.env,
-      target[:, 0:3],
+      torch.cat([at_xy, target[:, 2:3]], dim=-1),
       quat_from_yaw(pinned),
       reach.entry.frame if frame is None else frame,
     )
 
+    if motion in self.env.command_manager.active_terms:
+      target = entry_resume.target(self.env, reach.entry, motion)
+
     self.target = target
+    env_ids = torch.arange(self.command.num_envs, device=self.command.device)
+    # open_window crosses to the target the command already holds, so it is written first
     self.command.target[:] = target
     self.command.aimed = True
-    env_ids = torch.arange(self.command.num_envs, device=self.command.device)
     # Seconds, not ticks. The command converts, and it is the only thing that should
     self.command.open_window(
       env_ids,
       torch.full((self.command.num_envs,), duration_s, device=self.command.device),
+      tolerances=tolerances,
     )
     return target
 
@@ -186,8 +241,24 @@ class Bridge:
 
   @property
   def done(self) -> bool:
-    """Whether the open window has closed."""
-    return bool((self.command.step >= self.command.deadline).all())
+    """Whether the crossing is over, either way. See `succeeded` for which way.
+
+    Two ways to be over, and that is the change. The window used to end when its clock ran
+    out, so a crossing that arrived early was made to keep going and one that was never
+    going to arrive was handed over anyway at exactly the same moment. Now it ends when the
+    bridge says it is there, or when patience runs out on one that is not.
+    """
+    return bool(self.succeeded or self.command.out_of_patience.all())
+
+  @property
+  def succeeded(self) -> bool:
+    """Whether the crossing reached every channel of its target inside tolerance.
+
+    What the controller should branch on. A crossing that ran out of patience has still
+    done its best, and `self.command.score` says how good that was, so handing over anyway
+    is a decision available to the caller rather than one this class makes for it.
+    """
+    return bool(self.command.arrived_now.all())
 
   def arrival(self, here: torch.Tensor) -> tuple[float, float, float]:
     """How far off the target the robot ended up: metres, radians of heading, radians of joint.

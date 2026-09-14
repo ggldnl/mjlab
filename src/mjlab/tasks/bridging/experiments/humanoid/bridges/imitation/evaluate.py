@@ -51,7 +51,7 @@ import tyro
 import mjlab
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
-from mjlab.tasks.bridging.experiments.humanoid.bridges.datasets.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.dataset import (
   DEFAULT_DATASET,
   LOG_ROOT,
 )
@@ -65,6 +65,7 @@ from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.mdp.commands im
   BridgeCommandCfg,
 )
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
+from mjlab.utils.torch import reset_policy
 
 COMMAND = "bridge"
 
@@ -169,11 +170,20 @@ def _trained(env: ManagerBasedRlEnv, cfg: EvalCfg):
   runner.load(str(path), load_cfg={"actor": True}, strict=True, map_location=cfg.device)
   inference = runner.get_inference_policy(device=cfg.device)
 
-  def policy(obs):
-    with torch.inference_mode():
-      return inference(TensorDict(obs, batch_size=[cfg.num_envs]))
+  class Driven:
+    """The loaded policy in the shape rollout drives, keeping the model reachable so its
+    hidden state can be cleared between windows."""
 
-  return policy
+    is_recurrent = inference.is_recurrent
+
+    def __call__(self, obs):
+      with torch.inference_mode():
+        return inference(TensorDict(obs, batch_size=[cfg.num_envs]))
+
+    def reset(self, dones) -> None:
+      inference.reset(dones)
+
+  return Driven()
 
 
 def _statue(env: ManagerBasedRlEnv, cfg: EvalCfg):
@@ -207,6 +217,7 @@ def rollout(env: ManagerBasedRlEnv, policy, cfg: EvalCfg, name: str) -> Result:
   while done_count < cfg.episodes:
     action = policy(obs)
     obs, _, terminated, truncated, _ = env.step(action)
+    reset_policy(policy, terminated | truncated)
     done = (terminated | truncated).nonzero().flatten()
     if done.numel():
       # Read before the reset. advance keeps all of this current at the window's best

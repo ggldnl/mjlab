@@ -88,8 +88,8 @@ import numpy as np
 import tyro
 
 import mjlab
-from mjlab.tasks.bridging.experiments.humanoid.bridges.datasets import dataset
-from mjlab.tasks.bridging.experiments.humanoid.bridges.datasets.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset import dataset
+from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.dataset import (
   TRACKER_DATASET,
   RolloutCfg,
 )

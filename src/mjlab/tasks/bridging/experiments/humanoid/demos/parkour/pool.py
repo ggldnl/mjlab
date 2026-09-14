@@ -1,6 +1,6 @@
 """The skills, each wrapping one frozen policy and everything it needs telling.
 
-    pool = SkillPool.load(ROSTER, env, device)
+    pool = SkillPool.load(ROSTER, env, device, bridge)
     pool["climb"].enter(env, pos, quat, frame)   put its reference where it belongs
     pool["walk"].tell(forward=0.7, heading=0.1)  what it is being asked for
     pool["walk"].condition(env)                  write that where the policy reads it
@@ -36,13 +36,13 @@ import numpy as np
 import torch
 
 from mjlab.envs import ManagerBasedRlEnv
-from mjlab.tasks.bridging.experiments.humanoid.bridge import BRIDGE_TASK_ID
+from mjlab.tasks.bridging.experiments.humanoid.bridges import BridgeSpec
 from mjlab.tasks.bridging.experiments.humanoid.selector import (
   Entry,
   EntryTable,
   Reach,
-  nearest,
 )
+from mjlab.tasks.bridging.experiments.humanoid.selector import reach as entry_reach
 from mjlab.tasks.bridging.experiments.humanoid.tests.stage import (
   BRIDGE_GROUP,
   Actor,
@@ -52,12 +52,20 @@ from mjlab.tasks.bridging.experiments.humanoid.tests.stage import (
 )
 from mjlab.tasks.registry import load_rl_cfg
 
-BRIDGE = Actor(BRIDGE_GROUP, BRIDGE_TASK_ID)
-"""The bridge as an actor, so it loads through the same path as a skill.
 
-It declares nothing else: no controls, because the controller aims it rather than telling it
-anything; no `enter`, because it has no reference to place; no `place`, because it puts
-nothing on the floor."""
+def with_bridge(actors: tuple[Actor, ...], bridge: BridgeSpec) -> tuple[Actor, ...]:
+  """The roster the demo loads: the skills, plus the chosen bridge as an actor.
+
+  The bridge loads through the same path as a skill and declares nothing else: no controls,
+  because the controller aims it rather than telling it anything; no `enter`, because it has
+  no reference to place; no `place`, because it puts nothing on the floor.
+
+  Appended here rather than written into `controller.ROSTER`, because which architecture is
+  in it is a command line choice and a roster naming one would make --bridge a lie.
+  """
+  if any(actor.name == BRIDGE_GROUP for actor in actors):
+    return actors
+  return actors + (Actor(BRIDGE_GROUP, bridge.task_id),)
 
 
 class Skill:
@@ -129,9 +137,12 @@ class Skill:
   # Being joined.
   ##
 
-  def reach(self, state: np.ndarray, seconds: float) -> Reach:
-    """The entry of this skill easiest to reach from `state`, and what it would demand."""
-    return nearest(self._table, self.name, state, seconds)[0]
+  def reach(self, state: np.ndarray, seconds: float, index: int) -> Reach:
+    """The entry this skill is entered at, and what reaching it from `state` would demand.
+
+    index names the entry. Nothing here picks one: the demo decides, in ENTRIES.
+    """
+    return entry_reach(self._table, self.name, index, state, seconds)
 
   ##
   # Driving.
@@ -175,6 +186,7 @@ class SkillPool:
     actors: tuple[Actor, ...],
     env: ManagerBasedRlEnv,
     device: str,
+    bridge: BridgeSpec,
     checkpoints: dict[str, Path] | None = None,
     table: EntryTable | None = None,
   ) -> SkillPool:
@@ -183,10 +195,7 @@ class SkillPool:
     `actors` does not have to include the bridge, which is appended here: forgetting it
     produces a demo that runs every skill and can never switch between them.
     """
-    everyone = tuple(actors)
-    if all(actor.name != BRIDGE_GROUP for actor in everyone):
-      everyone += (BRIDGE,)
-
+    everyone = with_bridge(tuple(actors), bridge)
     found = SkillPool.resolve(everyone, checkpoints)
     entries = table if table is not None else EntryTable.load()
     known = set(entries.skills)

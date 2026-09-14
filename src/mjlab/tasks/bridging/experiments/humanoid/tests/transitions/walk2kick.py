@@ -15,6 +15,19 @@ Run:
        # headless, firing the switch on step 130
        uv run python -m ...transitions.walk2kick --viewer none --auto 130
 
+    3. Compare versions of the kick. Same arena, plus a dropdown that swaps which kick
+       catches the robot and a slider that pins the step the switch fires on, so two
+       watches differ in the policy and nothing else. A variant is a suffix on the
+       experiment name: "base" is g1_kick, "robust" is what skills.finetune wrote to
+       g1_kick_robust. Every flag below is taken there too, so --entry pins which of the
+       six entries both versions are judged on.
+
+       uv run python -m ...transitions.walk2kick_robust_test --variants "('base','robust')"
+
+       # the same pair on one entry, headless
+       uv run python -m ...transitions.walk2kick_robust_test --variants "('base','robust')" \
+           --entry 3 --viewer none --auto 130
+
 The ball goes out two and a half to four metres ahead on the striking foot's line, and the
 walk sliders steer at it. The switch is the button, as it is for the jump and the strikes:
 nothing here waits for the ball to reach a box.

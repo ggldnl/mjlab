@@ -52,7 +52,7 @@ import viser
 from mjviser import ViserMujocoScene
 
 import mjlab
-from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.dataset import (
   ROOT_STATE_DIM,
 )
 from mjlab.tasks.bridging.experiments.humanoid.selector.ground import (

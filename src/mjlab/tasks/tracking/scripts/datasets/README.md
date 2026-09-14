@@ -59,7 +59,7 @@ import each other directly.
 ## Interactive cropping (`lafan1/interactive_crop.py`)
 
 ```sh
-uv run python src/mjlab/tasks/tracking/scripts/datasets/lafan1/interactive_crop.py \
+uv run python src/mjlab/tasks/tracking/scripts/dataset/lafan1/interactive_crop.py \
     --data-dir data/lafan1_g1 --output-dir data/lafan1_g1/bridging
 ```
 

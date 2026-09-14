@@ -100,7 +100,9 @@ import mjlab
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
-from mjlab.tasks.bridging.experiments.humanoid.bridge.mdp.commands import Tolerances
+from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.mdp.commands import (
+  Tolerances,
+)
 from mjlab.tasks.bridging.experiments.humanoid.skills import SKILLS
 from mjlab.tasks.bridging.experiments.humanoid.skills.jump_continuous.mdp.commands import (
   JumpCommandCfg,

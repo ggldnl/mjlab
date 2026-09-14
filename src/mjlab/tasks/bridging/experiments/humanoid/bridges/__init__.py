@@ -1,7 +1,7 @@
 """The bridge architectures. One sub-package each, and the registry that picks between them.
 
     imitation      PPO against tracker rollouts, guidance annealed to zero
-    diffusion      not implemented
+    diffusion      guided trajectory diffusion, fitted offline on the same rollouts
     distillation   not implemented
 
 Every architecture answers the same question, "get the robot from this dynamic state to that
@@ -16,7 +16,12 @@ the spec below carries the task id to load a policy from, the experiment name to
 newest checkpoint under, and the env config the staging arena is built on.
 
     uv run python -m ...tests.transitions.walk2jump --bridge imitation
-    uv run python -m ...demos.parkour.run --bridge imitation
+    uv run python -m ...demos.parkour.run --bridge diffusion
+
+A transition script goes further and loads every architecture that has a checkpoint, into a
+bridge dropdown on its panel, with --bridge saying which one starts. They share one arena,
+each reading its own observation group, so swapping is a swap of the policy and of nothing
+else. --bridges narrows what is loaded. See tests/stage.py.
 
 Adding one
 
@@ -43,7 +48,9 @@ BridgeKind = Literal["imitation", "diffusion", "distillation"]
 DEFAULT_BRIDGE: BridgeKind = "imitation"
 """The only one with a trained checkpoint."""
 
-BRIDGE_KINDS: tuple[str, ...] = get_args(BridgeKind)
+BRIDGE_KINDS: tuple[BridgeKind, ...] = get_args(BridgeKind)
+"""Every architecture, in declaration order. The default for a script that offers a
+choice between them."""
 
 
 @dataclass(frozen=True)

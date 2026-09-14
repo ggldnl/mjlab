@@ -1,7 +1,7 @@
 """Record each skill's rollouts. The input build.py reads.
 
 First step of the pipeline. Drives one trained policy per skill and writes down every
-control step: one npz, one source per skill, in the layout bridge/datasets/dataset.py
+control step: one npz, one source per skill, in the layout bridge/dataset/dataset.py
 defines. Needs a trained checkpoint per skill, found under logs/rsl_rl/g1_<skill>.
 
 One file holds every skill, so recording is all or nothing: running this with a single
@@ -44,8 +44,10 @@ import numpy as np
 import tyro
 
 import mjlab
-from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets import dataset
-from mjlab.tasks.bridging.experiments.humanoid.bridge.datasets.dataset import RolloutCfg
+from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset import dataset
+from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.dataset import (
+  RolloutCfg,
+)
 from mjlab.tasks.bridging.experiments.humanoid.selector import WINDOWS
 from mjlab.tasks.bridging.experiments.humanoid.selector.table import ROLLOUTS_PATH
 from mjlab.tasks.bridging.experiments.humanoid.skills import SKILLS
