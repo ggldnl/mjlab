@@ -10,6 +10,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum, auto
+from pathlib import Path
 from threading import Event, Lock
 from typing import Any, Optional
 
@@ -32,6 +33,7 @@ from mjlab.viewer.viser.overlays import (
   ViserDebugOverlays,
   ViserTermOverlays,
 )
+from mjlab.viewer.viser.recorder import ViserRecorder
 from mjlab.viewer.viser.scene import MjlabViserScene
 
 
@@ -73,6 +75,8 @@ class ViserPlayViewer(BaseViewer):
     viser_server: viser.ViserServer | None = None,
     checkpoint_manager: CheckpointManager | None = None,
     info_provider: Callable[[int], str] | None = None,
+    record_dir: Path | str = "videos",
+    record_name: str = "episode",
   ) -> None:
     super().__init__(env, policy, frame_rate, verbosity)
     self._ckpt_mgr = checkpoint_manager
@@ -80,6 +84,9 @@ class ViserPlayViewer(BaseViewer):
     # info box (e.g. the currently active skill or bridge). Kept generic so the core
     # viewer stays agnostic to whatever the caller's policy is doing.
     self._info_provider = info_provider
+    self._record_dir = record_dir
+    self._record_name = record_name
+    self._recorder: ViserRecorder | None = None
     self._term_overlays: ViserTermOverlays | None = None
     self._camera_overlays: ViserCameraOverlays | None = None
     self._debug_overlays: ViserDebugOverlays | None = None
@@ -169,6 +176,16 @@ class ViserPlayViewer(BaseViewer):
             self.request_reset_speed()
           else:
             self.request_speed_up()
+
+      self._recorder = ViserRecorder(
+        self._server,
+        self.env,
+        request=lambda: self.request_action("RECORD", {"type": "record_toggle"}),
+        folder=self._record_dir,
+        name=self._record_name,
+        env_idx=lambda: self._scene.env_idx,
+      )
+      self._recorder.create_gui()
 
       # Let command terms create their own GUI controls.
       env = self.env.unwrapped
@@ -284,6 +301,10 @@ class ViserPlayViewer(BaseViewer):
     action: ViewerAction,
     payload: Optional[Any],
   ) -> bool:
+    if isinstance(payload, dict) and payload.get("type") == "record_toggle":
+      if self._recorder is not None:
+        self._recorder.toggle()
+      return True
     if isinstance(payload, dict) and payload.get("type") == "gui_reset":
       self._handle_gui_reset(payload.get("all_envs", False))
       return True
@@ -524,6 +545,8 @@ class ViserPlayViewer(BaseViewer):
     if will_submit:
       self._queue_debug_visualizers()
     self._submit_scene_update_if_needed(sim, has_pending_updates)
+    if self._recorder is not None:
+      self._recorder.capture(self._step_count * self.env.unwrapped.step_dt)
     self._maybe_log_debug_timings()
 
   @override
@@ -542,6 +565,8 @@ class ViserPlayViewer(BaseViewer):
   @override
   def close(self) -> None:
     """Close the viewer and cleanup resources."""
+    if self._recorder is not None:
+      self._recorder.stop()
     if self._term_overlays:
       self._term_overlays.cleanup()
     if self._camera_overlays:

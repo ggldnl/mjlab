@@ -325,10 +325,20 @@ def run_play(task_id: str, cfg: PlayConfig):
   else:
     resolved_viewer = cfg.viewer
 
+  # Where the viewer's Record box writes its mp4s. Next to the checkpoint when there
+  # is one, so a video sits with the run it came from.
+  record_dir = log_dir / "videos" / "play" if log_dir is not None else Path("videos")
+
   if resolved_viewer == "native":
     NativeMujocoViewer(env, policy).run()
   elif resolved_viewer == "viser":
-    ViserPlayViewer(env, policy, checkpoint_manager=ckpt_manager).run()
+    ViserPlayViewer(
+      env,
+      policy,
+      checkpoint_manager=ckpt_manager,
+      record_dir=record_dir,
+      record_name=task_id,
+    ).run()
   else:
     raise RuntimeError(f"Unsupported viewer backend: {resolved_viewer}")
 
