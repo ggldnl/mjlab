@@ -165,7 +165,10 @@ class ImitationCommand(CommandTerm):
     self.final_errors = torch.zeros(self.num_envs, len(CHANNELS), device=self.device)
     self.final_score = torch.zeros(self.num_envs, device=self.device)
     self.arrived = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+    self._opened = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
     self._advanced_at = -1
+    self.active = False
+    self.error_names = CHANNELS
 
     self._target_ghost: mujoco.MjModel | None = None
     self._reference_ghost: mujoco.MjModel | None = None
@@ -177,11 +180,15 @@ class ImitationCommand(CommandTerm):
 
   @property
   def step(self) -> torch.Tensor:
-    return self._env.episode_length_buf
+    return (self._env.episode_length_buf - self._opened).clamp(min=0)
 
   @property
   def deadline(self) -> torch.Tensor:
-    return self.step >= self.window_steps
+    return self.active & (self.step >= self.window_steps)
+
+  @property
+  def handoff(self) -> torch.Tensor:
+    return self.deadline
 
   @property
   def command(self) -> torch.Tensor:
@@ -229,6 +236,39 @@ class ImitationCommand(CommandTerm):
   def target_errors(self) -> torch.Tensor:
     return channel_errors(self.state_now(), self.target, self.upper_body)
 
+  def aim(self, target: torch.Tensor) -> None:
+    """Show a target without starting the bridge clock."""
+    if target.shape != self.target.shape:
+      raise ValueError("target must have shape (num_envs, state)")
+    self.target[:] = target
+
+  def open_window(
+    self,
+    env_ids: torch.Tensor,
+    target: torch.Tensor,
+    duration_s: torch.Tensor,
+  ) -> None:
+    """Start a live transition toward an externally supplied target."""
+    if target.shape != self.target[env_ids].shape:
+      raise ValueError("target must have shape (selected_envs, state)")
+    if duration_s.shape != env_ids.shape:
+      raise ValueError("duration_s must have shape (selected_envs,)")
+    low, high = self.cfg.duration_s_range
+    if bool(((duration_s < low) | (duration_s > high)).any()):
+      raise ValueError(f"duration_s must be between {low:g} and {high:g}")
+    self._opened[env_ids] = self._env.episode_length_buf[env_ids]
+    self.target[env_ids] = target
+    self.window_steps[env_ids] = torch.clamp(
+      torch.round(duration_s * self.fps).long(), min=1
+    )
+    self.final_errors[env_ids] = 0.0
+    self.final_score[env_ids] = 0.0
+    self.arrived[env_ids] = False
+    self.active = True
+
+  def stop(self) -> None:
+    self.active = False
+
   def tracking_score(self) -> torch.Tensor:
     errors = channel_errors(self.state_now(), self.reference_now(), self.upper_body)
     return score(errors, self.tolerances * self.cfg.tracking_tolerance_scale)
@@ -252,7 +292,11 @@ class ImitationCommand(CommandTerm):
 
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     if self.dataset is None or self.windows is None:
-      raise RuntimeError("Imitation training requires a dataset")
+      self._opened[env_ids] = self._env.episode_length_buf[env_ids]
+      self.target[env_ids] = self.state_now()[env_ids]
+      self.window_steps[env_ids] = 1
+      self.active = False
+      return
     count = env_ids.numel()
     start_rows, target_rows, steps, positions = self.windows.draw(count)
     start = self.dataset.states[start_rows]
@@ -271,10 +315,12 @@ class ImitationCommand(CommandTerm):
     self.route_origin[env_ids] = landing
     self.route_rotation[env_ids] = rotation
     self.window_steps[env_ids] = steps
+    self._opened[env_ids] = self._env.episode_length_buf[env_ids]
     self.target[env_ids] = self._place_state(self.dataset.states[target_rows], env_ids)
     self.final_errors[env_ids] = 0.0
     self.final_score[env_ids] = 0.0
     self.arrived[env_ids] = False
+    self.active = True
 
     initial = self._place_state(start, env_ids)
     self._write_initial_state(env_ids, initial)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import NamedTuple, Protocol, runtime_checkable
 
 import torch
 from torch import nn
@@ -77,3 +77,45 @@ class Bridge(nn.Module):
   def reset(self, done: torch.Tensor | None = None) -> None:
     """Clear state for finished batch items. The base bridge keeps no state."""
     del done
+
+
+@runtime_checkable
+class BridgeCommandCfg(Protocol):
+  duration_s_range: tuple[float, float]
+
+
+@runtime_checkable
+class BridgeCommand(Protocol):
+  """Command contract used by transition experiments."""
+
+  target: torch.Tensor
+  window_steps: torch.Tensor
+  active: bool
+  fps: float
+  error_names: tuple[str, ...]
+  tolerances: torch.Tensor
+  cfg: BridgeCommandCfg
+
+  @property
+  def step(self) -> torch.Tensor: ...
+
+  @property
+  def handoff(self) -> torch.Tensor: ...
+
+  @property
+  def deadline(self) -> torch.Tensor: ...
+
+  def aim(self, target: torch.Tensor) -> None: ...
+
+  def open_window(
+    self,
+    env_ids: torch.Tensor,
+    target: torch.Tensor,
+    duration_s: torch.Tensor,
+  ) -> None: ...
+
+  def stop(self) -> None: ...
+
+  def state_now(self) -> torch.Tensor: ...
+
+  def target_errors(self) -> torch.Tensor: ...

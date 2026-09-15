@@ -7,19 +7,16 @@ geometry and skill controls belong in the transition script.
 from __future__ import annotations
 
 import copy
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import asdict, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
+from mjlab.managers.command_manager import CommandTermCfg
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
-from mjlab.tasks.bridging.experiments.humanoid.bridges.docking.command import (
-  DockingCommand,
-  DockingCommandCfg,
-)
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
 if TYPE_CHECKING:
@@ -28,110 +25,32 @@ if TYPE_CHECKING:
 ROBOT = "robot"
 BRIDGE = "bridge"
 LOG_ROOT = Path("logs") / "rsl_rl"
-PLAYBACK_COLOR = (0.2, 0.8, 1.0, 0.45)
 
 
-class TransitionDockingCommand(DockingCommand):
-  """Docking command opened by a transition instead of an episode reset."""
-
-  def __init__(self, cfg: DockingCommandCfg, env: ManagerBasedRlEnv) -> None:
-    super().__init__(cfg, env)
-    self._opened = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-    self._playback_opened = torch.zeros_like(self._opened)
-    self._playback_ghost = self._make_target_ghost(PLAYBACK_COLOR)
-    self.playback_sequence: torch.Tensor | None = None
-    self.show_playback = False
-    self.aimed = False
-    self.active = False
-
-  @property
-  def step(self) -> torch.Tensor:
-    return (self._env.episode_length_buf - self._opened).clamp(min=0)
-
-  def _resample_command(self, env_ids: torch.Tensor) -> None:
-    here = self.state_now()[env_ids]
-    self.target_sequence[env_ids] = here[:, None]
-    self.history[env_ids] = here[:, None]
-    self.target_actions[env_ids] = 0.0
-    self.window_steps[env_ids] = 1
-    self.docking[env_ids] = False
-    self.captured[env_ids] = False
-    self.capture_step[env_ids] = -1
-    self.playback_sequence = None
-    self.aimed = False
-    self.active = False
-
-  def _update_command(self) -> None:
-    if self.active:
-      self.advance()
-    self.history = torch.roll(self.history, shifts=-1, dims=1)
-    self.history[:, -1] = self.state_now()
-
-  def open_window(
-    self,
-    env_ids: torch.Tensor,
-    targets: torch.Tensor,
-    duration_s: torch.Tensor,
-    target_actions: torch.Tensor | None = None,
-  ) -> None:
-    self._opened[env_ids] = self._env.episode_length_buf[env_ids]
-    self._advanced_at = -1
-    super().open_window(env_ids, targets, duration_s, target_actions)
-    self.aimed = True
-    self.active = True
-
-  def stop(self) -> None:
-    self.active = False
-    self.docking[:] = False
-    self.captured[:] = False
-
-  def start_playback(self, sequence: torch.Tensor) -> None:
-    """Play a placed reference trajectory from its first state."""
-    if sequence.ndim != 3 or sequence.shape[0] != self.num_envs:
-      raise ValueError("playback must have shape (num_envs, time, state)")
-    self.playback_sequence = sequence
-    self._playback_opened[:] = self._env.episode_length_buf
-
-  def _debug_vis_impl(self, visualizer) -> None:
-    if self.aimed:
-      super()._debug_vis_impl(visualizer)
-    if not self.show_playback or self.playback_sequence is None:
-      return
-    age = (self._env.episode_length_buf - self._playback_opened).clamp(
-      max=self.playback_sequence.shape[1] - 1
-    )
-    for batch in visualizer.get_env_indices(self.num_envs):
-      self._draw_ghost(
-        visualizer,
-        self.playback_sequence[batch, age[batch]],
-        batch,
-        "kick_recording",
-        model=self._playback_ghost,
-        alpha=PLAYBACK_COLOR[3],
-      )
-
-
-@dataclass(kw_only=True)
-class TransitionDockingCommandCfg(DockingCommandCfg):
-  def build(self, env: ManagerBasedRlEnv) -> TransitionDockingCommand:
-    return TransitionDockingCommand(self, env)
-
-
-def _external_command(cfg: DockingCommandCfg) -> TransitionDockingCommandCfg:
-  values = {item.name: getattr(cfg, item.name) for item in fields(cfg)}
-  values.update(dataset_path=None, debug_vis=True, gui=False)
-  return TransitionDockingCommandCfg(**values)
+def _external_command(cfg: CommandTermCfg) -> CommandTermCfg:
+  """Disable bridge-owned sampling while keeping its observation contract."""
+  changes: dict[str, Any] = {"debug_vis": True}
+  if hasattr(cfg, "dataset_path"):
+    changes["dataset_path"] = None
+  if hasattr(cfg, "gui"):
+    changes["gui"] = False
+  return replace(cfg, **changes)
 
 
 def arena(
-  bridge_task: str, leaving_task: str, entering_task: str
+  bridge_task: str,
+  leaving_task: str,
+  entering_task: str,
+  base_checkpoint: Path | None = None,
 ) -> ManagerBasedRlEnvCfg:
   """Merge the bridge and two skill tasks without copying skill behavior."""
   cfg = load_env_cfg(bridge_task, play=True)
-  bridge_cfg = cfg.commands[BRIDGE]
-  if not isinstance(bridge_cfg, DockingCommandCfg):
-    raise TypeError(f"{bridge_task} does not use DockingCommandCfg")
-  cfg.commands[BRIDGE] = _external_command(bridge_cfg)
+  cfg.commands[BRIDGE] = _external_command(cfg.commands[BRIDGE])
+  if base_checkpoint is not None:
+    action = cfg.actions.get("joint_pos")
+    if action is None or not hasattr(action, "imitation_checkpoint"):
+      raise ValueError(f"{bridge_task} does not use an imitation base policy")
+    cfg.actions["joint_pos"] = replace(action, imitation_checkpoint=base_checkpoint)
   cfg.observations = {BRIDGE: copy.deepcopy(cfg.observations["actor"])}
   cfg.events = {}
   cfg.rewards = {}
@@ -206,10 +125,11 @@ class Policy:
     env: RslRlVecEnvWrapper,
     group: str,
     device: str,
+    task_runner: bool = True,
   ) -> None:
     agent = load_rl_cfg(task)
     agent.obs_groups = {"actor": (group,), "critic": (group,)}
-    runner_cls = load_runner_cls(task) or MjlabOnPolicyRunner
+    runner_cls = (load_runner_cls(task) if task_runner else None) or MjlabOnPolicyRunner
     self._runner = runner_cls(env, asdict(agent), device=device)
     self._runner.load(
       str(checkpoint), load_cfg={"actor": True}, strict=True, map_location=device
@@ -227,11 +147,12 @@ def load_policy(
   group: str,
   device: str,
   checkpoint: Path | None = None,
+  task_runner: bool = True,
 ) -> Policy:
   agent = load_rl_cfg(task)
   path = find_checkpoint(agent.experiment_name, checkpoint)
   print(f"{group:8s} {path}")
-  return Policy(task, path, env, group, device)
+  return Policy(task, path, env, group, device, task_runner)
 
 
 def state(env: ManagerBasedRlEnv) -> torch.Tensor:
