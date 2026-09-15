@@ -189,7 +189,7 @@ class ViserPlayViewer(BaseViewer):
 
       # Let command terms create their own GUI controls.
       env = self.env.unwrapped
-      if env.command_manager.active_terms:
+      if any(command.gui for command in env.cfg.commands.values()):
         with self._server.gui.add_folder("Commands"):
           env.command_manager.create_gui(
             self._server,

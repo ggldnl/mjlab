@@ -1,4 +1,7 @@
-"""Where each skill can be entered.
+"""
+THIS IS LEGACY.
+
+Where each skill can be entered.
 
     record.py  ->  build.py  ->  view.py
      (drive)        (cut)        (look)

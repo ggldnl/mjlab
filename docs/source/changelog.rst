@@ -8,6 +8,17 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- ``Mjlab-G1-Docking-Bridge``, a fresh bridge task with short current-state history, a
+  robot-relative target trajectory, explicit time remaining, six physical arrival error
+  channels, a capture-to-docking switch, local residual training around the entering
+  policy's recorded actions, latched capture, and a brief blend before handoff. Train it
+  through the normal command with ``uv run train Mjlab-G1-Docking-Bridge``. Playback shows
+  its target pose as a toggleable translucent robot.
+
+- ``tests.transitions.walk2kick`` now runs the complete walk, docking bridge, and kick
+  handoff in one scene. It samples the kick policy for the target trajectory, places that
+  trajectory from the ball pose, and exposes manual or distance-triggered handoff controls.
+
 - The parkour demo takes the hand-over controls the transition scripts have, under the same
   names, each overriding ``config.yml`` for one run: ``--hold-back`` (metres short of the
   pose a skill needs that the walk stops, which ``tests/stage.py`` calls ``fire_at``),
@@ -105,6 +116,13 @@ Added
 
 Fixed
 ^^^^^
+
+- Docking training now combines independent start dynamics with demonstrated, reachable
+  target routes. The old sampler trained and tested only later states from the same rollout,
+  which did not represent a walk-to-kick handoff. The transition viewer can play the placed
+  kick-policy recording as a synchronized ghost after handoff. Its bridge selector also
+  includes the immediate no-op handoff, walk conditioning has its own panel, and the generic
+  viewer no longer creates an empty Commands panel.
 
 - The parkour walk stopped going forward after a tilted obstacle and crabbed sideways
   instead, which is what a robot that has stopped mid-walk looks like from outside.
