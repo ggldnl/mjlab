@@ -16,6 +16,7 @@ from mjviser.conversions import (
   rotation_matrix_from_vectors as rotation_matrix_from_vectors,
 )
 
+from mjlab.viewer.viser.recorder import ViserRecorder as ViserRecorder
 from mjlab.viewer.viser.reward_bar_panel import RewardBarPanel as RewardBarPanel
 from mjlab.viewer.viser.scene import MjlabViserScene as MjlabViserScene
 from mjlab.viewer.viser.term_plotter import ViserTermPlotter as ViserTermPlotter
