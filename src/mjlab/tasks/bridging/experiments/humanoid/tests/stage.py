@@ -9,18 +9,23 @@ from __future__ import annotations
 import copy
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, cast
 
 import torch
+from tensordict import TensorDict
 
 from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.managers.command_manager import CommandTermCfg
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
+from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae import (
+  CVAE_TASK_ID,
+  CvaeRunnerCfg,
+)
+from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.model import (
+  ResidualCvaeModel,
+)
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
-
-if TYPE_CHECKING:
-  from tensordict import TensorDict
 
 ROBOT = "robot"
 BRIDGE = "bridge"
@@ -46,6 +51,8 @@ def arena(
   """Merge the bridge and two skill tasks without copying skill behavior."""
   cfg = load_env_cfg(bridge_task, play=True)
   cfg.commands[BRIDGE] = _external_command(cfg.commands[BRIDGE])
+  if bridge_task == CVAE_TASK_ID:
+    cfg.commands.pop("motion")
   if base_checkpoint is not None:
     action = cfg.actions.get("joint_pos")
     if action is None or not hasattr(action, "imitation_checkpoint"):
@@ -128,6 +135,32 @@ class Policy:
     task_runner: bool = True,
   ) -> None:
     agent = load_rl_cfg(task)
+    if task == CVAE_TASK_ID:
+      saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
+      weights = saved["student_state_dict"]
+      condition = cast(torch.Tensor, env.get_observations()[group])
+      posterior_dim = (
+        weights["posterior_residual.0.weight"].shape[1] - condition.shape[-1]
+      )
+      sample = TensorDict(
+        {
+          group: condition,
+          "posterior": condition.new_zeros((env.num_envs, posterior_dim)),
+        },
+        batch_size=[env.num_envs],
+      )
+      student_cfg = asdict(cast(CvaeRunnerCfg, agent).student)
+      student_cfg.pop("class_name")
+      self._policy = ResidualCvaeModel(
+        sample,
+        {"student": [group], "posterior": ["posterior"]},
+        "student",
+        env.num_actions,
+        **student_cfg,
+      ).to(device)
+      self._policy.load_state_dict(weights, strict=True)
+      self._policy.eval()
+      return
     agent.obs_groups = {"actor": (group,), "critic": (group,)}
     runner_cls = (load_runner_cls(task) if task_runner else None) or MjlabOnPolicyRunner
     self._runner = runner_cls(env, asdict(agent), device=device)

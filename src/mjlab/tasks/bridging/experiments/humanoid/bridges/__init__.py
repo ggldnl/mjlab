@@ -42,6 +42,7 @@ class BridgeSpec:
 BRIDGES = {
   "no-op": BridgeSpec("no-op", "Mjlab-G1-Imitation-Bridge", Bridge),
   "imitation": BridgeSpec("imitation", "Mjlab-G1-Imitation-Bridge"),
+  "cvae": BridgeSpec("cvae", "Mjlab-G1-CVAE-Bridge"),
   "residual": BridgeSpec(
     "residual",
     "Mjlab-G1-Residual-Bridge",

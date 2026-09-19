@@ -1,8 +1,9 @@
 """Where a bridge's start and target states come from. Shared by every architecture.
 
-    dataset.py   the format, and the rollout driver every source uses
-    tracker.py   builds the corpus by driving motion trackers over LAFAN1 clips
-    view.py      per source counts, and a window replayed as a ghost
+    dataset.py             shared format, loader, and rollout driver
+    trajectory_tracking/  rollouts of motion tracking policies
+    skill_rollouts/       stitched rollouts of trained skills
+    view.py                per source counts, and a window replayed as a ghost
 
 One corpus, held here rather than inside an architecture, because what a bridge is asked
 to cross does not depend on how its policy is produced. An architecture points its command
@@ -17,7 +18,11 @@ Run
 
 1. Build the corpus.
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.tracker
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.trajectory_tracking.collect
+
+   Or build the skill rollout variant.
+
+    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.skill_rollouts.collect
 
 2. Inspect it.
 

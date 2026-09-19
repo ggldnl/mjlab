@@ -1,4 +1,4 @@
-"""Run a walk to docking bridge to kick handoff.
+"""Run a walk to kick handoff.
 
 Run
 
@@ -23,6 +23,7 @@ from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.bridging.experiments.humanoid.bridges import BRIDGES, BridgeSpec
+from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae import CVAE_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.bridges.interface import BridgeCommand
 from mjlab.tasks.bridging.experiments.humanoid.selector import STATES_PATH, resume
 from mjlab.tasks.bridging.experiments.humanoid.selector.table import (
@@ -50,7 +51,7 @@ BALL = "ball"
 
 @dataclass(frozen=True)
 class Config:
-  bridge: str = "imitation"
+  bridge: str = "cvae"
   bridge_duration_s: float = 0.8
   trigger_distance: float = 0.5
   automatic: bool = True
@@ -120,6 +121,17 @@ class Run:
     self.target = torch.empty(0, device=env.device)
     action_dim = entries[0].previous_action.size
     self.last_kick_action = torch.empty(env.num_envs, action_dim, device=env.device)
+    self.kick_tracking_count = 0
+    self.kick_fell = False
+    self.kick_tracking_sum = {
+      name: 0.0
+      for name in (
+        "error_anchor_pos",
+        "error_body_pos",
+        "error_joint_pos",
+        "error_joint_vel",
+      )
+    }
     self.runtime_bridges = {
       name: spec.runtime(self.last_kick_action.shape[1]).to(env.device)
       for name, spec in bridges.items()
@@ -146,9 +158,13 @@ class Run:
   def reset(self) -> None:
     self.phase = "walk"
     self.fire = False
+    self.kick_tracking_count = 0
+    self.kick_fell = False
+    self.kick_tracking_sum = dict.fromkeys(self.kick_tracking_sum, 0.0)
     self.command.stop()
     self.env.action_manager.action.zero_()
 
+    # Ball is always in front of the robot, at distance=self.cfg.ball_distance
     entry = self.entries[self.entry_index]
     resume.prepare(self.env, entry)
     here = state(self.env)
@@ -218,6 +234,7 @@ class Run:
 
   def _finish_bridge(self, reason: str | None = None):
     errors = self.command.target_errors()[0]
+    success = bool((errors <= self.command.tolerances).all())
     print(
       (reason or ("captured" if not bool(self.command.deadline[0]) else "deadline"))
       + ": "
@@ -225,11 +242,28 @@ class Run:
         f"{name}={float(value):.3f}"
         for name, value in zip(self.command.error_names, errors, strict=True)
       )
+      + f", strict_success={success}"
     )
     self.phase = "kick"
     self.command.stop()
     self.env.action_manager.action[:] = self.last_kick_action
     return self.policies["kick"](fresh_obs(self.env))
+
+  def _record_kick_tracking(self) -> None:
+    self.kick_tracking_count += 1
+    self.kick_fell |= bool(self.robot.data.projected_gravity_b[0, 2] > -0.2)
+    for name in self.kick_tracking_sum:
+      self.kick_tracking_sum[name] += float(self.motion.metrics[name][0])
+    interval = round(0.5 / self.env.step_dt)
+    if self.kick_tracking_count in (interval, 2 * interval):
+      print(
+        f"kick tracking after {self.kick_tracking_count * self.env.step_dt:.1f}s "
+        f"(fell={self.kick_fell}): "
+        + ", ".join(
+          f"{name}={total / self.kick_tracking_count:.3f}"
+          for name, total in self.kick_tracking_sum.items()
+        )
+      )
 
   @torch.no_grad()
   def __call__(self, obs):
@@ -264,6 +298,7 @@ class Run:
         action = spec.mix(base, action, self.command)
       return action
 
+    self._record_kick_tracking()
     return self.policies["kick"](fresh_obs(self.env))
 
 
@@ -346,6 +381,8 @@ def main() -> None:
   available = {name: spec for name, spec in BRIDGES.items() if not spec.learned}
   for name, spec in BRIDGES.items():
     if not spec.learned:
+      continue
+    if (spec.task == CVAE_TASK_ID) != (stage.task == CVAE_TASK_ID):
       continue
     checkpoint = cfg.bridge_checkpoint if name == cfg.bridge else None
     if name == selected.base and cfg.imitation_checkpoint is not None:

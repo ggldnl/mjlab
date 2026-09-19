@@ -174,6 +174,28 @@ class ActionManager(ManagerBase):
       term.process_actions(term_actions)
       idx += term.action_dim
 
+  def initialize_action(
+    self, action: torch.Tensor, env_ids: torch.Tensor | slice | None = None
+  ) -> None:
+    """Restore an action and its history without advancing the history."""
+    if env_ids is None:
+      env_ids = slice(None)
+    expected = self._action[env_ids].shape
+    if action.shape != expected:
+      raise ValueError(
+        f"Invalid action shape, expected: {expected}, received: {action.shape}."
+      )
+    self._action[env_ids] = action
+    self._prev_action[env_ids] = action
+    self._prev_prev_action[env_ids] = action
+
+    idx = 0
+    for term in self._terms.values():
+      restored = term.raw_action.clone()
+      restored[env_ids] = action[:, idx : idx + term.action_dim]
+      term.process_actions(restored)
+      idx += term.action_dim
+
   def apply_action(self) -> None:
     """Write processed actions to entity actuator targets.
 

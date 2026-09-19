@@ -39,7 +39,7 @@ Run
     uv run train Mjlab-Tracking-Flat-Unitree-G1 \
       --env.scene.num-envs 4096 \
       --agent.experiment-name g1_walk1_subject1 \
-      --env.commands.motion.motion-file data/lafan1/motions/walk1_subject1.npz
+      --env.commands.motion.motion-file data/lafan1_g1/motions/walk1_subject1.npz
 
    To watch one:
 
@@ -47,7 +47,7 @@ Run
       --checkpoint-file logs/rsl_rl/g1_walk1_subject1/<run>/model_3000.pt \
       --motion-file data/lafan1/motions/walk1_subject1.npz
 
-2. Collect. With no arguments this walks every run under g1_tracking and asks each tracker
+2. Collect. With no arguments this walks the runs under logs/rsl_rl and asks each tracker
    only for the clip it was trained on, read back from the config the run wrote.
 
     uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.tracker
@@ -55,7 +55,7 @@ Run
    If you use custom experiment names:
 
     uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.tracker \
-      --motions "('data/lafan1/motions/walk1_subject1.npz',)" \
+      --motions "('data/lafan1_g1/motions/walk1_subject1.npz',)" \
       --checkpoints "('logs/rsl_rl/g1_walk1_subject1/<walk-run>/model_3000.pt',)"
 
 3. Look at what came out, before training on it. Prints how many windows each clip admits,
@@ -88,6 +88,7 @@ import numpy as np
 import tyro
 
 import mjlab
+from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset import dataset
 from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.dataset import (
   TRACKER_DATASET,
@@ -98,7 +99,7 @@ from mjlab.tasks.tracking.mdp import MotionCommandCfg
 
 TRACKING_TASK = "Mjlab-Tracking-Flat-Unitree-G1"
 TRACKING_EXPERIMENTS = ("g1_tracking",)
-MOTION_DIR = Path("data") / "lafan1" / "motions"
+MOTION_DIR = Path("data") / "lafan1_g1" / "motions"
 
 
 @dataclass
@@ -135,6 +136,14 @@ class TrackerCfg(RolloutCfg):
   it cannot follow at all. Set it to zero to keep everything and read the printed numbers
   yourself."""
 
+  nominal_physics: bool = True
+  """Remove pushes, domain randomization and reset perturbations.
+
+  This preserves random clip phases but makes a recorded window reproducible in the bridge
+  environment. Set false only for a later robustness corpus that also records every changed
+  dynamics parameter.
+  """
+
 
 _MOTION_LINE = re.compile(r"^\s*motion_file:\s*(.+?)\s*$", re.MULTILINE)
 
@@ -155,29 +164,32 @@ def _trained_on(run: Path) -> Path | None:
   if match is None:
     return None
   clip = Path(match.group(1).strip().strip("'\""))
-  return clip if clip.exists() else None
+  if clip.exists():
+    return clip
+  moved = MOTION_DIR / clip.name
+  return moved if moved.exists() else None
 
 
 def _discover() -> tuple[tuple[Path, Path], ...]:
-  """Every tracking run that has a checkpoint, paired with the clip it was trained on.
+  """The newest checkpoint per clip, paired with the clip it was trained on.
 
   This is what makes running with no arguments correct rather than merely safe. A
   checkpoint on its own says nothing about which motion it can hold, so the obvious
   default of newest checkpoint against every clip in the folder drives a walking tracker
   through the jumps and leaves the survival filter to discard twenty wasted rollouts.
   """
-  root = dataset.LOG_ROOT / TRACKING_EXPERIMENTS[0]
+  root = dataset.LOG_ROOT
   if not root.exists():
     return ()
-  pairs: list[tuple[Path, Path]] = []
-  for run in sorted(root.iterdir()):
-    if not run.is_dir():
-      continue
+  latest: dict[Path, Path] = {}
+  for run in root.glob("*/*"):
     found = sorted(run.glob("model_*.pt"), key=lambda p: p.stat().st_mtime)
     clip = _trained_on(run)
     if found and clip is not None:
-      pairs.append((clip, found[-1]))
-  return tuple(pairs)
+      previous = latest.get(clip)
+      if previous is None or found[-1].stat().st_mtime > previous.stat().st_mtime:
+        latest[clip] = found[-1]
+  return tuple(sorted(latest.items(), key=lambda pair: str(pair[0])))
 
 
 def _pairs(cfg: TrackerCfg) -> tuple[tuple[Path, Path], ...]:
@@ -186,7 +198,7 @@ def _pairs(cfg: TrackerCfg) -> tuple[tuple[Path, Path], ...]:
     found = _discover()
     if not found:
       raise SystemExit(
-        f"No usable tracking run under {dataset.LOG_ROOT / TRACKING_EXPERIMENTS[0]}. "
+        f"No usable tracking run under {dataset.LOG_ROOT}. "
         f"Train one with `uv run train {cfg.task} --env.commands.motion.motion-file "
         f"{MOTION_DIR / 'walk1_subject1.npz'}`, or name clips and checkpoints yourself "
         f"with `motions` and `checkpoints`."
@@ -256,6 +268,26 @@ def collect(cfg: TrackerCfg) -> Path:
         f"no clip to put in it."
       )
     motion.motion_file = str(clip)
+    if cfg.nominal_physics:
+      env_cfg.events = {}
+      for group in env_cfg.observations.values():
+        group.enable_corruption = False
+      motion.pose_range = {}
+      motion.velocity_range = {}
+      motion.joint_position_range = (0.0, 0.0)
+    feet_ground = ContactSensorCfg(
+      name="feet_ground_contact",
+      primary=ContactMatch(
+        mode="subtree",
+        pattern=r"^(left_ankle_roll_link|right_ankle_roll_link)$",
+        entity="robot",
+      ),
+      secondary=ContactMatch(mode="body", pattern="terrain"),
+      fields=("found",),
+      reduce="netforce",
+      num_slots=1,
+    )
+    env_cfg.scene.sensors = (*env_cfg.scene.sensors, feet_ground)
 
     rate = dataset.control_rate(env_cfg)
     if fps and abs(rate - fps) > 1e-6:
@@ -271,7 +303,7 @@ def collect(cfg: TrackerCfg) -> Path:
 
     # What a tracker that never fell would have produced. Each fall costs settle steps of
     # recording, so the shortfall is how much of the clip it lost
-    ceiling = cfg.num_envs * max(cfg.steps - cfg.settle, 1)
+    ceiling = cfg.num_envs * max(cfg.steps - cfg.settle + 1, 1)
     survival = len(rows) / ceiling
     if survival < cfg.min_survival:
       print(

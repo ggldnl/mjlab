@@ -180,7 +180,7 @@ class ImitationCommand(CommandTerm):
 
   @property
   def step(self) -> torch.Tensor:
-    return (self._env.episode_length_buf - self._opened).clamp(min=0)
+    return (self._env.common_step_counter - self._opened).clamp(min=0)
 
   @property
   def deadline(self) -> torch.Tensor:
@@ -256,7 +256,7 @@ class ImitationCommand(CommandTerm):
     low, high = self.cfg.duration_s_range
     if bool(((duration_s < low) | (duration_s > high)).any()):
       raise ValueError(f"duration_s must be between {low:g} and {high:g}")
-    self._opened[env_ids] = self._env.episode_length_buf[env_ids]
+    self._opened[env_ids] = self._env.common_step_counter
     self.target[env_ids] = target
     self.window_steps[env_ids] = torch.clamp(
       torch.round(duration_s * self.fps).long(), min=1
@@ -292,7 +292,7 @@ class ImitationCommand(CommandTerm):
 
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     if self.dataset is None or self.windows is None:
-      self._opened[env_ids] = self._env.episode_length_buf[env_ids]
+      self._opened[env_ids] = self._env.common_step_counter
       self.target[env_ids] = self.state_now()[env_ids]
       self.window_steps[env_ids] = 1
       self.active = False
@@ -315,7 +315,7 @@ class ImitationCommand(CommandTerm):
     self.route_origin[env_ids] = landing
     self.route_rotation[env_ids] = rotation
     self.window_steps[env_ids] = steps
-    self._opened[env_ids] = self._env.episode_length_buf[env_ids]
+    self._opened[env_ids] = self._env.common_step_counter
     self.target[env_ids] = self._place_state(self.dataset.states[target_rows], env_ids)
     self.final_errors[env_ids] = 0.0
     self.final_score[env_ids] = 0.0

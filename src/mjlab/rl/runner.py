@@ -156,7 +156,7 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
       self.current_learning_iteration = loaded_dict["iter"]
 
     infos = loaded_dict["infos"]
-    if infos and "env_state" in infos:
+    if load_iteration and infos and "env_state" in infos:
       self.env.unwrapped.common_step_counter = infos["env_state"]["common_step_counter"]
     return infos
 

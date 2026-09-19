@@ -9,7 +9,7 @@ time the robot took to get from one to the other.
 
 Every source builds one the same way, by driving a trained policy and writing down what
 happens, so the driving lives here and a source module only says which policy, in which
-environment, with what on the floor. dataset/tracker.py is the only source.
+environment, with what on the floor.
 
 One row per environment per control step:
 
@@ -54,6 +54,7 @@ import torch
 from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
+from mjlab.sensor import ContactSensor
 from mjlab.tasks.registry import load_rl_cfg, load_runner_cls
 from mjlab.utils.lab_api.math import quat_apply_inverse
 
@@ -66,6 +67,9 @@ DATASET_ROOT = Path("data") / "bridge"
 
 TRACKER_DATASET = DATASET_ROOT / "tracker.npz"
 """The human motion corpus, built by driving trajectory trackers over LAFAN1 clips."""
+
+SKILL_ROLLOUT_DATASET = DATASET_ROOT / "skills.npz"
+"""Synthetic transitions made by stitching together trained skill rollouts."""
 
 DEFAULT_DATASET = TRACKER_DATASET
 """What every config points at unless told otherwise. The human motion corpus, which is
@@ -171,6 +175,9 @@ def entry_context(env: ManagerBasedRlEnv) -> dict[str, np.ndarray]:
     "motion_file": np.full(env.num_envs, "", dtype="U1"),
     "motion_scale": np.ones(env.num_envs, dtype=np.float32),
   }
+  feet = env.scene.sensors.get("feet_ground_contact")
+  if isinstance(feet, ContactSensor) and feet.data.found is not None:
+    context["foot_contact"] = (feet.data.found > 0).float().cpu().numpy().copy()
   for name in env.command_manager.active_terms:
     command = env.command_manager.get_term(name)
     if not isinstance(command, JumpCommand):
@@ -330,6 +337,7 @@ def write(
   goals: list[np.ndarray] | None = None,
   phases: list[np.ndarray] | None = None,
   metadata: list[dict[str, np.ndarray]] | None = None,
+  trajectory_ids_global: bool = False,
 ) -> Path:
   """One npz, in the layout load_dataset expects.
 
@@ -350,6 +358,7 @@ def write(
     "frame": np.concatenate(frames),
     "skill_names": np.asarray(names),
     "fps": np.asarray(fps),
+    "trajectory_ids_global": np.asarray(trajectory_ids_global),
   }
   if phases is not None:
     columns["phase"] = np.concatenate(phases)
@@ -409,6 +418,9 @@ class Dataset:
 
   body_names: tuple[str, ...] = ()
   """(B,) which body each row of `body_pos_b` is, in that order."""
+
+  foot_contact: torch.Tensor | None = None
+  """(N, 2) left and right foot contact state."""
 
   def commands_of(self, skill: str) -> torch.Tensor | None:
     """The command column for one source, padding removed. (N, G_skill).
@@ -588,15 +600,12 @@ def load_dataset(
       "collector before training this bridge."
     )
 
-  # A trajectory id is unique inside one source and starts over at zero for the next,
-  # because every source is recorded by its own record call. So two clips hold the same
-  # ids, and segments sorts rows by (trajectory, frame): shared ids interleave rows of
-  # different clips at equal frames, no adjacent pair steps by one, every run collapses to
-  # a single row and nothing is long enough to be a window. Pairing the id with its source
-  # is what makes one physical rollout one trajectory again
   skill = torch.from_numpy(raw["skill"]).to(device).long()
   trajectory = torch.from_numpy(raw["trajectory"]).to(device).long()
-  trajectory = skill * (int(trajectory.max().item()) + 1) + trajectory
+  global_ids = "trajectory_ids_global" in raw and bool(raw["trajectory_ids_global"])
+  if not global_ids:
+    # Older collectors restart trajectory ids for every source
+    trajectory = skill * (int(trajectory.max().item()) + 1) + trajectory
 
   loaded = Dataset(
     states=torch.from_numpy(raw["states"]).to(device)[mask],
@@ -626,6 +635,9 @@ def load_dataset(
     if "body_pos_b" in raw
     else None,
     body_names=tuple(str(n) for n in raw["body_names"]) if "body_names" in raw else (),
+    foot_contact=torch.from_numpy(raw["foot_contact"]).to(device)[mask]
+    if "foot_contact" in raw
+    else None,
   )
   print(f"[dataset] {loaded.states.shape[0]} states in '{split}' from {loaded.names}")
   return loaded
