@@ -2,12 +2,16 @@
 
 import logging
 import os
+import random
 import sys
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
 
+import numpy as np
+import torch
 import tyro
 
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
@@ -30,6 +34,10 @@ class TrainConfig:
   video: bool = False
   video_length: int = 200
   video_interval: int = 2000
+  eval_video: bool = False
+  eval_video_interval: int | None = None
+  eval_video_on_save: bool = False
+  eval_video_length: int = 200
   enable_nan_guard: bool = False
   log_root: str = "logs/rsl_rl"
   """Root directory under which experiment logs are written."""
@@ -46,7 +54,66 @@ class TrainConfig:
     return TrainConfig(env=env_cfg, agent=agent_cfg)
 
 
+def _record_eval_video(
+  cfg: TrainConfig,
+  runner: MjlabOnPolicyRunner,
+  log_dir: Path,
+  device: str,
+  iteration: int,
+) -> None:
+  eval_cfg = deepcopy(cfg.env)
+  eval_cfg.scene.num_envs = 1
+  eval_cfg.seed = cfg.agent.seed
+  video_dir = log_dir.parent / f"{log_dir.name}_eval_videos"
+  video_path = video_dir / f"eval-iteration-{iteration}-step-0.mp4"
+  python_rng = random.getstate()
+  numpy_rng = np.random.get_state()
+  env = None
+  recorder = None
+  try:
+    with torch.random.fork_rng(devices=list(range(torch.cuda.device_count()))):
+      try:
+        env = ManagerBasedRlEnv(cfg=eval_cfg, device=device, render_mode="rgb_array")
+        recorder = VideoRecorder(
+          env,
+          video_folder=video_dir,
+          step_trigger=lambda step: step == 0,
+          video_length=cfg.eval_video_length,
+          name_prefix=f"eval-iteration-{iteration}",
+          disable_logger=True,
+        )
+        eval_env = RslRlVecEnvWrapper(recorder, clip_actions=cfg.agent.clip_actions)
+        policy = runner.get_inference_policy(device=device)
+        obs = eval_env.get_observations()
+        with torch.inference_mode():
+          for _ in range(cfg.eval_video_length):
+            obs, _, _, _ = eval_env.step(policy(obs))
+      finally:
+        runner.alg.train_mode()
+        if recorder is not None:
+          recorder.close()
+        elif env is not None:
+          env.close()
+  finally:
+    random.setstate(python_rng)
+    np.random.set_state(numpy_rng)
+
+  if cfg.agent.logger == "wandb":
+    import wandb
+
+    if wandb.run is not None:
+      wandb.log(
+        {"Eval/video": wandb.Video(str(video_path), format="mp4")}, step=iteration
+      )
+  print(f"[INFO] Saved evaluation video: {video_path}")
+
+
 def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
+  if cfg.eval_video:
+    if cfg.eval_video_interval is not None and cfg.eval_video_interval <= 0:
+      raise ValueError("eval_video_interval must be positive")
+    if cfg.eval_video_length <= 0:
+      raise ValueError("eval_video_length must be positive")
   cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
   if cuda_visible == "":
     device = "cpu"
@@ -165,6 +232,13 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     dump_yaml(log_dir / "params" / "agent.yaml", agent_cfg)
 
   runner = runner_cls(env, agent_cfg, str(log_dir), device, **runner_kwargs)
+
+  if cfg.eval_video and rank == 0:
+    runner.set_eval_video_callback(
+      lambda iteration: _record_eval_video(cfg, runner, log_dir, device, iteration),
+      interval=cfg.eval_video_interval,
+      on_save=cfg.eval_video_on_save or cfg.eval_video_interval is None,
+    )
 
   add_wandb_tags(cfg.agent.wandb_tags)
   runner.add_git_repo_to_log(__file__)

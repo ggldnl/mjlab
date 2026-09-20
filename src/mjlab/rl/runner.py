@@ -1,7 +1,7 @@
 import copy
 import os
 from pathlib import Path
-from typing import cast
+from typing import Callable, cast
 
 import torch
 from rsl_rl.algorithms import PPO, Distillation
@@ -37,6 +37,40 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
           for opt in ("rnn_type", "rnn_hidden_dim", "rnn_num_layers"):
             train_cfg[key].pop(opt, None)
     super().__init__(env, train_cfg, log_dir, device)
+    self._eval_video_callback: Callable[[int], None] | None = None
+    self._eval_video_on_save = False
+    self._last_eval_video_iteration: int | None = None
+
+  def set_eval_video_callback(
+    self,
+    callback: Callable[[int], None],
+    interval: int | None,
+    on_save: bool,
+  ) -> None:
+    """Run an evaluation recording after selected updates or checkpoints."""
+    self._eval_video_callback = callback
+    self._eval_video_on_save = on_save
+    if interval is not None:
+      log = self.logger.log
+
+      def log_with_eval(*args, **kwargs):
+        log(*args, **kwargs)
+        iteration = kwargs["it"] if "it" in kwargs else args[0]
+        if (iteration + 1) % interval == 0:
+          self._record_eval_video(iteration)
+
+      self.logger.log = log_with_eval  # ty: ignore[invalid-assignment]
+
+  def _record_eval_video(self, iteration: int) -> None:
+    if (
+      self._eval_video_callback is None or self._last_eval_video_iteration == iteration
+    ):
+      return
+    try:
+      self._eval_video_callback(iteration)
+      self._last_eval_video_iteration = iteration
+    except Exception as exc:
+      print(f"[WARN] Evaluation video failed at iteration {iteration}: {exc}")
 
   def export_policy_to_onnx(
     self, path: str, filename: str = "policy.onnx", verbose: bool = False
@@ -86,6 +120,8 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
     torch.save(saved_dict, path)
     if self.cfg["upload_model"]:
       self.logger.save_model(path, self.current_learning_iteration)
+    if self._eval_video_on_save:
+      self._record_eval_video(self.current_learning_iteration)
 
   def load(
     self,
