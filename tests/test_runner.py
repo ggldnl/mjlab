@@ -1,15 +1,18 @@
 """Tests for MjlabOnPolicyRunner."""
 
 import ast
+import random
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import mujoco
+import numpy as np
 import onnx
 import pytest
 import torch
+import wandb
 from conftest import get_test_device
 from rsl_rl.models import MLPModel
 from tensordict import TensorDict
@@ -120,6 +123,77 @@ def test_runner_persists_common_step_counter(env, device, monkeypatch):
     runner.load(checkpoint_path)
 
     assert wrapped_env.unwrapped.common_step_counter == 12345
+
+
+def test_eval_video_triggers_on_iteration_and_checkpoint(
+  env, device, monkeypatch, tmp_path
+):
+  wrapped_env = RslRlVecEnvWrapper(env)
+  agent_cfg = RslRlOnPolicyRunnerCfg(upload_model=False)
+  runner = MjlabOnPolicyRunner(wrapped_env, asdict(agent_cfg), device=device)
+  log = MagicMock()
+  monkeypatch.setattr(runner.logger, "log", log)
+  record = MagicMock()
+  runner.set_eval_video_callback(record, interval=500, on_save=True)
+
+  runner.logger.log(it=498)  # pyright: ignore[reportCallIssue]
+  runner.logger.log(it=499)  # pyright: ignore[reportCallIssue]
+  runner.current_learning_iteration = 499
+  runner.save(str(tmp_path / "model_499.pt"))
+  runner.current_learning_iteration = 500
+  runner.save(str(tmp_path / "model_500.pt"))
+
+  assert log.call_count == 2
+  assert [call.args[0] for call in record.call_args_list] == [499, 500]
+
+
+def test_eval_video_records_separate_rollout(env, device, tmp_path, monkeypatch):
+  agent_cfg = RslRlOnPolicyRunnerCfg(logger="wandb", upload_model=False)
+  runner = MjlabOnPolicyRunner(
+    RslRlVecEnvWrapper(env), asdict(agent_cfg), device=device
+  )
+  cfg = train_mod.TrainConfig(env=env.cfg, agent=agent_cfg, eval_video_length=3)
+  logged = MagicMock()
+  monkeypatch.setattr(wandb, "run", object())
+  monkeypatch.setattr(wandb, "log", logged)
+  python_rng = random.getstate()
+  numpy_rng = np.random.get_state()
+  expected_numpy = np.random.random()
+  np.random.set_state(numpy_rng)
+  torch_rng = torch.get_rng_state()
+
+  train_mod._record_eval_video(cfg, runner, tmp_path / "run", device, 5)
+
+  video = tmp_path / "run_eval_videos" / "eval-iteration-5-step-0.mp4"
+  assert video.is_file()
+  assert env.num_envs == 2
+  assert random.getstate() == python_rng
+  assert np.random.random() == expected_numpy
+  assert torch.get_rng_state().tolist() == torch_rng.tolist()
+  assert logged.call_args.kwargs["step"] == 5
+  assert "Eval/video" in logged.call_args.args[0]
+
+
+def test_inference_load_keeps_fresh_environment_clock(env, device, monkeypatch):
+  wrapped_env = RslRlVecEnvWrapper(env)
+  agent_cfg = RslRlOnPolicyRunnerCfg(
+    num_steps_per_env=4, max_iterations=10, save_interval=5
+  )
+
+  with tempfile.TemporaryDirectory() as tmpdir:
+    runner = MjlabOnPolicyRunner(
+      wrapped_env, asdict(agent_cfg), log_dir=tmpdir, device=device
+    )
+    monkeypatch.setattr(runner.logger, "save_model", lambda *args, **kwargs: None)
+    runner.logger.logger_type = "tensorboard"
+    wrapped_env.unwrapped.common_step_counter = 12345
+    checkpoint_path = str(Path(tmpdir) / "test_checkpoint.pt")
+    runner.save(checkpoint_path)
+
+    wrapped_env.unwrapped.common_step_counter = 0
+    runner.load(checkpoint_path, load_cfg={"actor": True})
+
+    assert wrapped_env.unwrapped.common_step_counter == 0
 
 
 def test_runner_handles_old_checkpoints_without_env_state(env, device):

@@ -8,16 +8,48 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
-- ``Mjlab-G1-Docking-Bridge``, a fresh bridge task with short current-state history, a
-  robot-relative target trajectory, explicit time remaining, six physical arrival error
-  channels, a capture-to-docking switch, local residual training around the entering
-  policy's recorded actions, latched capture, and a brief blend before handoff. Train it
-  through the normal command with ``uv run train Mjlab-G1-Docking-Bridge``. Playback shows
-  its target pose as a toggleable translucent robot.
+- Optional evaluation videos during training, recorded at checkpoints or at a
+  configured iteration interval and logged under ``Eval/video`` in W&B.
 
-- ``tests.transitions.walk2kick`` now runs the complete walk, docking bridge, and kick
-  handoff in one scene. It samples the kick policy for the target trajectory, places that
-  trajectory from the ball pose, and exposes manual or distance-triggered handoff controls.
+- The CVAE bridge now uses a checked clip and checkpoint manifest to train one student
+  from balanced parallel groups for every available tracker source. Endpoint goals
+  include the incoming controller's preceding action and foot contacts. Training and
+  evaluation measure action continuity; ``walk2kick`` preserves the bridge's real last
+  action at handoff and reports the first kick action jump.
+
+- A held-out CVAE evaluator reports deadline success, falls, and per-channel
+  terminal errors across 0.5 to 2 second windows.
+
+- ``Mjlab-G1-CVAE-Bridge`` uses online DAgger to distil a trajectory tracker into
+  an endpoint-conditioned residual CVAE. The prior sees the current G1 state, exact
+  endpoint and deadline; the posterior adds demonstrated intermediate waypoints only
+  during training. Tracker datasets now retain foot contacts and the active raw action
+  so teleported start states preserve contact and controller continuity.
+
+- Interchangeable bridge dataset collectors now live under ``trajectory_tracking`` and
+  ``skill_rollouts``. The latter joins compatible random pieces from trained skill
+  policies, with bounded position and heading variation at each seam.
+
+- The humanoid selector now chooses one medoid rollout per skill and samples manually
+  configured phases from it. Its viewer preserves the rollout's recorded ground spacing,
+  and ``walk2kick`` can aim the bridge at any selected kick state through ``--entry`` or
+  the ``Kick state`` slider.
+
+- ``Mjlab-G1-Residual-Bridge``, a terminal docking component trained separately on
+  small target perturbations. A frozen imitation bridge still produces the coarse
+  motion; inside the capture region and final control horizon, the new policy adds a
+  bounded residual to its action.
+
+- ``Mjlab-G1-Imitation-Bridge``, a rebuilt imitation bridge that samples an entire
+  physically recorded route. Its policy reads current-to-terminal deltas in the robot
+  frame and a bounded progress clock. The dense reward tracks the corresponding route
+  frame, while terminal accuracy is rewarded only at the recorded deadline, preventing
+  repeat arrivals after overshooting the target.
+
+- ``tests.transitions.walk2kick`` now runs walk, any bridge registered in ``BRIDGES``, and
+  kick in one scene. The registry also contains the interface's ``no-op`` bridge. Adding a
+  conforming bridge to that dictionary makes it available through ``--bridge`` and the GUI
+  bridge dropdown without a transition-specific import or branch.
 
 - The parkour demo takes the hand-over controls the transition scripts have, under the same
   names, each overriding ``config.yml`` for one run: ``--hold-back`` (metres short of the
@@ -79,26 +111,6 @@ Added
   ``tests.stage.config_for`` builds the flags from the couple, so a new transition script
   gets them by naming its two actors.
 
-- The panel of every transition script carries a ``bridge`` dropdown, which swaps which
-  architecture crosses. ``--bridge`` is now where it starts rather than the whole choice:
-  every architecture with a checkpoint under its experiment is loaded, and the dropdown
-  offers what loaded. One with no code yet, or nothing under its log directory, is dropped
-  with a line saying which, since an untrained architecture is the normal state of one of
-  them. ``--bridges`` narrows the set, and ``--bridges "('imitation',)"`` is the old
-  behaviour.
-
-  The three share one arena because they differ in their window term and their observation
-  and in nothing else, so ``tests.stage.arena`` gives each its own observation group and
-  builds the command from the most specific window among them, which serves the rest
-  because the specific one subclasses the general one. Two that subclassed it in
-  incompatible ways would be refused by name rather than served by whichever came first.
-  The swap lands at the next hand-over, not immediately: one architecture's opening and
-  another's follow through are not a crossing anybody performed. The Active line names
-  whoever is driving, so the dropdown's position is not something to remember.
-
-  Checkpoints are resolved before the simulator is built, which is also why a missing one
-  is now a message in the first second of a run rather than after a minute of arena.
-
 - The panel of every transition script carries a ``switch step`` slider and a
   ``fire on the step above`` checkbox, which pin the control step the hand-over fires on.
   Off by default: choosing the moment is what the button is for. On, the crossing repeats
@@ -116,6 +128,16 @@ Added
 
 Fixed
 ^^^^^
+
+- Loading only a policy for playback or evaluation no longer restores the
+  training run's global step counter into a fresh environment.
+
+- ``walk2kick --bridge cvae`` now loads the deployed CVAE student without
+  training-only teacher and posterior observations, and uses the kick motion
+  command during the handoff.
+
+- The imitation bridge's blue reference ghost now starts with the bridge instead of waiting
+  for the previous episode's step count to elapse after a reset.
 
 - Docking training now combines independent start dynamics with demonstrated, reachable
   target routes. The old sampler trained and tested only later states from the same rollout,

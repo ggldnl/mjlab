@@ -24,6 +24,7 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.bridging.experiments.humanoid.bridges import BRIDGES, BridgeSpec
 from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae import CVAE_TASK_ID
+from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.command import CvaeCommand
 from mjlab.tasks.bridging.experiments.humanoid.bridges.interface import BridgeCommand
 from mjlab.tasks.bridging.experiments.humanoid.selector import STATES_PATH, resume
 from mjlab.tasks.bridging.experiments.humanoid.selector.table import (
@@ -120,7 +121,6 @@ class Run:
     self.active_bridge = cfg.bridge
     self.target = torch.empty(0, device=env.device)
     action_dim = entries[0].previous_action.size
-    self.last_kick_action = torch.empty(env.num_envs, action_dim, device=env.device)
     self.kick_tracking_count = 0
     self.kick_fell = False
     self.kick_tracking_sum = {
@@ -133,7 +133,7 @@ class Run:
       )
     }
     self.runtime_bridges = {
-      name: spec.runtime(self.last_kick_action.shape[1]).to(env.device)
+      name: spec.runtime(action_dim).to(env.device)
       for name, spec in bridges.items()
       if spec.runtime is not None
     }
@@ -184,8 +184,20 @@ class Run:
     self._hold_motion(0)
     _put_ball(self.env, ball)
     action = torch.as_tensor(entry.previous_action, device=self.env.device)
-    self.last_kick_action[:] = action
-    self.command.aim(self.target)
+    if isinstance(self.command, CvaeCommand):
+      if entry.foot_contact is None:
+        raise ValueError(
+          "Selector entries need recorded foot_contact. Re-run selector.record "
+          "and selector.build before using the CVAE bridge"
+        )
+      contact = torch.as_tensor(entry.foot_contact, device=self.env.device)
+      self.command.aim(
+        self.target,
+        target_contact=contact.expand(self.env.num_envs, -1),
+        target_previous_action=action.expand(self.env.num_envs, -1),
+      )
+    else:
+      self.command.aim(self.target)
     self._set_walk()
 
   def select_entry(self, index: int) -> None:
@@ -235,6 +247,11 @@ class Run:
   def _finish_bridge(self, reason: str | None = None):
     errors = self.command.target_errors()[0]
     success = bool((errors <= self.command.tolerances).all())
+    cvae = self.command if isinstance(self.command, CvaeCommand) else None
+    action_error = float(cvae.action_error()[0]) if cvae is not None else None
+    if action_error is not None:
+      assert cvae is not None
+      success &= action_error <= cvae.cvae_cfg.action_tolerance
     print(
       (reason or ("captured" if not bool(self.command.deadline[0]) else "deadline"))
       + ": "
@@ -243,11 +260,17 @@ class Run:
         for name, value in zip(self.command.error_names, errors, strict=True)
       )
       + f", strict_success={success}"
+      + (
+        f", target_action_error={action_error:.3f}" if action_error is not None else ""
+      )
     )
     self.phase = "kick"
     self.command.stop()
-    self.env.action_manager.action[:] = self.last_kick_action
-    return self.policies["kick"](fresh_obs(self.env))
+    bridge_action = self.env.action_manager.action.clone()
+    kick_action = self.policies["kick"](fresh_obs(self.env))
+    action_jump = (kick_action - bridge_action).square().mean(dim=-1).sqrt()
+    print(f"first kick action jump: {float(action_jump[0]):.3f}")
+    return kick_action
 
   def _record_kick_tracking(self) -> None:
     self.kick_tracking_count += 1

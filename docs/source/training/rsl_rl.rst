@@ -108,6 +108,21 @@ Some commonly used top-level flags:
 ``--video``
     Record training rollout videos to ``{log_dir}/videos/train/``.
 
+``--eval-video True``
+    Record a separate one-environment policy rollout at each checkpoint. Videos
+    appear under ``Eval/video`` in the same W&B run.
+
+``--eval-video-interval 500``
+    With ``--eval-video True``, record every 500 learning iterations instead.
+    RSL-RL labels the first update iteration 0, so the first clip is at step 499.
+    Add ``--eval-video-on-save True`` to record at checkpoints too. Use
+    ``--eval-video-length`` to choose the number of environment steps per clip.
+
+For example::
+
+    uv run train Mjlab-Velocity-Flat-Unitree-G1 --eval-video True \
+        --eval-video-interval 500 --eval-video-length 200
+
 ``--enable-nan-guard``
     Enable NaN detection and state capture (see :ref:`nan-guard`).
 

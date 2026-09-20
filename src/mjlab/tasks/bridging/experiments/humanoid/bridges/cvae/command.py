@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,10 +44,13 @@ class CvaeCommand(ImitationCommand):
       if cfg.sources is None and motion_file:
         cfg.sources = (Path(motion_file).stem,)
     super().__init__(cfg, env)
+    self.target_contact = torch.zeros(self.num_envs, 2, device=self.device)
+    self.target_previous_action = torch.zeros(
+      self.num_envs, self.num_joints, device=self.device
+    )
     if self.dataset is not None:
-      # ponytail: one teacher per run, add source-routed teachers after this baseline works
       if cfg.sources is None or len(cfg.sources) != 1:
-        raise ValueError("CVAE DAgger currently trains one tracker source per run")
+        raise ValueError("Each CVAE environment group needs one tracker source")
       if self.dataset.previous_action is None:
         raise ValueError("Rebuild the tracker dataset with previous_action metadata")
       if self.dataset.foot_contact is None:
@@ -63,14 +67,20 @@ class CvaeCommand(ImitationCommand):
 
   def _target_contacts(self, rows: torch.Tensor) -> torch.Tensor:
     if self.dataset is None or self.dataset.foot_contact is None:
-      return self.target.new_zeros((rows.shape[0], 2))
+      raise ValueError("Target contacts are not available from this dataset")
     return self.dataset.foot_contact[rows]
+
+  def _target_actions(self, rows: torch.Tensor) -> torch.Tensor:
+    if self.dataset is None or self.dataset.previous_action is None:
+      raise ValueError("Target actions are not available from this dataset")
+    return self.dataset.previous_action[rows]
 
   def _encode_target(
     self,
     current: torch.Tensor,
     target: torch.Tensor,
     contact: torch.Tensor,
+    target_action: torch.Tensor,
     time_to_target: torch.Tensor,
     total_time: torch.Tensor,
   ) -> torch.Tensor:
@@ -97,6 +107,8 @@ class CvaeCommand(ImitationCommand):
         target[:, q] - current[:, q],
         target[:, qd],
         target[:, qd] - current[:, qd],
+        target_action,
+        target_action - self._env.action_manager.action,
         contact,
         time_to_target[:, None],
         total_time[:, None],
@@ -107,12 +119,46 @@ class CvaeCommand(ImitationCommand):
   @property
   def command(self) -> torch.Tensor:
     current = self.state_now()
-    target_rows = self.route_rows.gather(1, self.window_steps[:, None]).squeeze(1)
     remaining = (self.window_steps - self.step).clamp(min=0).float() / self.fps
     total = self.window_steps.float() / self.fps
     return self._encode_target(
-      current, self.target, self._target_contacts(target_rows), remaining, total
+      current,
+      self.target,
+      self.target_contact,
+      self.target_previous_action,
+      remaining,
+      total,
     )
+
+  def handoff_target(self) -> torch.Tensor:
+    final_step = self.active & (self.step == self.window_steps - 1)
+    return torch.cat((self.target_previous_action, final_step[:, None].float()), dim=-1)
+
+  def action_error(self) -> torch.Tensor:
+    difference = self._env.action_manager.action - self.target_previous_action
+    return torch.linalg.vector_norm(difference, dim=-1) / math.sqrt(
+      difference.shape[-1]
+    )
+
+  def aim(
+    self,
+    target: torch.Tensor,
+    *,
+    target_contact: torch.Tensor | None = None,
+    target_previous_action: torch.Tensor | None = None,
+  ) -> None:
+    if self.dataset is None:
+      if target_contact is None or target_previous_action is None:
+        raise ValueError("External CVAE goals need contact and previous action")
+      if target_contact.shape != self.target_contact.shape:
+        raise ValueError("Target contacts must have shape (num_envs, 2)")
+      if target_previous_action.shape != self.target_previous_action.shape:
+        raise ValueError("Target action shape does not match the robot actions")
+    super().aim(target)
+    if self.dataset is None:
+      assert target_contact is not None and target_previous_action is not None
+      self.target_contact[:] = target_contact
+      self.target_previous_action[:] = target_previous_action
 
   def posterior_path(self) -> torch.Tensor:
     """Evenly spaced demonstrated waypoints, expressed from the live state."""
@@ -141,6 +187,7 @@ class CvaeCommand(ImitationCommand):
           current,
           target,
           self._target_contacts(rows[:, index]),
+          self._target_actions(rows[:, index]),
           offsets[:, index].float() / self.fps,
           total,
         )
@@ -171,6 +218,11 @@ class CvaeCommand(ImitationCommand):
     if self.dataset is None or self.dataset.phase is None:
       return
     start_rows = self.route_rows[env_ids, 0]
+    target_rows = (
+      self.route_rows[env_ids].gather(1, self.window_steps[env_ids][:, None]).squeeze(1)
+    )
+    self.target_contact[env_ids] = self._target_contacts(target_rows)
+    self.target_previous_action[env_ids] = self._target_actions(target_rows)
     self.motion.time_steps[env_ids] = self.dataset.phase[start_rows]
     assert self.dataset.previous_action is not None
     self._env.action_manager.initialize_action(
@@ -184,8 +236,11 @@ class CvaeCommandCfg(ImitationCommandCfg):
   duration_s_range: tuple[float, float] = (0.5, 2.0)
   posterior_waypoints: int = 8
   motion_name: str = "motion"
+  action_tolerance: float = 0.10
 
   def build(self, env: ManagerBasedRlEnv) -> CvaeCommand:
     if self.posterior_waypoints < 1:
       raise ValueError("posterior_waypoints must be positive")
+    if not math.isfinite(self.action_tolerance) or self.action_tolerance <= 0:
+      raise ValueError("action_tolerance must be finite and positive")
     return CvaeCommand(self, env)

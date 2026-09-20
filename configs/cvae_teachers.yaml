@@ -1,0 +1,25 @@
+teachers:
+  - source: dance1_subject1
+    motion: data/lafan1_g1/motions/dance1_subject1.npz
+    checkpoint: logs/rsl_rl/g1_dance1_subject1/2026-09-03_17-47-58/model_11000.pt
+  - source: fightAndSports1_subject1
+    motion: data/lafan1_g1/motions/fightAndSports1_subject1.npz
+    checkpoint: logs/rsl_rl/g1_fightAndSports1_subject1/2026-09-02_19-50-09/model_10500.pt
+  - source: jumps1_subject1
+    motion: data/lafan1_g1/motions/jumps1_subject1.npz
+    checkpoint: logs/rsl_rl/g1_jumps1_subject1/2026-09-01_18-04-33/model_7500.pt
+  - source: jumps1_subject2
+    motion: data/lafan1_g1/motions/jumps1_subject2.npz
+    checkpoint: logs/rsl_rl/g1_jumps1_subject2/2026-09-01_21-09-19/model_9000.pt
+  - source: run1_subject2
+    motion: data/lafan1_g1/motions/run1_subject2.npz
+    checkpoint: logs/rsl_rl/g1_run1_subject1/2026-09-03_22-36-53/model_7500.pt
+  - source: sprint1_subject2
+    motion: data/lafan1_g1/motions/sprint1_subject2.npz
+    checkpoint: logs/rsl_rl/g1_sprint1_subject2/2026-09-03_09-41-48/model_11500.pt
+  - source: walk1_subject1
+    motion: data/lafan1_g1/motions/walk1_subject1.npz
+    checkpoint: logs/rsl_rl/g1_walk1_subject1/2026-08-29_17-51-32/model_7000.pt
+  - source: walk1_subject2
+    motion: data/lafan1_g1/motions/walk1_subject2.npz
+    checkpoint: logs/rsl_rl/g1_walk1_subject2/2026-09-01_14-54-53/model_7000.pt

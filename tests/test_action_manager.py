@@ -116,3 +116,20 @@ def test_action_history_reset(mock_env, action_term_cfg, device):
   assert torch.all(manager.action == 0.0)
   assert torch.all(manager.prev_action == 0.0)
   assert torch.all(manager.prev_prev_action == 0.0)
+
+
+def test_initialize_action_restores_history_without_advancing(
+  mock_env, action_term_cfg, device
+):
+  manager = ActionManager({"action": action_term_cfg}, mock_env)
+  manager.process_action(torch.ones(mock_env.num_envs, 3, device=device))
+  env_ids = torch.tensor([1, 3], device=device)
+  restored = torch.full((2, 3), 4.0, device=device)
+
+  manager.initialize_action(restored, env_ids)
+
+  for history in (manager.action, manager.prev_action, manager.prev_prev_action):
+    torch.testing.assert_close(history[env_ids], restored)
+  term = manager.get_term("action")
+  processed = term.process_actions.call_args.args[0]
+  torch.testing.assert_close(processed[env_ids], restored)

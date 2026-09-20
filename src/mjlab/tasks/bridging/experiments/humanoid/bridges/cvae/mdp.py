@@ -27,6 +27,10 @@ def endpoint(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
   return command(env, command_name).command
 
 
+def handoff_target(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+  return command(env, command_name).handoff_target()
+
+
 def posterior_path(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
   return command(env, command_name).posterior_path()
 
@@ -88,7 +92,12 @@ def target_error(
 
 def target_success(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
   bridge = command(env, command_name)
-  return (bridge.target_errors() <= bridge.tolerances).all(dim=-1).float()
+  reached = (bridge.target_errors() <= bridge.tolerances).all(dim=-1)
+  return (reached & (bridge.action_error() <= bridge.cvae_cfg.action_tolerance)).float()
+
+
+def target_action_error(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+  return command(env, command_name).action_error()
 
 
 def fell_over(

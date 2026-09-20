@@ -1,18 +1,15 @@
-"""Residual CVAE bridge distilled online from a trajectory tracker.
+"""Residual CVAE bridge distilled online from several trajectory trackers.
 
 Rebuild the tracker corpus once so it contains contacts and active actions:
 
     uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.trajectory_tracking.collect
 
-Train one clip and its matching tracker at a time:
+Edit configs/cvae_teachers.yaml to select clip and checkpoint pairs, then train:
 
-    uv run train Mjlab-G1-CVAE-Bridge \
-      --env.scene.num-envs 4096 \
-      --env.commands.motion.motion-file data/lafan1_g1/motions/walk1_subject1.npz \
-      --agent.teacher-checkpoint logs/rsl_rl/g1_tracking/<run>/model_3000.pt
+    uv run train Mjlab-G1-CVAE-Bridge --env.scene.num-envs 4096
 
-The motion filename selects the dataset source with the same stem. The student acts in
-every environment while the frozen tracker labels those visited states, which is DAgger.
+Each teacher gets 128 parallel environments by default. Equal-sized groups are pooled
+for one student update, while each frozen tracker labels its own visited states.
 """
 
 from dataclasses import dataclass, field
@@ -27,6 +24,9 @@ from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.env_cfg import (
   cvae_env_cfg,
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.runner import CvaeRunner
+from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.teachers import (
+  DEFAULT_MANIFEST,
+)
 from mjlab.tasks.registry import register_mjlab_task
 from mjlab.tasks.tracking.config.g1.rl_cfg import (
   unitree_g1_tracking_ppo_runner_cfg,
@@ -59,6 +59,7 @@ class CvaeDistillationCfg(RslRlDistillationAlgorithmCfg):
   kl_beta_start: float = 1.0e-4
   kl_beta_end: float = 1.0e-2
   kl_schedule_updates: int = 5000
+  action_continuity_weight: float = 0.1
 
 
 @dataclass
@@ -68,7 +69,7 @@ class CvaeRunnerCfg(RslRlBaseRunnerCfg):
     default_factory=lambda: unitree_g1_tracking_ppo_runner_cfg().actor
   )
   algorithm: CvaeDistillationCfg = field(default_factory=CvaeDistillationCfg)
-  teacher_checkpoint: str | None = None
+  teacher_manifest: str = str(DEFAULT_MANIFEST)
 
 
 def cvae_runner_cfg() -> CvaeRunnerCfg:

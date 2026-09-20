@@ -15,6 +15,9 @@ from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae import mdp
 from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.command import (
   CvaeCommandCfg,
 )
+from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.teachers import (
+  load_teachers,
+)
 from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.dataset import (
   DEFAULT_DATASET,
 )
@@ -34,7 +37,10 @@ def cvae_env_cfg(
   motion_file: str = "",
 ) -> ManagerBasedRlEnvCfg:
   """Build the flat-ground bridge environment."""
+  motion_file = motion_file or str(load_teachers()[0].motion)
   cfg = unitree_g1_flat_tracking_env_cfg(play=play)
+  if not play:
+    cfg.scene.num_envs = 128
   motion = cfg.commands[MOTION]
   if not isinstance(motion, MotionCommandCfg):
     raise TypeError("G1 tracking configuration has no motion command")
@@ -121,6 +127,15 @@ def cvae_env_cfg(
       concatenate_terms=True,
       enable_corruption=False,
     ),
+    "handoff": ObservationGroupCfg(
+      terms={
+        "target": ObservationTermCfg(
+          func=mdp.handoff_target, params={"command_name": BRIDGE}
+        )
+      },
+      concatenate_terms=True,
+      enable_corruption=False,
+    ),
     "teacher": ObservationGroupCfg(
       terms=teacher_terms, concatenate_terms=True, enable_corruption=False
     ),
@@ -152,6 +167,11 @@ def cvae_env_cfg(
     },
     "target_success": MetricsTermCfg(
       func=mdp.target_success,
+      params={"command_name": BRIDGE},
+      reduce="last",
+    ),
+    "target_action_error": MetricsTermCfg(
+      func=mdp.target_action_error,
       params={"command_name": BRIDGE},
       reduce="last",
     ),

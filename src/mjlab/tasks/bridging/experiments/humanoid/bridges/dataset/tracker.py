@@ -183,6 +183,11 @@ def _discover() -> tuple[tuple[Path, Path], ...]:
     return ()
   latest: dict[Path, Path] = {}
   for run in root.glob("*/*"):
+    agent = run / "params" / "agent.yaml"
+    if not agent.is_file() or not re.search(
+      r"(?m)^  class_name: PPO\s*$", agent.read_text(encoding="utf-8")
+    ):
+      continue
     found = sorted(run.glob("model_*.pt"), key=lambda p: p.stat().st_mtime)
     clip = _trained_on(run)
     if found and clip is not None:

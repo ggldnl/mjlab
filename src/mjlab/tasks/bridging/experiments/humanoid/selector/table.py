@@ -23,6 +23,7 @@ class Entry:
   motion_file: str
   motion_scale: float
   source_row: int
+  foot_contact: np.ndarray | None = None
 
   @property
   def name(self) -> str:
@@ -79,6 +80,9 @@ class EntryTable:
           motion_file=str(raw["motion_file"][index]),
           motion_scale=float(raw["motion_scale"][index]),
           source_row=int(raw["source_row"][index]),
+          foot_contact=(
+            raw["foot_contact"][index].copy() if "foot_contact" in raw.files else None
+          ),
         )
         for index in range(len(raw["states"]))
       )

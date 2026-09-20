@@ -57,7 +57,7 @@ def main() -> None:
   bridge = env.command_manager.get_term("bridge")
   assert isinstance(bridge, CvaeCommand)
 
-  errors, durations, deadlines, falls = [], [], [], []
+  errors, action_errors, durations, deadlines, falls = [], [], [], [], []
   obs = wrapped.get_observations()
   with torch.inference_mode():
     while sum(len(batch) for batch in errors) < args.episodes:
@@ -66,6 +66,7 @@ def main() -> None:
       if ids.numel() == 0:
         continue
       errors.append(bridge.target_errors()[ids].cpu())
+      action_errors.append(bridge.action_error()[ids].cpu())
       durations.append((bridge.window_steps[ids] / bridge.fps).cpu())
       deadlines.append(env.reset_time_outs[ids].cpu())
       falls.append(env.reset_terminated[ids].cpu())
@@ -73,10 +74,16 @@ def main() -> None:
       obs = wrapped.get_observations()
 
   error = torch.cat(errors)[: args.episodes]
+  action_error = torch.cat(action_errors)[: args.episodes]
   duration = torch.cat(durations)[: args.episodes]
   deadline = torch.cat(deadlines)[: args.episodes]
   fall = torch.cat(falls)[: args.episodes]
-  success = deadline & ~fall & (error <= bridge.tolerances.cpu()).all(dim=-1)
+  success = (
+    deadline
+    & ~fall
+    & (error <= bridge.tolerances.cpu()).all(dim=-1)
+    & (action_error <= bridge.cvae_cfg.action_tolerance)
+  )
   print(f"eval episodes: {len(error)}  source: {args.motion_file.stem}")
   print(
     f"strict success: {success.float().mean():.1%}  "
@@ -96,6 +103,11 @@ def main() -> None:
       f"p95 {torch.quantile(values, 0.95):.3f}, "
       f"tolerance {bridge.tolerances[index]:.3f}"
     )
+  print(
+    f"{'target_action':>18}: mean {action_error.mean():.3f}, "
+    f"p95 {torch.quantile(action_error, 0.95):.3f}, "
+    f"tolerance {bridge.cvae_cfg.action_tolerance:.3f}"
+  )
   wrapped.close()
 
 

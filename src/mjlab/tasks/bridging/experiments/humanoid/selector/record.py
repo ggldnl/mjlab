@@ -9,6 +9,7 @@ import numpy as np
 import tyro
 
 import mjlab
+from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset import dataset
 from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.dataset import RolloutCfg
 from mjlab.tasks.bridging.experiments.humanoid.selector import (
@@ -51,6 +52,24 @@ def collect(cfg: RecordCfg) -> Path:
   for source, skill in enumerate(cfg.skills):
     task = SKILLS[skill]
     env_cfg = load_env_cfg(task)
+    if not any(
+      sensor.name == "feet_ground_contact" for sensor in env_cfg.scene.sensors
+    ):
+      env_cfg.scene.sensors = (
+        *env_cfg.scene.sensors,
+        ContactSensorCfg(
+          name="feet_ground_contact",
+          primary=ContactMatch(
+            mode="subtree",
+            pattern=r"^(left_ankle_roll_link|right_ankle_roll_link)$",
+            entity="robot",
+          ),
+          secondary=ContactMatch(mode="body", pattern="terrain"),
+          fields=("found",),
+          reduce="netforce",
+          num_slots=1,
+        ),
+      )
     rate = dataset.control_rate(env_cfg)
     if fps is not None and abs(rate - fps) > 1e-6:
       raise ValueError("All recorded skills must use the same control rate")
@@ -64,6 +83,8 @@ def collect(cfg: RecordCfg) -> Path:
     )
     context: dict[str, np.ndarray] = {}
     result = dataset.record(task, env_cfg, checkpoint, cfg, skill, metadata=context)
+    if "foot_contact" not in context:
+      raise ValueError(f"{skill} has no recorded feet_ground_contact sensor")
     state, env_id, trajectory, frame, phase, command = result
     states.append(state)
     env_ids.append(env_id)

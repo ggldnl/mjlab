@@ -21,6 +21,7 @@ class CvaeDistillation(Distillation):
     kl_beta_start: float = 1.0e-4,
     kl_beta_end: float = 1.0e-2,
     kl_schedule_updates: int = 5000,
+    action_continuity_weight: float = 0.1,
     **kwargs,
   ) -> None:
     super().__init__(*args, **kwargs)
@@ -31,6 +32,9 @@ class CvaeDistillation(Distillation):
     self.kl_beta_start = kl_beta_start
     self.kl_beta_end = kl_beta_end
     self.kl_schedule_updates = kl_schedule_updates
+    if action_continuity_weight < 0:
+      raise ValueError("action_continuity_weight must be nonnegative")
+    self.action_continuity_weight = action_continuity_weight
 
   @property
   def kl_beta(self) -> float:
@@ -41,9 +45,10 @@ class CvaeDistillation(Distillation):
     self.num_updates += 1
     behavior_total = 0.0
     kl_total = 0.0
+    continuity_total = 0.0
     updates = 0
-    accumulated: torch.Tensor | None = None
     student = cast(ResidualCvaeModel, self.student)
+    self.optimizer.zero_grad()
 
     for _ in range(self.num_learning_epochs):
       for batch in self.storage.generator():
@@ -51,29 +56,39 @@ class CvaeDistillation(Distillation):
         assert batch.privileged_actions is not None
         actions, kl = student.reconstruct(batch.observations)
         behavior = self.loss_fn(actions, batch.privileged_actions)
-        loss = behavior + self.kl_beta * kl.mean()
-        accumulated = loss if accumulated is None else accumulated + loss
+        handoff = cast(torch.Tensor, batch.observations["handoff"])
+        mask = handoff[:, -1]
+        prior_action = student(batch.observations)
+        action_difference = torch.nn.functional.smooth_l1_loss(
+          prior_action, handoff[:, :-1], reduction="none"
+        ).mean(dim=-1)
+        continuity = (action_difference * mask).sum() / mask.sum().clamp(min=1)
+        loss = (
+          behavior
+          + self.kl_beta * kl.mean()
+          + self.action_continuity_weight * continuity
+        )
+        loss.backward()
         behavior_total += behavior.item()
         kl_total += kl.mean().item()
+        continuity_total += continuity.item()
         updates += 1
 
         if updates % self.gradient_length == 0:
-          assert accumulated is not None
-          self._step(accumulated)
-          accumulated = None
+          self._step()
+          self.optimizer.zero_grad()
 
-    if accumulated is not None:
-      self._step(accumulated)
+    if updates % self.gradient_length:
+      self._step()
     self.storage.clear()
     return {
       "behavior": behavior_total / updates,
       "kl": kl_total / updates,
+      "action_continuity": continuity_total / updates,
       "kl_beta": self.kl_beta,
     }
 
-  def _step(self, loss: torch.Tensor) -> None:
-    self.optimizer.zero_grad()
-    loss.backward()
+  def _step(self) -> None:
     if self.is_multi_gpu:
       self.reduce_parameters()
     if self.max_grad_norm:
