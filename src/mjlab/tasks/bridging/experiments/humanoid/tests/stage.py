@@ -22,6 +22,13 @@ from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae import (
   CVAE_TASK_ID,
   CvaeRunnerCfg,
 )
+from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.goal import (
+  GOAL_CVAE_TASK_ID,
+  GoalRunnerCfg,
+)
+from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.goal.model import (
+  GoalCvaeModel,
+)
 from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.model import (
   ResidualCvaeModel,
 )
@@ -58,7 +65,12 @@ def arena(
     if action is None or not hasattr(action, "imitation_checkpoint"):
       raise ValueError(f"{bridge_task} does not use an imitation base policy")
     cfg.actions["joint_pos"] = replace(action, imitation_checkpoint=base_checkpoint)
+  initial = (
+    cfg.observations.get("initial") if bridge_task == GOAL_CVAE_TASK_ID else None
+  )
   cfg.observations = {BRIDGE: copy.deepcopy(cfg.observations["actor"])}
+  if initial is not None:
+    cfg.observations["initial"] = copy.deepcopy(initial)
   cfg.events = {}
   cfg.rewards = {}
   cfg.terminations = {}
@@ -135,6 +147,41 @@ class Policy:
     task_runner: bool = True,
   ) -> None:
     agent = load_rl_cfg(task)
+    if task == GOAL_CVAE_TASK_ID:
+      saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
+      weights = saved["student_state_dict"]
+      current = cast(torch.Tensor, env.get_observations()[group])
+      initial = cast(torch.Tensor, env.get_observations()["initial"])
+      route_slots = cast(GoalRunnerCfg, agent).student.route_slots
+      route_dim = route_slots + 1 + 3 * route_slots
+      posterior_dim = (
+        weights["posterior.0.weight"].shape[1] - initial.shape[-1] - route_dim
+      )
+      sample = TensorDict(
+        {
+          group: current,
+          "initial": initial,
+          "posterior": current.new_zeros((env.num_envs, posterior_dim)),
+          "route": current.new_zeros((env.num_envs, route_slots + 1)),
+        },
+        batch_size=[env.num_envs],
+      )
+      student_cfg = asdict(cast(GoalRunnerCfg, agent).student)
+      student_cfg.pop("class_name")
+      self._policy = GoalCvaeModel(
+        sample,
+        {
+          "student": [group, "initial"],
+          "posterior": ["posterior"],
+          "route": ["route"],
+        },
+        "student",
+        env.num_actions,
+        **student_cfg,
+      ).to(device)
+      self._policy.load_state_dict(weights, strict=True)
+      self._policy.eval()
+      return
     if task == CVAE_TASK_ID:
       saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
       weights = saved["student_state_dict"]
@@ -172,6 +219,10 @@ class Policy:
   @torch.no_grad()
   def __call__(self, obs: TensorDict) -> torch.Tensor:
     return self._policy(obs)
+
+  def reset(self) -> None:
+    if isinstance(self._policy, GoalCvaeModel):
+      self._policy.reset()
 
 
 def load_policy(

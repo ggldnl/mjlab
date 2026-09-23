@@ -5,6 +5,9 @@ from dataclasses import dataclass
 
 import torch
 
+from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.runtime import (
+  DiffusionRuntime,
+)
 from mjlab.tasks.bridging.experiments.humanoid.bridges.interface import (
   Bridge,
   BridgeCommand,
@@ -43,6 +46,8 @@ BRIDGES = {
   "no-op": BridgeSpec("no-op", "Mjlab-G1-Imitation-Bridge", Bridge),
   "imitation": BridgeSpec("imitation", "Mjlab-G1-Imitation-Bridge"),
   "cvae": BridgeSpec("cvae", "Mjlab-G1-CVAE-Bridge"),
+  "diffusion": BridgeSpec("diffusion", "Mjlab-G1-Imitation-Bridge", DiffusionRuntime),
+  "goal-cvae": BridgeSpec("goal-cvae", "Mjlab-G1-Goal-CVAE-Bridge"),
   "residual": BridgeSpec(
     "residual",
     "Mjlab-G1-Residual-Bridge",

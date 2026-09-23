@@ -56,7 +56,7 @@ from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.sensor import ContactSensor
 from mjlab.tasks.registry import load_rl_cfg, load_runner_cls
-from mjlab.utils.lab_api.math import quat_apply_inverse
+from mjlab.utils.lab_api.math import quat_apply_inverse, quat_conjugate, quat_mul
 
 ROBOT = "robot"
 
@@ -168,9 +168,47 @@ def entry_context(env: ManagerBasedRlEnv) -> dict[str, np.ndarray]:
     JumpCommand,
   )
 
+  robot = env.scene[ROBOT]
+  data = robot.data
+  foot_names = ("left_ankle_roll_link", "right_ankle_roll_link")
+  foot_indexes = [robot.body_names.index(name) for name in foot_names]
+  foot_pos = data.body_link_pos_w[:, foot_indexes]
+  foot_quat = data.body_link_quat_w[:, foot_indexes]
+  foot_offset = foot_pos - data.root_link_pos_w[:, None]
+  root_quat = data.root_link_quat_w[:, None].expand_as(foot_quat)
+  root_ang_vel = data.root_link_ang_vel_w[:, None].expand_as(foot_offset)
+  foot_lin_vel = data.body_link_lin_vel_w[:, foot_indexes]
+  foot_ang_vel = data.body_link_ang_vel_w[:, foot_indexes]
   context = {
     "previous_action": env.action_manager.action.detach().cpu().numpy().copy(),
-    "body_pos_b": body_pos_b(env.scene[ROBOT]).detach().cpu().numpy().copy(),
+    "body_pos_b": body_pos_b(robot).detach().cpu().numpy().copy(),
+    "foot_pos_b": quat_apply_inverse(root_quat, foot_offset)
+    .detach()
+    .cpu()
+    .numpy()
+    .copy(),
+    "foot_quat_b": quat_mul(quat_conjugate(root_quat), foot_quat)
+    .detach()
+    .cpu()
+    .numpy()
+    .copy(),
+    "foot_lin_vel_b": quat_apply_inverse(
+      root_quat,
+      foot_lin_vel
+      - data.root_link_lin_vel_w[:, None]
+      - torch.cross(root_ang_vel, foot_offset, dim=-1),
+    )
+    .detach()
+    .cpu()
+    .numpy()
+    .copy(),
+    "foot_ang_vel_b": quat_apply_inverse(
+      root_quat, foot_ang_vel - data.root_link_ang_vel_w[:, None]
+    )
+    .detach()
+    .cpu()
+    .numpy()
+    .copy(),
     "reference": np.full((env.num_envs, 7), np.nan, dtype=np.float32),
     "motion_file": np.full(env.num_envs, "", dtype="U1"),
     "motion_scale": np.ones(env.num_envs, dtype=np.float32),

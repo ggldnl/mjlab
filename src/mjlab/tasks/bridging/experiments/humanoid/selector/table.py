@@ -24,6 +24,13 @@ class Entry:
   motion_scale: float
   source_row: int
   foot_contact: np.ndarray | None = None
+  foot_pos_b: np.ndarray | None = None
+  foot_quat_b: np.ndarray | None = None
+  foot_lin_vel_b: np.ndarray | None = None
+  foot_ang_vel_b: np.ndarray | None = None
+  future_states: np.ndarray | None = None
+  future_contact: np.ndarray | None = None
+  future_mask: np.ndarray | None = None
 
   @property
   def name(self) -> str:
@@ -82,6 +89,33 @@ class EntryTable:
           source_row=int(raw["source_row"][index]),
           foot_contact=(
             raw["foot_contact"][index].copy() if "foot_contact" in raw.files else None
+          ),
+          foot_pos_b=(
+            raw["foot_pos_b"][index].copy() if "foot_pos_b" in raw.files else None
+          ),
+          foot_quat_b=(
+            raw["foot_quat_b"][index].copy() if "foot_quat_b" in raw.files else None
+          ),
+          foot_lin_vel_b=(
+            raw["foot_lin_vel_b"][index].copy()
+            if "foot_lin_vel_b" in raw.files
+            else None
+          ),
+          foot_ang_vel_b=(
+            raw["foot_ang_vel_b"][index].copy()
+            if "foot_ang_vel_b" in raw.files
+            else None
+          ),
+          future_states=(
+            raw["future_states"][index].copy() if "future_states" in raw.files else None
+          ),
+          future_contact=(
+            raw["future_contact"][index].copy()
+            if "future_contact" in raw.files
+            else None
+          ),
+          future_mask=(
+            raw["future_mask"][index].copy() if "future_mask" in raw.files else None
           ),
         )
         for index in range(len(raw["states"]))

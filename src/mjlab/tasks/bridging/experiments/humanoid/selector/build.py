@@ -122,7 +122,7 @@ def select_rows(
 def build(cfg: BuildCfg) -> Path:
   """Select states and preserve every row-aligned column from the recording."""
   with np.load(cfg.path, allow_pickle=False) as raw:
-    required = {"states", "skill", "skill_names", "trajectory", "phase", "fps"}
+    required = {"states", "skill", "skill_names", "trajectory", "phase", "frame", "fps"}
     missing = required - set(raw.files)
     if missing:
       raise ValueError(f"{cfg.path} is missing: {', '.join(sorted(missing))}")
@@ -163,6 +163,28 @@ def build(cfg: BuildCfg) -> Path:
         value[selected] if value.ndim > 0 and value.shape[0] == len(states) else value
       )
     columns["source_row"] = selected
+    frame_width = int(raw["frame"].max()) + 6
+    trajectory_width = int(trajectory.max()) + 1
+    keys = (
+      skill_index.astype(np.int64) * trajectory_width + trajectory
+    ) * frame_width + raw["frame"]
+    order = np.argsort(keys)
+    offsets = np.arange(1, 6)
+    wanted_keys = keys[selected, None] + offsets[None]
+    positions = np.searchsorted(keys[order], wanted_keys)
+    candidates = order[positions.clip(max=len(order) - 1)]
+    future_mask = (positions < len(order)) & (keys[candidates] == wanted_keys)
+    future_states = np.where(
+      future_mask[..., None], states[candidates], states[selected, None]
+    )
+    future_contact = np.zeros((len(selected), 5, 2), dtype=np.float32)
+    if "foot_contact" in raw.files:
+      future_contact = np.where(
+        future_mask[..., None], raw["foot_contact"][candidates], 0.0
+      )
+    columns["future_states"] = future_states
+    columns["future_contact"] = future_contact
+    columns["future_mask"] = future_mask.astype(np.float32)
 
   cfg.out.parent.mkdir(parents=True, exist_ok=True)
   np.savez(cfg.out, **columns)

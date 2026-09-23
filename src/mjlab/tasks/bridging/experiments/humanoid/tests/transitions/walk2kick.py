@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 import torch
 import tyro
 
@@ -23,8 +24,15 @@ from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.bridging.experiments.humanoid.bridges import BRIDGES, BridgeSpec
-from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae import CVAE_TASK_ID
 from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.command import CvaeCommand
+from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.goal.command import (
+  GoalCommand,
+  post_goal_features,
+  rotation_6d,
+)
+from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.runtime import (
+  DiffusionRuntime,
+)
 from mjlab.tasks.bridging.experiments.humanoid.bridges.interface import BridgeCommand
 from mjlab.tasks.bridging.experiments.humanoid.selector import STATES_PATH, resume
 from mjlab.tasks.bridging.experiments.humanoid.selector.table import (
@@ -68,6 +76,9 @@ class Config:
   steps: int = 600
   device: str | None = None
   seed: int = 0
+  exact_entry_baseline: bool = False
+  diagnostic_path: Path | None = None
+  diffusion_replan_interval: int = 0
 
 
 def _put_ball(env: ManagerBasedRlEnv, position: torch.Tensor) -> None:
@@ -120,6 +131,12 @@ class Run:
     self.bridge = cfg.bridge
     self.active_bridge = cfg.bridge
     self.target = torch.empty(0, device=env.device)
+    self.history: torch.Tensor | None = None
+    self.diagnostic_actual: list[np.ndarray] = []
+    self.diagnostic_planned: list[np.ndarray] = []
+    self.diagnostic_phase: list[int] = []
+    self.diagnostic_action: list[np.ndarray] = []
+    self.diagnostic_kick_errors: list[np.ndarray] = []
     action_dim = entries[0].previous_action.size
     self.kick_tracking_count = 0
     self.kick_fell = False
@@ -137,6 +154,14 @@ class Run:
       for name, spec in bridges.items()
       if spec.runtime is not None
     }
+    chosen = self.runtime_bridges.get(cfg.bridge)
+    self.history_length = 4
+    if isinstance(chosen, DiffusionRuntime):
+      chosen.checkpoint = cfg.bridge_checkpoint
+      if cfg.diffusion_replan_interval < 0:
+        raise ValueError("diffusion_replan_interval must be nonnegative")
+      chosen.replan_interval = cfg.diffusion_replan_interval
+      self.history_length = chosen.load(env.device).history
     self.reset()
 
   @property
@@ -161,6 +186,12 @@ class Run:
     self.kick_tracking_count = 0
     self.kick_fell = False
     self.kick_tracking_sum = dict.fromkeys(self.kick_tracking_sum, 0.0)
+    self.history = None
+    self.diagnostic_actual.clear()
+    self.diagnostic_planned.clear()
+    self.diagnostic_phase.clear()
+    self.diagnostic_action.clear()
+    self.diagnostic_kick_errors.clear()
     self.command.stop()
     self.env.action_manager.action.zero_()
 
@@ -195,6 +226,49 @@ class Run:
         self.target,
         target_contact=contact.expand(self.env.num_envs, -1),
         target_previous_action=action.expand(self.env.num_envs, -1),
+      )
+    elif isinstance(self.command, GoalCommand):
+      foot_fields = (
+        entry.foot_pos_b,
+        entry.foot_quat_b,
+        entry.foot_lin_vel_b,
+        entry.foot_ang_vel_b,
+        entry.foot_contact,
+      )
+      if any(value is None for value in foot_fields):
+        raise ValueError(
+          "Goal CVAE needs target foot poses, velocities and contacts. "
+          "Re-run selector.record and selector.build"
+        )
+      assert all(value is not None for value in foot_fields)
+      foot_pos = torch.as_tensor(entry.foot_pos_b, device=self.env.device)
+      foot_quat = torch.as_tensor(entry.foot_quat_b, device=self.env.device)
+      foot_lin = torch.as_tensor(entry.foot_lin_vel_b, device=self.env.device)
+      foot_ang = torch.as_tensor(entry.foot_ang_vel_b, device=self.env.device)
+      foot = (
+        torch.cat((foot_pos, rotation_6d(foot_quat), foot_lin, foot_ang), dim=-1)
+        .flatten()[None]
+        .expand(self.env.num_envs, -1)
+      )
+      contact = torch.as_tensor(entry.foot_contact, device=self.env.device)
+      future = None
+      if (
+        entry.future_states is not None
+        and entry.future_contact is not None
+        and entry.future_mask is not None
+      ):
+        future = post_goal_features(
+          torch.as_tensor(entry.state, device=self.env.device)[None],
+          torch.as_tensor(entry.future_states, device=self.env.device)[None],
+          torch.as_tensor(entry.future_contact, device=self.env.device)[None],
+          torch.as_tensor(entry.future_mask, device=self.env.device)[None].bool(),
+        ).expand(self.env.num_envs, -1)
+      self.command.aim(
+        self.target,
+        target_foot=foot,
+        target_foot_quat=foot_quat[None].expand(self.env.num_envs, -1, -1),
+        target_contact=contact[None].expand(self.env.num_envs, -1),
+        target_future=future,
       )
     else:
       self.command.aim(self.target)
@@ -235,6 +309,8 @@ class Run:
     duration = torch.full((self.env.num_envs,), self.duration_s, device=self.env.device)
     self.command.open_window(ids, self.target, duration)
     self.active_bridge = self.bridge
+    if self.active_bridge in self.policies:
+      self.policies[self.active_bridge].reset()
     runtime = self.runtime_bridges.get(self.active_bridge)
     if runtime is not None:
       runtime.reset()
@@ -245,8 +321,29 @@ class Run:
     )
 
   def _finish_bridge(self, reason: str | None = None):
+    if self.cfg.exact_entry_baseline:
+      goal = self.target
+      joints = self.robot.data.joint_pos.shape[-1]
+      self.robot.write_root_state_to_sim(goal[:, :13])
+      self.robot.write_joint_state_to_sim(
+        goal[:, 13 : 13 + joints], goal[:, 13 + joints :]
+      )
+      entry_action = torch.as_tensor(
+        self.entries[self.entry_index].previous_action, device=self.env.device
+      ).expand(self.env.num_envs, -1)
+      resume.restore_action(self.env, entry_action)
+      self.env.sim.forward()
     errors = self.command.target_errors()[0]
     success = bool((errors <= self.command.tolerances).all())
+    goal = self.command if isinstance(self.command, GoalCommand) else None
+    foot_errors = goal.foot_errors()[0] if goal is not None else None
+    if foot_errors is not None:
+      assert goal is not None
+      success &= bool(
+        (
+          foot_errors <= torch.tensor(goal.cfg.foot_tolerances, device=self.env.device)
+        ).all()
+      )
     cvae = self.command if isinstance(self.command, CvaeCommand) else None
     action_error = float(cvae.action_error()[0]) if cvae is not None else None
     if action_error is not None:
@@ -260,6 +357,19 @@ class Run:
         for name, value in zip(self.command.error_names, errors, strict=True)
       )
       + f", strict_success={success}"
+      + (
+        ", "
+        + ", ".join(
+          f"{name}={float(value):.3f}"
+          for name, value in zip(
+            ("foot_pos", "foot_ori", "foot_lin_vel", "foot_ang_vel"),
+            foot_errors,
+            strict=True,
+          )
+        )
+        if foot_errors is not None
+        else ""
+      )
       + (
         f", target_action_error={action_error:.3f}" if action_error is not None else ""
       )
@@ -288,31 +398,70 @@ class Run:
         )
       )
 
+  def save_diagnostic(self) -> None:
+    if self.cfg.diagnostic_path is None:
+      return
+    path = self.cfg.diagnostic_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+      path,
+      actual=np.asarray(self.diagnostic_actual),
+      planned=np.asarray(self.diagnostic_planned),
+      phase=np.asarray(self.diagnostic_phase),
+      action=np.asarray(self.diagnostic_action),
+      kick_errors=np.asarray(self.diagnostic_kick_errors),
+      target=self.target[0].cpu().numpy(),
+      fps=1.0 / self.env.step_dt,
+      entry=self.entry_index,
+      exact_entry_baseline=self.cfg.exact_entry_baseline,
+    )
+    print(f"diagnostic saved: {path}")
+
   @torch.no_grad()
   def __call__(self, obs):
     del obs
+    actual = self.command.state_now()
+    self.history = (
+      actual[:, None].repeat(1, self.history_length, 1)
+      if self.history is None
+      else torch.cat((self.history[:, 1:], actual[:, None]), dim=1)
+    )
     if self.phase == "walk":
       self._hold_motion(0)
       self._set_walk()
       if self.fire or (self.automatic and self.distance <= self.trigger_distance):
         self._start_bridge()
+        if self.cfg.exact_entry_baseline:
+          return self._finish_bridge("exact entry baseline")
       else:
         return self.policies["walk"](fresh_obs(self.env))
 
     if self.phase == "bridge":
       self._hold_motion(0)
       runtime = self.runtime_bridges.get(self.active_bridge)
+      planned = None
       if runtime is not None:
         remaining = (
           self.command.window_steps - self.command.step
         ).float() / self.command.fps
-        output = runtime(
-          self.command.state_now()[:, None], self.command.target[:, None], remaining
-        )
+        output = runtime(self.history, self.command.target[:, None], remaining)
+        if isinstance(runtime, DiffusionRuntime) and runtime.path is not None:
+          assert runtime._index is not None
+          index = min(int(runtime._index[0]) - 1, int(runtime.path.duration[0]))
+          self.diagnostic_actual.append(actual[0].cpu().numpy().copy())
+          self.diagnostic_planned.append(
+            runtime.path.states[0, index].cpu().numpy().copy()
+          )
+          self.diagnostic_phase.append(1)
+          self.diagnostic_action.append(output.action[0].cpu().numpy().copy())
+          self.diagnostic_kick_errors.append(np.full(4, np.nan))
         if bool(output.handoff[0]):
           return self._finish_bridge(self.active_bridge)
+        planned = output.action
       if bool(self.command.handoff[0]):
         return self._finish_bridge()
+      if planned is not None and self.active_bridge not in self.policies:
+        return planned
       spec = self.bridges[self.active_bridge]
       observations = fresh_obs(self.env)
       action = self.policies[self.active_bridge](observations)
@@ -322,7 +471,26 @@ class Run:
       return action
 
     self._record_kick_tracking()
-    return self.policies["kick"](fresh_obs(self.env))
+    action = self.policies["kick"](fresh_obs(self.env))
+    reference = torch.cat(
+      (
+        self.motion.body_pos_w[:, 0],
+        self.motion.body_quat_w[:, 0],
+        self.motion.body_lin_vel_w[:, 0],
+        self.motion.body_ang_vel_w[:, 0],
+        self.motion.joint_pos,
+        self.motion.joint_vel,
+      ),
+      dim=-1,
+    )
+    self.diagnostic_actual.append(actual[0].cpu().numpy().copy())
+    self.diagnostic_planned.append(reference[0].cpu().numpy().copy())
+    self.diagnostic_phase.append(2)
+    self.diagnostic_action.append(action[0].cpu().numpy().copy())
+    self.diagnostic_kick_errors.append(
+      np.array([float(self.motion.metrics[name][0]) for name in self.kick_tracking_sum])
+    )
+    return action
 
 
 def panel(server, run: Run) -> None:
@@ -405,7 +573,9 @@ def main() -> None:
   for name, spec in BRIDGES.items():
     if not spec.learned:
       continue
-    if (spec.task == CVAE_TASK_ID) != (stage.task == CVAE_TASK_ID):
+    if spec.task != stage.task and not (
+      spec.base is not None and BRIDGES[spec.base].task == stage.task
+    ):
       continue
     checkpoint = cfg.bridge_checkpoint if name == cfg.bridge else None
     if name == selected.base and cfg.imitation_checkpoint is not None:
@@ -446,6 +616,7 @@ def main() -> None:
     obs = wrapped.get_observations()
     for _ in range(cfg.steps):
       obs, _, _, _ = wrapped.step(run(obs))
+    run.save_diagnostic()
     wrapped.close()
     return
 
