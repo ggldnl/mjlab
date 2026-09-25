@@ -42,6 +42,8 @@ environment terminates, so the step after a fall is a robot standing at its defa
 and without this the dataset fills up with one identical standing pose per failure.
 """
 
+# pyright: reportPrivateImportUsage=false
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -492,6 +494,8 @@ class Dataset:
     min_steps: int,
     max_steps: int,
     start_rows: torch.Tensor | None = None,
+    before: int = 0,
+    after: int = 0,
   ) -> Segments:
     """An index of every contiguous stretch of rollout long enough to be a window.
 
@@ -501,11 +505,12 @@ class Dataset:
 
     Both ends therefore also come from the same source. Restricting the start to a set of
     sources restricts the target to the same set, which is why there is one filter here
-    and not two. Coverage of a posture family is a property of the corpus, not of a
-    pairing rule.
+    and not two. before and after reserve contiguous context outside the window.
     """
     if min_steps < 1 or max_steps < min_steps:
       raise ValueError("Segment bounds must satisfy 1 <= min_steps <= max_steps.")
+    if before < 0 or after < 0:
+      raise ValueError("Segment context must be nonnegative.")
 
     # Sort into (trajectory, frame) order. The recording is time-major, so rows of one
     # rollout are strided rather than adjacent, and the settle cut can shorten a rollout
@@ -526,10 +531,12 @@ class Dataset:
     )
     run = opens.long().cumsum(0) - 1
     last = torch.bincount(run).cumsum(0) - 1
+    first = torch.cat((torch.zeros_like(last[:1]), last[:-1] + 1))
     positions = torch.arange(order.numel(), device=order.device)
     available = last[run] - positions
+    preceding = positions - first[run]
 
-    eligible = available >= min_steps
+    eligible = (available >= min_steps + after) & (preceding >= before)
     if start_rows is not None:
       allowed = torch.zeros_like(eligible)
       allowed[start_rows] = True
@@ -542,7 +549,7 @@ class Dataset:
     return Segments(
       order=order,
       starts=positions[eligible],
-      available=available[eligible].clamp(max=max_steps),
+      available=(available[eligible] - after).clamp(max=max_steps),
       min_steps=min_steps,
     )
 
@@ -590,21 +597,30 @@ class Segments:
     )
     return self.order[position], self.order[position + steps], steps, position
 
+  def history(self, position: torch.Tensor, steps_before: int) -> torch.Tensor:
+    """Rows from steps_before ticks before a window through its start."""
+    if steps_before < 0:
+      raise ValueError("steps_before must be nonnegative.")
+    offsets = torch.arange(-steps_before, 1, device=position.device)
+    return self.order[position.unsqueeze(-1) + offsets]
+
   def path(
-    self, position: torch.Tensor, steps: torch.Tensor, span: int
+    self,
+    position: torch.Tensor,
+    steps: torch.Tensor,
+    span: int,
+    post_steps: int = 0,
   ) -> torch.Tensor:
     """The rows of the recorded crossing, one per control tick. (N, span + 1).
 
     Column k is the state k ticks after the window opened, so column 0 is the start and
-    column steps is the target. Columns past the duration of a window repeat its target
-    rather than running on into whatever follows in the rollout, and they are read: a
-    window runs for BridgeCommandCfg.patience_scale times the duration its ends were drawn
-    at, so the last third of an episode sits in this padding. Repeating the target is what
-    makes that harmless, since the shaping then pays for staying on the target it has just
-    been paid for reaching. A row from the next stride would pay for leaving it.
+    column steps is the target. post_steps keeps the recorded continuation after the
+    target. Any remaining columns repeat the final requested row.
     """
-    offsets = torch.arange(span + 1, device=position.device)
-    reach = torch.minimum(offsets.unsqueeze(0), steps.unsqueeze(-1))
+    if post_steps < 0:
+      raise ValueError("post_steps must be nonnegative.")
+    offsets = torch.arange(span + post_steps + 1, device=position.device)
+    reach = torch.minimum(offsets.unsqueeze(0), steps.unsqueeze(-1) + post_steps)
     return self.order[position.unsqueeze(-1) + reach]
 
 

@@ -2,7 +2,7 @@
 
 Collect physical oracle rollouts with goal.collect, then train with:
 
-    uv run train Mjlab-G1-Goal-CVAE-Bridge \
+    uv run train Mjlab-G1-CVAE-Bridge \
       --agent.teacher-checkpoint logs/rsl_rl/g1_cvae_oracle/<run>/model_5000.pt
 """
 
@@ -25,8 +25,8 @@ from mjlab.tasks.tracking.config.g1.rl_cfg import (
   unitree_g1_tracking_ppo_runner_cfg,
 )
 
-GOAL_CVAE_TASK_ID = "Mjlab-G1-Goal-CVAE-Bridge"
-GOAL_CVAE_EXPERIMENT = "g1_goal_cvae_bridge"
+GOAL_CVAE_TASK_ID = "Mjlab-G1-CVAE-Bridge"
+GOAL_CVAE_EXPERIMENT = "g1_cvae_bridge"
 
 
 @dataclass

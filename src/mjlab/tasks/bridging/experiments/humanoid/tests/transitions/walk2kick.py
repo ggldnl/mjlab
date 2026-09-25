@@ -24,14 +24,19 @@ from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.bridging.experiments.humanoid.bridges import BRIDGES, BridgeSpec
-from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.command import CvaeCommand
 from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.goal.command import (
   GoalCommand,
   post_goal_features,
   rotation_6d,
 )
-from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.runtime import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.execution.learned_tracker import (
+  LearnedTrackerExecutor,
+)
+from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.execution.runtime import (
   DiffusionRuntime,
+)
+from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.execution.tracker import (
+  UniTrackerExecutor,
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridges.interface import BridgeCommand
 from mjlab.tasks.bridging.experiments.humanoid.selector import STATES_PATH, resume
@@ -60,13 +65,14 @@ BALL = "ball"
 
 @dataclass(frozen=True)
 class Config:
-  bridge: str = "cvae"
+  bridge: str = "goal-cvae"
   bridge_duration_s: float = 0.8
   trigger_distance: float = 0.5
   automatic: bool = True
   walk_speed: float = 1.0
   ball_distance: float = 3.0
   bridge_checkpoint: Path | None = None
+  tracker_checkpoint: Path | None = None
   imitation_checkpoint: Path | None = None
   walk_checkpoint: Path | None = None
   kick_checkpoint: Path | None = None
@@ -78,7 +84,7 @@ class Config:
   seed: int = 0
   exact_entry_baseline: bool = False
   diagnostic_path: Path | None = None
-  diffusion_replan_interval: int = 0
+  diffusion_sample_steps: int | None = None
 
 
 def _put_ball(env: ManagerBasedRlEnv, position: torch.Tensor) -> None:
@@ -158,10 +164,16 @@ class Run:
     self.history_length = 4
     if isinstance(chosen, DiffusionRuntime):
       chosen.checkpoint = cfg.bridge_checkpoint
-      if cfg.diffusion_replan_interval < 0:
-        raise ValueError("diffusion_replan_interval must be nonnegative")
-      chosen.replan_interval = cfg.diffusion_replan_interval
-      self.history_length = chosen.load(env.device).history
+      chosen.sample_steps = cfg.diffusion_sample_steps
+      tracker = (
+        LearnedTrackerExecutor.load(env, cfg.tracker_checkpoint)
+        if cfg.tracker_checkpoint is not None
+        else UniTrackerExecutor(env)
+      )
+      chosen.set_executor(tracker, tracker.captured)
+      self.history_length = max(
+        chosen.load(env.device).history, getattr(tracker, "history", 1)
+      )
     self.reset()
 
   @property
@@ -214,20 +226,7 @@ class Run:
     self.target = resume.target(self.env, entry)
     self._hold_motion(0)
     _put_ball(self.env, ball)
-    action = torch.as_tensor(entry.previous_action, device=self.env.device)
-    if isinstance(self.command, CvaeCommand):
-      if entry.foot_contact is None:
-        raise ValueError(
-          "Selector entries need recorded foot_contact. Re-run selector.record "
-          "and selector.build before using the CVAE bridge"
-        )
-      contact = torch.as_tensor(entry.foot_contact, device=self.env.device)
-      self.command.aim(
-        self.target,
-        target_contact=contact.expand(self.env.num_envs, -1),
-        target_previous_action=action.expand(self.env.num_envs, -1),
-      )
-    elif isinstance(self.command, GoalCommand):
+    if isinstance(self.command, GoalCommand):
       foot_fields = (
         entry.foot_pos_b,
         entry.foot_quat_b,
@@ -344,11 +343,6 @@ class Run:
           foot_errors <= torch.tensor(goal.cfg.foot_tolerances, device=self.env.device)
         ).all()
       )
-    cvae = self.command if isinstance(self.command, CvaeCommand) else None
-    action_error = float(cvae.action_error()[0]) if cvae is not None else None
-    if action_error is not None:
-      assert cvae is not None
-      success &= action_error <= cvae.cvae_cfg.action_tolerance
     print(
       (reason or ("captured" if not bool(self.command.deadline[0]) else "deadline"))
       + ": "
@@ -369,9 +363,6 @@ class Run:
         )
         if foot_errors is not None
         else ""
-      )
-      + (
-        f", target_action_error={action_error:.3f}" if action_error is not None else ""
       )
     )
     self.phase = "kick"
@@ -458,7 +449,7 @@ class Run:
         if bool(output.handoff[0]):
           return self._finish_bridge(self.active_bridge)
         planned = output.action
-      if bool(self.command.handoff[0]):
+      if not isinstance(runtime, DiffusionRuntime) and bool(self.command.handoff[0]):
         return self._finish_bridge()
       if planned is not None and self.active_bridge not in self.policies:
         return planned

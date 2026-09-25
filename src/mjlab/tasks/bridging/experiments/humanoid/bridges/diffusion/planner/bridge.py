@@ -1,4 +1,4 @@
-"""Load a position-only diffusion checkpoint and generate boundary-pinned paths."""
+"""Generate an exact-boundary kinematic plan between dynamic states."""
 
 from __future__ import annotations
 
@@ -7,37 +7,36 @@ from pathlib import Path
 
 import torch
 
-from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.data import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.dataset.motions import (
   Layout,
   Normalizer,
   bridge_mask,
   decode,
   encode,
 )
-from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.model import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.planner.model import (
   Denoiser,
   ModelCfg,
 )
-from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.process import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.planner.process import (
   Diffusion,
   ProcessCfg,
 )
-from mjlab.utils.lab_api.math import axis_angle_from_quat, quat_conjugate, quat_mul
 
-EXPERIMENT = "g1_diffusion_bridge"
+EXPERIMENT = "g1_kinematic_diffusion_bridge"
 
 
 @dataclass
 class GeneratedPath:
   states: torch.Tensor
-  """Dynamic reference from A through the known post-B continuation."""
+  """Kinematic reference with exact dynamic boundaries."""
 
   duration: torch.Tensor
   """Control ticks from A to B."""
 
 
 class DiffusionBridge:
-  """Generate kinematic paths; a separate feedback executor tracks them."""
+  """Inpaint root pose and joint angles between exact A and B boundaries."""
 
   def __init__(
     self,
@@ -66,14 +65,20 @@ class DiffusionBridge:
     cls, checkpoint: Path, device: str = "cpu", sample_steps: int | None = None
   ) -> DiffusionBridge:
     saved = torch.load(checkpoint, map_location=device, weights_only=True)
-    if saved.get("format") != "mjlab-diffusion-bridge-v4":
-      raise ValueError(f"{checkpoint} is not a position-only v4 checkpoint; retrain it")
+    if saved.get("format") != "mjlab-kinematic-diffusion-v2":
+      raise ValueError(
+        f"{checkpoint} is not a kinematic diffusion checkpoint; retrain it"
+      )
     layout = Layout(**saved["layout"])
     history = int(saved["history"])
     future = int(saved["future"])
     cfg = ProcessCfg(**saved["process_cfg"])
     if sample_steps is not None:
-      cfg = ProcessCfg(steps=cfg.steps, sample_steps=sample_steps)
+      cfg = ProcessCfg(
+        steps=cfg.steps,
+        sample_steps=sample_steps,
+        continuity_weight=cfg.continuity_weight,
+      )
     columns = history + int(saved["max_steps"]) + future - 1
     model = Denoiser(layout.width, columns, ModelCfg(**saved["model_cfg"]))
     process = Diffusion(model, cfg).to(device)
@@ -146,31 +151,9 @@ class DiffusionBridge:
     target: torch.Tensor,
     duration: torch.Tensor,
   ) -> GeneratedPath:
-    """Decode positions, derive velocities, and copy dynamic boundaries exactly."""
-    poses = decode(self.normalizer.denormalize(denoised), anchor, self.layout)
-    poses = poses[:, self.history - 1 :]
-    position = poses[..., :3]
-    orientation = poses[..., 3:7]
-    joint_position = poses[..., 7:]
-    linear = (position[:, 1:] - position[:, :-1]) * self.fps
-    angular = (
-      axis_angle_from_quat(
-        quat_mul(orientation[:, 1:], quat_conjugate(orientation[:, :-1]))
-      )
-      * self.fps
-    )
-    joint_velocity = (joint_position[:, 1:] - joint_position[:, :-1]) * self.fps
-    states = torch.cat(
-      (
-        position,
-        orientation,
-        torch.cat((linear, linear[:, -1:]), dim=1),
-        torch.cat((angular, angular[:, -1:]), dim=1),
-        joint_position,
-        torch.cat((joint_velocity, joint_velocity[:, -1:]), dim=1),
-      ),
-      dim=-1,
-    )
+    """Decode states and copy A and B exactly."""
+    states = decode(self.normalizer.denormalize(denoised), anchor, self.layout)
+    states = states[:, self.history - 1 :]
     states[:, 0] = anchor
     offsets = torch.arange(self.future, device=states.device)
     indexes = torch.arange(states.shape[0], device=states.device)[:, None]
@@ -195,7 +178,7 @@ def checkpoint_metadata(
   iteration: int,
 ) -> dict:
   return {
-    "format": "mjlab-diffusion-bridge-v4",
+    "format": "mjlab-kinematic-diffusion-v2",
     "model_cfg": asdict(model_cfg),
     "process_cfg": asdict(process_cfg),
     "layout": asdict(layout),

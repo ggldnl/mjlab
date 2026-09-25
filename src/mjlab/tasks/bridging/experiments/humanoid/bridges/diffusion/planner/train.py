@@ -1,8 +1,9 @@
-"""Train the diffusion bridge on physically executed tracker windows.
+"""Train the kinematic diffusion planner on retargeted LAFAN1 clips.
 
 Run:
 
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.train
+    uv run python -m \
+      mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.planner.train
 """
 
 from __future__ import annotations
@@ -15,38 +16,37 @@ import torch
 import tyro
 
 import mjlab
-from mjlab.tasks.bridging.experiments.humanoid.bridges.dataset.dataset import (
-  DEFAULT_DATASET,
-  LOG_ROOT,
-  load_dataset,
+from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.dataset.motions import (
+  DEFAULT_MOTIONS,
+  Normalizer,
+  Windows,
+  load_motions,
 )
-from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.bridge import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.planner.bridge import (
   EXPERIMENT,
   checkpoint_metadata,
 )
-from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.data import (
-  Normalizer,
-  Windows,
-  training_mask,
-)
-from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.model import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.planner.model import (
   Denoiser,
   ModelCfg,
 )
-from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.process import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.planner.process import (
   Diffusion,
   ProcessCfg,
 )
 
+LOG_ROOT = Path("logs") / "rsl_rl"
+
 
 @dataclass
 class TrainCfg:
-  dataset: Path = DEFAULT_DATASET
+  motions: tuple[str, ...] = DEFAULT_MOTIONS
   output: Path = LOG_ROOT / EXPERIMENT / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
   history: int = 4
-  future: int = 4
+  future: int = 1
   min_steps: int = 15
   max_steps: int = 60
+  holdout: int = 8
   model: ModelCfg = field(default_factory=ModelCfg)
   process: ProcessCfg = field(default_factory=ProcessCfg)
   batch: int = 256
@@ -54,7 +54,6 @@ class TrainCfg:
   learning_rate: float = 2e-4
   ema_decay: float = 0.995
   fit_batches: int = 32
-  bridge_mask_probability: float = 0.5
   log_every: int = 100
   save_every: int = 2_000
   device: str = "cuda:0"
@@ -67,15 +66,18 @@ def train(cfg: TrainCfg) -> Path:
   if not 0 <= cfg.ema_decay < 1:
     raise ValueError("ema_decay must be in [0, 1)")
   torch.manual_seed(cfg.seed)
-  data = load_dataset(cfg.dataset, cfg.device, "train")
-  windows = Windows(data, cfg.history, cfg.future, cfg.min_steps, cfg.max_steps)
+  columns = cfg.history + cfg.max_steps + cfg.future - 1
+  corpus = load_motions(cfg.motions, columns, cfg.device, "train", cfg.holdout)
+  windows = Windows(corpus, cfg.history, cfg.future, cfg.min_steps, cfg.max_steps)
   print(
-    f"[diffusion] {windows.segments.starts.numel()} training windows at {data.fps:g} Hz"
+    f"[diffusion] {corpus.num_windows} windows from {len(corpus.names)} "
+    f"kinematic clips at {corpus.fps:g} Hz"
   )
   with torch.no_grad():
     samples = torch.cat([windows.sample(cfg.batch)[0] for _ in range(cfg.fit_batches)])
     normalizer = Normalizer.fit(samples)
   del samples
+
   model = Denoiser(windows.layout.width, windows.columns, cfg.model).to(cfg.device)
   process = Diffusion(model, cfg.process).to(cfg.device)
   optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate)
@@ -94,7 +96,7 @@ def train(cfg: TrainCfg) -> Path:
         cfg.future,
         cfg.min_steps,
         cfg.max_steps,
-        data.fps,
+        corpus.fps,
         ema,
         iteration,
       ),
@@ -106,15 +108,15 @@ def train(cfg: TrainCfg) -> Path:
   for iteration in range(1, cfg.iterations + 1):
     features, duration = windows.sample(cfg.batch)
     clean = normalizer.normalize(features)
-    known = training_mask(
-      windows.layout,
-      windows.columns,
-      cfg.history,
-      cfg.future,
-      duration,
-      cfg.bridge_mask_probability,
-    )
-    loss = process.loss(clean, known)
+    known = torch.zeros_like(clean, dtype=torch.bool)
+    known[:, : cfg.history] = True
+    rows = cfg.history - 1 + duration
+    offsets = torch.arange(cfg.future, device=cfg.device)
+    indexes = torch.arange(cfg.batch, device=cfg.device)[:, None]
+    known[indexes, rows[:, None] + offsets] = True
+    time = torch.arange(windows.columns, device=cfg.device)[None]
+    valid = time <= rows[:, None] + cfg.future - 1
+    loss = process.loss(clean, known, valid)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

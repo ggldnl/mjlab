@@ -11,9 +11,6 @@ from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationT
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
-from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae import (
-  mdp as legacy_mdp,
-)
 from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.goal import mdp
 from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.goal.collect import (
   DEFAULT_ORACLE_DATASET,
@@ -60,7 +57,7 @@ def goal_env_cfg(
 
   actor_terms = {
     "endpoint": ObservationTermCfg(func=mdp.endpoint, params={"command_name": BRIDGE}),
-    "root_height": ObservationTermCfg(func=legacy_mdp.root_height),
+    "root_height": ObservationTermCfg(func=mdp.root_height),
     "base_lin_vel": ObservationTermCfg(
       func=base_mdp.builtin_sensor,
       params={"sensor_name": "robot/imu_lin_vel"},

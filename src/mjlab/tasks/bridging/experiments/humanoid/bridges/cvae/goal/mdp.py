@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import torch
 
+from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv
-from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae import mdp as legacy_mdp
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.goal.command import (
   GoalCommand,
 )
+
+_ROBOT = SceneEntityCfg("robot")
 
 
 def command(env: ManagerBasedRlEnv, name: str) -> GoalCommand:
@@ -58,4 +61,16 @@ def deadline(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
   return command(env, command_name).deadline
 
 
-fell_over = legacy_mdp.fell_over
+def root_height(
+  env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _ROBOT
+) -> torch.Tensor:
+  robot: Entity = env.scene[asset_cfg.name]
+  height = robot.data.root_link_pos_w[:, 2] - env.scene.env_origins[:, 2]
+  return height[:, None]
+
+
+def fell_over(
+  env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg, threshold: float = 0.2
+) -> torch.Tensor:
+  asset: Entity = env.scene[asset_cfg.name]
+  return asset.data.projected_gravity_b[:, 2] > -threshold

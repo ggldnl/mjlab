@@ -5,18 +5,38 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
+import torch
 from rsl_rl.algorithms import Distillation
 
 from mjlab.rl import MjlabOnPolicyRunner
 from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.goal.algorithm import (
   GoalDistillation,
 )
-from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.runner import (
-  _actor_state,
-)
 from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.command import (
   upper_body_mask,
 )
+
+
+def _actor_state(checkpoint: Path) -> dict[str, torch.Tensor]:
+  saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
+  if "actor_state_dict" in saved:
+    state = saved["actor_state_dict"]
+  elif "model_state_dict" in saved:
+    state = {
+      key.replace("actor.", "mlp.").replace(
+        "actor_obs_normalizer.", "obs_normalizer."
+      ): value
+      for key, value in saved["model_state_dict"].items()
+      if key.startswith(("actor.", "actor_obs_normalizer."))
+      or key in ("std", "log_std")
+    }
+  else:
+    raise ValueError(f"{checkpoint} has no tracker actor")
+  if "std" in state:
+    state["distribution.std_param"] = state.pop("std")
+  if "log_std" in state:
+    state["distribution.log_std_param"] = state.pop("log_std")
+  return state
 
 
 class GoalRunner(MjlabOnPolicyRunner):

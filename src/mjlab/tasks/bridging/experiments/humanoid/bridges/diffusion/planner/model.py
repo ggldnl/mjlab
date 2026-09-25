@@ -1,4 +1,4 @@
-"""Temporal denoiser for masked root-pose and joint-position windows."""
+"""Temporal denoiser for masked dynamic-state windows."""
 
 from __future__ import annotations
 

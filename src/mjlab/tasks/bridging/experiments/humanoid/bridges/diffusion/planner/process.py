@@ -8,13 +8,16 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.model import Denoiser
+from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.planner.model import (
+  Denoiser,
+)
 
 
 @dataclass(frozen=True)
 class ProcessCfg:
   steps: int = 100
   sample_steps: int = 50
+  continuity_weight: float = 0.5
 
 
 def cosine_schedule(steps: int) -> torch.Tensor:
@@ -30,6 +33,8 @@ class Diffusion(nn.Module):
     super().__init__()
     if not 1 <= cfg.sample_steps <= cfg.steps:
       raise ValueError("sample_steps must be between one and steps")
+    if cfg.continuity_weight < 0:
+      raise ValueError("continuity_weight cannot be negative")
     self.denoiser = denoiser
     self.cfg = cfg
     self.register_buffer("alphas", cosine_schedule(cfg.steps))
@@ -39,16 +44,33 @@ class Diffusion(nn.Module):
     assert isinstance(self.alphas, torch.Tensor)
     return self.alphas
 
-  def loss(self, clean: torch.Tensor, known: torch.Tensor) -> torch.Tensor:
+  def loss(
+    self,
+    clean: torch.Tensor,
+    known: torch.Tensor,
+    valid: torch.Tensor | None = None,
+  ) -> torch.Tensor:
     if clean.shape != known.shape:
       raise ValueError("clean window and known mask must match")
+    if valid is None:
+      valid = torch.ones_like(known)
+    elif valid.shape == clean.shape[:2]:
+      valid = valid[..., None].expand_as(clean)
+    elif valid.shape != clean.shape:
+      raise ValueError("valid mask must cover time or every feature")
     step = torch.randint(self.cfg.steps, (clean.shape[0],), device=clean.device)
     alpha = self.schedule[step, None, None]
     noisy = alpha.sqrt() * clean + (1 - alpha).sqrt() * torch.randn_like(clean)
     noisy = torch.where(known, clean, noisy)
     predicted = self.denoiser(noisy, known, step)
-    unknown = ~known
-    return (predicted - clean).square()[unknown].mean()
+    unknown = ~known & valid
+    reconstruction = (predicted - clean).square()[unknown].mean()
+    full = torch.where(known, clean, predicted)
+    target_delta = clean[:, 1:] - clean[:, :-1]
+    predicted_delta = full[:, 1:] - full[:, :-1]
+    active_edges = (unknown[:, 1:] | unknown[:, :-1]) & (valid[:, 1:] & valid[:, :-1])
+    continuity = (predicted_delta - target_delta).square()[active_edges].mean()
+    return reconstruction + self.cfg.continuity_weight * continuity
 
   @torch.no_grad()
   def sample(

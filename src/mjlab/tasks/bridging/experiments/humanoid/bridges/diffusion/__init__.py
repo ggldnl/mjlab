@@ -1,7 +1,6 @@
-"""Diffusion model for state and action paths between dynamic states.
+"""Kinematic diffusion planning followed by feedback trajectory tracking."""
 
-Run:
-
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.train
-    uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.sample --checkpoint <model.pt>
-"""
+from .execution.learned_tracker import LearnedTrackerExecutor as LearnedTrackerExecutor
+from .execution.runtime import DiffusionRuntime as DiffusionRuntime
+from .execution.tracker import UniTrackerExecutor as UniTrackerExecutor
+from .planner.bridge import DiffusionBridge as DiffusionBridge

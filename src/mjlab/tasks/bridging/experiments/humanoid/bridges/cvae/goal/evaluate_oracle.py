@@ -30,7 +30,7 @@ from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.goal.command import 
   GoalCommand,
   GoalCommandCfg,
 )
-from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.runner import (
+from mjlab.tasks.bridging.experiments.humanoid.bridges.cvae.goal.runner import (
   _actor_state,
 )
 from mjlab.tasks.bridging.experiments.humanoid.bridges.imitation.command import (
