@@ -17,7 +17,8 @@ download -> curate / crop -> csv_to_npz -> train
 | `openhe/download.py`         | openhe `g1-retargeted-motions` (HuggingFace) | per-skill NPZs | Already atomic; 23-DOF source remapped to 29-DOF G1. |
 | `phuma/download.py`          | PHUMA (HuggingFace) | per-skill NPZs | Already atomic, 29-DOF G1, physics-curated; large (~3.4 GB). |
 | `amass/download.py`          | AMASS (license-gated MPI portal) | SMPL-X `.npz` | Robot-agnostic; needs your own retargeting before `csv_to_npz`. |
-| `babel/build_manifest.py`    | BABEL v1.0 labels | JSONL segment manifest | Selects allowed ACCAD, Transitions, and MPI_HDM05 primitives by default. |
+| `babel/build_manifest.py`    | BABEL v1.0 labels | JSONL region manifest | Merges allowed ACCAD, Transitions, and MPI_HDM05 labels into safe regions. |
+| `babel/materialize.py`       | BABEL manifest + AMASS tarballs | selected SMPL-X `.npz` | Extracts only the AMASS recordings referenced by the manifest. |
 | `asap/download.py`           | ASAP `LeCAR-Lab/ASAP` (GitHub) | 23-DOF joblib `.pkl` | Short single-skill jumps; the bridging jump tasks convert them. |
 | `omniretarget/download.py`   | OmniRetarget (HuggingFace) | 29-DOF `.npz` + obstacle URDF/OBJ | Robot-terrain climbs; the box each clip was solved against ships with it. |
 
@@ -56,7 +57,15 @@ import each other directly.
   `uv run python -m mjlab.tasks.bridging.tests.retarget_amass --robot <robot>`.
 - **Want AMASS primitives selected by action labels:** download BABEL v1.0 into
   `data/babel/babel_v1.0_release`, then run
-  `uv run python -m mjlab.datasets.babel.build_manifest`.
+  `uv run python -m mjlab.datasets.babel.build_manifest`, followed by
+  `uv run python -m mjlab.datasets.babel.materialize`. Retarget every selected
+  interval with:
+
+  ```sh
+  uv run python -m mjlab.retargeting.gmr.retarget_manifest --robot unitree_g1
+  ```
+
+  Select `booster_t1` instead for the T1.
 
 ## Interactive cropping (`lafan1/interactive_crop.py`)
 

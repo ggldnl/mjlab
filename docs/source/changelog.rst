@@ -8,6 +8,15 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Added a BABEL pipeline that merges timestamped moderate-motion labels into
+  safe regions, materializes their AMASS sources, and batch-retargets them while
+  preserving labels and official dataset splits.
+
+- AMASS retargeting now supports Unitree G1 and Booster T1 through a shared GMR
+  and MuJoCo replay pipeline. Generated motions carry robot, joint, body, and
+  BABEL metadata, and a bridging test script renders a selected local clip on
+  either robot.
+
 - Optional evaluation videos during training, recorded at checkpoints or at a
   configured iteration interval and logged under ``Eval/video`` in W&B.
 

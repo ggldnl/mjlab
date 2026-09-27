@@ -1,5 +1,6 @@
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import torch
@@ -7,10 +8,11 @@ import tyro
 from tqdm import tqdm
 
 import mjlab
-from mjlab.entity import Entity
-from mjlab.scene import Scene
+from mjlab.asset_zoo.robots import get_g1_robot_cfg, get_t1_robot_cfg
+from mjlab.entity import Entity, EntityCfg
+from mjlab.scene import Scene, SceneCfg
 from mjlab.sim.sim import Simulation, SimulationCfg
-from mjlab.tasks.tracking.config.g1.env_cfgs import unitree_g1_flat_tracking_env_cfg
+from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.lab_api.math import (
   axis_angle_from_quat,
   quat_conjugate,
@@ -19,6 +21,32 @@ from mjlab.utils.lab_api.math import (
 )
 from mjlab.viewer.offscreen_renderer import OffscreenRenderer
 from mjlab.viewer.viewer_config import ViewerConfig
+
+RobotName = Literal["unitree_g1", "booster_t1"]
+
+ROBOT_CONFIGS: dict[RobotName, Callable[[], EntityCfg]] = {
+  "unitree_g1": get_g1_robot_cfg,
+  "booster_t1": get_t1_robot_cfg,
+}
+
+
+def robot_cfg(robot: RobotName) -> EntityCfg:
+  """Return a fresh configuration for a supported motion target."""
+  return ROBOT_CONFIGS[robot]()
+
+
+def robot_joint_names(robot: RobotName) -> tuple[str, ...]:
+  """Return the target robot's generalized coordinate joint order."""
+  return Entity(robot_cfg(robot)).joint_names
+
+
+def robot_scene_cfg(robot: RobotName) -> SceneCfg:
+  """Build the minimal scene needed to replay a robot motion."""
+  return SceneCfg(
+    terrain=TerrainEntityCfg(terrain_type="plane"),
+    entities={"robot": robot_cfg(robot)},
+    num_envs=1,
+  )
 
 
 class MotionLoader:
@@ -184,7 +212,8 @@ class MotionLoader:
 def run_sim(
   sim: Simulation,
   scene: Scene,
-  joint_names,
+  robot_name: RobotName,
+  joint_names: tuple[str, ...],
   input_file,
   input_fps,
   output_fps,
@@ -208,6 +237,9 @@ def run_sim(
 
   log: dict[str, Any] = {
     "fps": [output_fps],
+    "robot": np.asarray(robot_name),
+    "joint_names": np.asarray(robot.joint_names),
+    "body_names": np.asarray(robot.body_names),
     "joint_pos": [],
     "joint_vel": [],
     "body_pos_w": [],
@@ -346,6 +378,7 @@ def run_sim(
 def main(
   input_file: str,
   output_name: str,
+  robot: RobotName = "unitree_g1",
   output_dir: Path | None = None,
   input_fps: float = 30.0,
   output_fps: float = 50.0,
@@ -359,6 +392,7 @@ def main(
   Args:
     input_file: Path to the input CSV file.
     output_name: Name of the output npz file, without the extension.
+    robot: Robot model whose joint order the CSV uses.
     output_dir: Directory for the output npz file. Defaults to the CSV's directory.
     input_fps: Frame rate of the CSV file.
     output_fps: Desired output frame rate.
@@ -378,7 +412,7 @@ def main(
   sim_cfg = SimulationCfg()
   sim_cfg.mujoco.timestep = 1.0 / output_fps
 
-  scene = Scene(unitree_g1_flat_tracking_env_cfg().scene, device=device)
+  scene = Scene(robot_scene_cfg(robot), device=device)
   model = scene.compile()
 
   sim = Simulation(num_envs=1, cfg=sim_cfg, model=model, device=device)
@@ -406,37 +440,8 @@ def main(
   run_sim(
     sim=sim,
     scene=scene,
-    joint_names=[
-      "left_hip_pitch_joint",
-      "left_hip_roll_joint",
-      "left_hip_yaw_joint",
-      "left_knee_joint",
-      "left_ankle_pitch_joint",
-      "left_ankle_roll_joint",
-      "right_hip_pitch_joint",
-      "right_hip_roll_joint",
-      "right_hip_yaw_joint",
-      "right_knee_joint",
-      "right_ankle_pitch_joint",
-      "right_ankle_roll_joint",
-      "waist_yaw_joint",
-      "waist_roll_joint",
-      "waist_pitch_joint",
-      "left_shoulder_pitch_joint",
-      "left_shoulder_roll_joint",
-      "left_shoulder_yaw_joint",
-      "left_elbow_joint",
-      "left_wrist_roll_joint",
-      "left_wrist_pitch_joint",
-      "left_wrist_yaw_joint",
-      "right_shoulder_pitch_joint",
-      "right_shoulder_roll_joint",
-      "right_shoulder_yaw_joint",
-      "right_elbow_joint",
-      "right_wrist_roll_joint",
-      "right_wrist_pitch_joint",
-      "right_wrist_yaw_joint",
-    ],
+    robot_name=robot,
+    joint_names=tuple(scene["robot"].joint_names),
     input_fps=input_fps,
     input_file=input_file,
     output_fps=output_fps,
