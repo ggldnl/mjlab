@@ -1,5 +1,7 @@
 """LAFAN1 motion windows for endpoint conditioned inbetweening."""
 
+# pyright: reportPrivateImportUsage=false
+
 from __future__ import annotations
 
 import glob
