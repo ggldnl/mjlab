@@ -36,16 +36,22 @@ DEFAULT_ALLOW = (
 DEFAULT_DENY = (
   "jump",
   "hop",
+  "leap",
   "cartwheel",
   "flip",
+  "headstand",
+  "handstand",
   "fight",
+  "martial art",
   "kick",
   "punch",
+  "hit",
   "fall",
   "lie",
   "crawl",
   "dance",
   "trip",
+  "stumble",
   "get injured",
 )
 SPLITS = ("train", "val", "test")
@@ -109,7 +115,7 @@ def _labels(record: dict[str, Any]) -> list[tuple[dict[str, Any], float, float]]
 
 def _safe_regions(
   labels: list[tuple[dict[str, Any], float, float]],
-  allowed: set[str],
+  allowed: set[str] | None,
   denied: set[str],
   min_duration_s: float,
 ) -> list[tuple[float, float, list[dict[str, Any]]]]:
@@ -127,7 +133,7 @@ def _safe_regions(
     )
     if _contains_denied_motion(description, denied):
       blocked.append((start, end))
-    elif not allowed.isdisjoint(categories):
+    elif allowed is None or not allowed.isdisjoint(categories):
       safe.append((label, start, end))
 
   merged: list[list[float]] = []
@@ -169,14 +175,18 @@ def build_manifest(
   allow: tuple[str, ...] = DEFAULT_ALLOW,
   deny: tuple[str, ...] = DEFAULT_DENY,
   min_duration_s: float = 1.0,
+  allow_all: bool = False,
 ) -> list[dict[str, Any]]:
-  """Return maximal safe regions from dense or unambiguous sequence labels."""
+  """Return maximal safe regions from dense or unambiguous sequence labels.
+
+  Set allow_all to keep every labeled motion except denied intervals.
+  """
   if min_duration_s < 0:
     raise ValueError("min_duration_s must be nonnegative")
   selected_subsets = {BABEL_SUBSET_NAMES.get(value, value) for value in subsets}
-  allowed = _normalized(allow)
+  allowed = None if allow_all else _normalized(allow)
   denied = _normalized(deny)
-  if not allowed:
+  if allowed is not None and not allowed:
     raise ValueError("allow must contain at least one category")
 
   entries: list[dict[str, Any]] = []
@@ -295,9 +305,12 @@ def main(
   allow: tuple[str, ...] = DEFAULT_ALLOW,
   deny: tuple[str, ...] = DEFAULT_DENY,
   min_duration_s: float = 1.0,
+  allow_all: bool = False,
 ) -> None:
   """Build a BABEL manifest without downloading or retargeting motion files."""
-  entries = build_manifest(annotations_dir, subsets, allow, deny, min_duration_s)
+  entries = build_manifest(
+    annotations_dir, subsets, allow, deny, min_duration_s, allow_all
+  )
   write_manifest(entries, output_path)
   _print_summary(entries, output_path)
 

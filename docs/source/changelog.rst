@@ -8,8 +8,8 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
-- Added a tracker-independent bridge motion diagnostic and kinematic window
-  filter for grounded, upright, moderate G1 motion.
+- Added a tracker-independent bridge motion diagnostic with two kinematic
+  filters: conservative locomotion filtering and label-aware quality filtering.
 
 - Added a BABEL pipeline that merges timestamped moderate-motion labels into
   safe regions, materializes their AMASS sources, and batch-retargets them while

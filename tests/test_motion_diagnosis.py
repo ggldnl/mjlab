@@ -3,7 +3,10 @@ from pathlib import Path
 import numpy as np
 
 from mjlab.tasks.bridging.diagnose_motions import diagnose
-from mjlab.tasks.bridging.motion_filter import filter_window_starts
+from mjlab.tasks.bridging.motion_filter import (
+  QUALITY_MOTION_FILTER,
+  filter_window_starts,
+)
 
 
 def test_diagnose_counts_bridge_windows(tmp_path: Path) -> None:
@@ -54,3 +57,32 @@ def test_filter_rejects_windows_overlapping_bad_frames() -> None:
 
   assert starts.tolist() == [4]
   assert rejected["fast_root"] == 4
+
+
+def test_quality_filter_keeps_non_locomotion_poses() -> None:
+  frames = 8
+  state = np.zeros((frames, 71), dtype=np.float32)
+  state[:, 2] = 0.3
+  state[:, 3] = 1.0
+  body_pos = np.zeros((frames, 30, 3), dtype=np.float32)
+  body_pos[:, 0, 2] = 0.3
+  body_pos[:, [6, 12], 2] = 0.037
+  body_quat = np.zeros((frames, 30, 4), dtype=np.float32)
+  body_quat[..., 0] = 1.0
+
+  locomotion, rejected = filter_window_starts(
+    state, body_pos, body_quat, columns=4, fps=50.0
+  )
+  quality, quality_rejected = filter_window_starts(
+    state,
+    body_pos,
+    body_quat,
+    columns=4,
+    fps=50.0,
+    cfg=QUALITY_MOTION_FILTER,
+  )
+
+  assert locomotion.size == 0
+  assert rejected["low_root"] == 5
+  assert quality.tolist() == [0, 1, 2, 3, 4]
+  assert "low_root" not in quality_rejected

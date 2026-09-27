@@ -13,20 +13,25 @@ import glob
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import tyro
 
 import mjlab
 from mjlab.tasks.bridging.motion_filter import (
-  DEFAULT_MOTION_FILTER,
+  LOCOMOTION_MOTION_FILTER,
+  FilterProfile,
+  MotionFilterCfg,
   filter_window_starts,
+  motion_filter,
 )
 
 
 @dataclass(frozen=True)
 class Summary:
   name: str
+  profile: FilterProfile
   clips: int
   unique_sources: int
   frames: int
@@ -46,8 +51,14 @@ class Summary:
   categories: tuple[tuple[str, int], ...]
 
 
-def diagnose(name: str, pattern: str, window_frames: int) -> Summary:
-  """Summarize NPZ clips and score G1 windows with the training filter."""
+def diagnose(
+  name: str,
+  pattern: str,
+  window_frames: int,
+  filter_cfg: MotionFilterCfg | None = LOCOMOTION_MOTION_FILTER,
+  profile: FilterProfile = "locomotion",
+) -> Summary:
+  """Summarize NPZ clips and score G1 windows with one filter profile."""
   if window_frames < 2:
     raise ValueError("window_frames must exceed one")
   files = sorted(Path(path) for path in glob.glob(pattern, recursive=True))
@@ -82,6 +93,9 @@ def diagnose(name: str, pattern: str, window_frames: int) -> Summary:
       if windows == 0:
         too_short += 1
         continue
+      if filter_cfg is None:
+        kept_windows += windows
+        continue
 
       body_pos = np.asarray(motion["body_pos_w"], dtype=np.float32)
       body_quat = np.asarray(motion["body_quat_w"], dtype=np.float32)
@@ -105,7 +119,7 @@ def diagnose(name: str, pattern: str, window_frames: int) -> Summary:
         body_quat,
         window_frames,
         fps,
-        DEFAULT_MOTION_FILTER,
+        filter_cfg,
       )
       kept_windows += len(starts)
       rejected.update(reasons)
@@ -113,6 +127,7 @@ def diagnose(name: str, pattern: str, window_frames: int) -> Summary:
   values = np.asarray(durations)
   return Summary(
     name=name,
+    profile=profile,
     clips=len(files),
     unique_sources=len(sources),
     frames=frames,
@@ -140,7 +155,7 @@ def _print(summary: Summary, window_frames: int) -> None:
     if scored
     else "not available for every clip"
   )
-  print(f"\n{summary.name}")
+  print(f"\n{summary.name}  filter={summary.profile}")
   print(
     f"  clips: {summary.clips:,}  frames: {summary.frames:,}  "
     f"duration: {summary.total_s / 60:.1f} min"
@@ -167,14 +182,25 @@ def _print(summary: Summary, window_frames: int) -> None:
 
 def main(
   datasets: tuple[str, ...] = ("LAFAN1=data/lafan1_g1/motions/*.npz",),
+  profiles: tuple[str, ...] = (),
   window_frames: int = 118,
 ) -> None:
-  """Compare retargeted NPZ corpora using the diffusion training filter."""
+  """Compare retargeted NPZ corpora using named kinematic filters."""
+  selected_profiles: dict[str, FilterProfile] = {}
+  for spec in profiles:
+    name, separator, profile = spec.partition("=")
+    if not separator or not name or profile not in ("quality", "locomotion", "none"):
+      raise ValueError(f"Profile must use NAME=quality|locomotion|none: {spec!r}")
+    selected_profiles[name] = cast(FilterProfile, profile)
   for spec in datasets:
     name, separator, pattern = spec.partition("=")
     if not separator or not name or not pattern:
       raise ValueError(f"Dataset must use NAME=GLOB syntax: {spec!r}")
-    _print(diagnose(name, pattern, window_frames), window_frames)
+    profile = selected_profiles.get(name, "locomotion")
+    _print(
+      diagnose(name, pattern, window_frames, motion_filter(profile), profile),
+      window_frames,
+    )
 
 
 if __name__ == "__main__":

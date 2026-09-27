@@ -135,3 +135,47 @@ def test_build_manifest_merges_allowed_labels_and_subtracts_denied_time(
     (4.0, 6.0),
   ]
   assert [entry["labels"] for entry in manifest] == [["walk"], ["turn"]]
+
+
+def test_build_manifest_can_keep_every_category_except_denied_time(
+  tmp_path: Path,
+) -> None:
+  records = {
+    "1": {
+      "feat_p": "ACCAD/person/motion_poses.npz",
+      "dur": 5.0,
+      "frame_ann": {
+        "labels": [
+          {
+            "proc_label": "sit",
+            "act_cat": ["sit"],
+            "start_t": 0.0,
+            "end_t": 3.0,
+          },
+          {
+            "proc_label": "throw",
+            "act_cat": ["throw"],
+            "start_t": 3.0,
+            "end_t": 5.0,
+          },
+          {
+            "proc_label": "jump",
+            "act_cat": ["jump"],
+            "start_t": 1.0,
+            "end_t": 2.0,
+          },
+        ]
+      },
+    }
+  }
+  for split in ("train", "val", "test"):
+    data = records if split == "train" else {}
+    (tmp_path / f"{split}.json").write_text(json.dumps(data), encoding="utf-8")
+
+  manifest = build_manifest(tmp_path, allow_all=True)
+
+  assert [(entry["start_s"], entry["end_s"]) for entry in manifest] == [
+    (0.0, 1.0),
+    (2.0, 5.0),
+  ]
+  assert manifest[1]["categories"] == ["sit", "throw"]
