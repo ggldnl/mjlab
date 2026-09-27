@@ -19,6 +19,7 @@ download -> curate / crop -> csv_to_npz -> train
 | `amass/download.py`          | AMASS (license-gated MPI portal) | SMPL-X `.npz` | Robot-agnostic; needs your own retargeting before `csv_to_npz`. |
 | `babel/build_manifest.py`    | BABEL v1.0 labels | JSONL segment manifest | Selects allowed ACCAD, Transitions, and MPI_HDM05 primitives by default. |
 | `asap/download.py`           | ASAP `LeCAR-Lab/ASAP` (GitHub) | 23-DOF joblib `.pkl` | Short single-skill jumps; the bridging jump tasks convert them. |
+| `omniretarget/download.py`   | OmniRetarget (HuggingFace) | 29-DOF `.npz` + obstacle URDF/OBJ | Robot-terrain climbs; the box each clip was solved against ships with it. |
 
 All paths default to CWD-relative dirs under `data/`; run them from the repo
 root with `uv run python -m mjlab.datasets.<dataset>.<script>`
