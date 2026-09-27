@@ -8,6 +8,9 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Added a tracker-independent bridge motion diagnostic and kinematic window
+  filter for grounded, upright, moderate G1 motion.
+
 - Added a BABEL pipeline that merges timestamped moderate-motion labels into
   safe regions, materializes their AMASS sources, and batch-retargets them while
   preserving labels and official dataset splits.
@@ -137,6 +140,10 @@ Added
 
 Fixed
 ^^^^^
+
+- Removed retired UniTracker and ProtoMotions adapters that referenced the
+  deleted ``mjlab.tasks.unitracker`` package. Diffusion execution now uses the
+  learned universal tracker.
 
 - Loading only a policy for playback or evaluation no longer restores the
   training run's global step counter into a fresh environment.

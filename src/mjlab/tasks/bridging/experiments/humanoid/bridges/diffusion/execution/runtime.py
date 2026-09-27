@@ -27,7 +27,7 @@ CaptureTest = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
 
 class DiffusionRuntime(Bridge):
-  """Generate a kinematic path and pass a moving reference to UniTracker."""
+  """Generate a kinematic path and execute it with a feedback tracker."""
 
   def __init__(
     self,
@@ -98,7 +98,7 @@ class DiffusionRuntime(Bridge):
   ) -> BridgeOutput:
     if self.executor is None:
       raise RuntimeError(
-        "DiffusionRuntime needs UniTracker or another feedback path executor. "
+        "DiffusionRuntime needs a feedback path executor. "
         "Install one with set_executor()."
       )
     current = history[:, -1]

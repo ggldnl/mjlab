@@ -35,9 +35,6 @@ from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.execution.learn
 from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.execution.runtime import (
   DiffusionRuntime,
 )
-from mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.execution.tracker import (
-  UniTrackerExecutor,
-)
 from mjlab.tasks.bridging.experiments.humanoid.bridges.interface import BridgeCommand
 from mjlab.tasks.bridging.experiments.humanoid.selector import STATES_PATH, resume
 from mjlab.tasks.bridging.experiments.humanoid.selector.table import (
@@ -165,11 +162,7 @@ class Run:
     if isinstance(chosen, DiffusionRuntime):
       chosen.checkpoint = cfg.bridge_checkpoint
       chosen.sample_steps = cfg.diffusion_sample_steps
-      tracker = (
-        LearnedTrackerExecutor.load(env, cfg.tracker_checkpoint)
-        if cfg.tracker_checkpoint is not None
-        else UniTrackerExecutor(env)
-      )
+      tracker = LearnedTrackerExecutor.load(env, cfg.tracker_checkpoint)
       chosen.set_executor(tracker, tracker.captured)
       self.history_length = max(
         chosen.load(env.device).history, getattr(tracker, "history", 1)

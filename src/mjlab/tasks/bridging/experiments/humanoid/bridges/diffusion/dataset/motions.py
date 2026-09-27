@@ -10,6 +10,11 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
+from mjlab.tasks.bridging.motion_filter import (
+  DEFAULT_MOTION_FILTER,
+  MotionFilterCfg,
+  filter_window_starts,
+)
 from mjlab.utils.lab_api.math import (
   matrix_from_quat,
   quat_apply,
@@ -150,6 +155,8 @@ class MotionCorpus:
   names: tuple[str, ...]
   fps: float
   num_joints: int
+  candidate_windows: int = 0
+  rejected_windows: tuple[tuple[str, int], ...] = ()
 
   @property
   def num_windows(self) -> int:
@@ -169,6 +176,7 @@ def load_motions(
   device: str,
   split: str = "train",
   holdout: int = 8,
+  filter_cfg: MotionFilterCfg | None = DEFAULT_MOTION_FILTER,
 ) -> MotionCorpus:
   """Load G1 NPZ clips and split by whole motion files."""
   if split not in ("train", "eval"):
@@ -190,6 +198,8 @@ def load_motions(
   fps: float | None = None
   joints: int | None = None
   offset = 0
+  candidate_windows = 0
+  rejected_windows: dict[str, int] = {}
   for path in selected:
     with np.load(path, allow_pickle=False) as raw:
       clip_fps = float(np.asarray(raw["fps"]).reshape(-1)[0])
@@ -218,18 +228,31 @@ def load_motions(
       ),
       axis=-1,
     )
+    candidate_windows += len(state) - columns + 1
+    if filter_cfg is None:
+      kept = np.arange(len(state) - columns + 1)
+    else:
+      kept, rejected = filter_window_starts(
+        state, body_pos, body_quat, columns, clip_fps, filter_cfg
+      )
+      for reason, count in rejected.items():
+        rejected_windows[reason] = rejected_windows.get(reason, 0) + count
     clips.append(torch.from_numpy(state))
-    starts.append(torch.arange(offset, offset + len(state) - columns + 1))
+    starts.append(torch.from_numpy(kept + offset))
     names.append(path.stem)
     offset += len(state)
   if not clips or fps is None or joints is None:
     raise ValueError(f"No {split} clip is at least {columns} frames long")
+  if not any(len(start) for start in starts):
+    raise ValueError(f"No {split} windows remain after motion filtering")
   return MotionCorpus(
     states=torch.cat(clips).to(device),
     starts=torch.cat(starts).to(device),
     names=tuple(names),
     fps=fps,
     num_joints=joints,
+    candidate_windows=candidate_windows,
+    rejected_windows=tuple(sorted(rejected_windows.items())),
   )
 
 
