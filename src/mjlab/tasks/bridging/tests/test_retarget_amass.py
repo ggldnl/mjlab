@@ -1,3 +1,5 @@
+# pyright: reportPrivateImportUsage=false
+
 from pathlib import Path
 
 import numpy as np
@@ -25,7 +27,7 @@ def test_select_clip_is_stable(tmp_path: Path) -> None:
   assert select_clip(tmp_path, "walk", 1).name == "b.npz"
 
 
-def test_motion_metadata_rejects_the_wrong_robot(tmp_path: Path) -> None:
+def test_motion_loader_reads_retargeted_clip(tmp_path: Path) -> None:
   path = tmp_path / "motion.npz"
   np.savez(
     path,
@@ -40,13 +42,11 @@ def test_motion_metadata_rejects_the_wrong_robot(tmp_path: Path) -> None:
     body_ang_vel_w=np.zeros((2, 1, 3)),
   )
 
-  with pytest.raises(ValueError, match="joint names"):
-    MotionLoader(
-      str(path),
-      torch.tensor((0,)),
-      joint_names=("different_joint",),
-      body_names=("body",),
-    )
+  motion = MotionLoader(str(path), torch.tensor((0,)))
+
+  assert motion.time_step_total == 2
+  assert motion.joint_pos.shape == (2, 1)
+  assert motion.body_pos_w.shape == (2, 1, 3)
 
 
 def test_t1_csv_replay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

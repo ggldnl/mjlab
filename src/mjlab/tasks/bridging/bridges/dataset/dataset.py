@@ -1,0 +1,697 @@
+"""Dataset format and rollout driver.
+
+A bridge starts from a dynamic state and has to reach another dynamic state within a time
+period, so one training sample is three things: the start state, the end state, and the
+duration between them. A dataset is a table of the dynamic states the robot was measured
+being in while a policy drove it, tagged with the rollout each row came from and how far
+into that rollout it was. Two rows of one rollout are then a start, a target, and the
+time the robot took to get from one to the other.
+
+Every source builds one the same way, by driving a trained policy and writing down what
+happens, so the driving lives here and a source module only says which policy, in which
+environment, with what on the floor.
+
+One row per environment per control step:
+
+    root_pos (3)  root_quat (4)  root_lin_vel (3)  root_ang_vel (3)  q (J)  qd (J)
+
+Root position has the environment origin subtracted off x and y, so the numbers are small
+and mean "where in its own tile". Height is untouched, since height above the floor is
+part of the state the bridge has to reach.
+
+Plus four columns:
+
+    source      which policy or clip the row came from
+    trajectory  which physical rollout. A reset always starts a new one, so two rows
+                sharing this were reached without the simulator being touched in between.
+                Unique within a source, not across them, since each source is recorded on
+                its own. load_dataset pairs it with source to get one id per rollout
+    frame       control steps since that row's episode started. Two rows of one trajectory
+                whose frames differ by k are a start and a target one robot got between in
+                k control ticks, which is the only kind of window the bridge trains on.
+                Dataset.segments turns the two columns into that index
+    phase       which frame of its own reference the policy was reading. Equal to frame for
+                a skill with no reference, and nothing like it for a tracker: those reset
+                into a sampled frame of the clip, so an episode's first step is frame 0 at
+                whatever phase the sampler drew. See clip_phase
+    goal        every command term value at that step, side by side. What the skill was
+                being asked for while it was in that state.
+
+Rows in the first settle steps after a reset are dropped. mjlab resets the instant an
+environment terminates, so the step after a fall is a robot standing at its default pose,
+and without this the dataset fills up with one identical standing pose per failure.
+"""
+
+# pyright: reportPrivateImportUsage=false
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+
+from mjlab.entity import Entity
+from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
+from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
+from mjlab.sensor import ContactSensor
+from mjlab.tasks.registry import load_rl_cfg, load_runner_cls
+from mjlab.utils.lab_api.math import quat_apply_inverse, quat_conjugate, quat_mul
+
+ROBOT = "robot"
+
+ROOT_STATE_DIM = 13
+"""Root position, orientation, linear velocity, angular velocity, in that order."""
+
+DATASET_ROOT = Path("data") / "bridge"
+
+TRACKER_DATASET = DATASET_ROOT / "tracker.npz"
+"""The human motion corpus, built by driving trajectory trackers over LAFAN1 clips."""
+
+SKILL_ROLLOUT_DATASET = DATASET_ROOT / "skills.npz"
+"""Synthetic transitions made by stitching together trained skill rollouts."""
+
+DEFAULT_DATASET = TRACKER_DATASET
+"""What every config points at unless told otherwise. The human motion corpus, which is
+what keeps the bridge independent of the skill pool. See dataset/tracker.py."""
+
+LOG_ROOT = Path("logs") / "rsl_rl"
+
+
+@dataclass
+class RolloutCfg:
+  """How much to record. Shared by every source."""
+
+  num_envs: int = 64
+  steps: int = 500
+  settle: int = 25
+  """Control steps discarded after every reset, per environment."""
+  device: str = "cuda:0"
+
+
+def state(robot: Entity) -> torch.Tensor:
+  """(N, 13 + 2J). The one place this layout is written down."""
+  data = robot.data
+  return torch.cat(
+    [
+      data.root_link_pos_w,
+      data.root_link_quat_w,
+      data.root_link_lin_vel_w,
+      data.root_link_ang_vel_w,
+      data.joint_pos,
+      data.joint_vel,
+    ],
+    dim=-1,
+  )
+
+
+def commanded(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Every active command term value, side by side. (N, G).
+
+  Order and width are whatever the manager happens to hold, so a row is only comparable
+  against another row of the same skill. A skill with no command term gives a zero width
+  column, which is the honest answer: there is nothing to condition on.
+  """
+  values = [
+    env.command_manager.get_command(n) for n in env.command_manager.active_terms
+  ]
+  present = [v for v in values if v is not None]
+  if not present:
+    return torch.zeros(env.num_envs, 0, device=env.device)
+  return torch.cat(present, dim=-1)
+
+
+def clip_phase(env: ManagerBasedRlEnv) -> torch.Tensor | None:
+  """Which frame of its own reference each environment is reading. (N,), or None.
+
+  None for a skill with no reference, which is every skill trained by reward rather than by
+  imitation. Those have no clip to be at a frame of, and the step count since their episode
+  started is the only answer there is.
+
+  For a tracker it is the whole answer, and it is not the step count. Training resets into a
+  sampled frame of the clip, so two rollouts one step old are at two different frames, and
+  the step count says nothing about which. Anything that wants to put a tracker back where a
+  recorded state came from needs this and cannot derive it.
+
+  Found by duck typing rather than by name, because the term is called "motion" in these
+  tasks and there is no interface saying so.
+  """
+  for name in env.command_manager.active_terms:
+    steps = getattr(env.command_manager.get_term(name), "time_steps", None)
+    if isinstance(steps, torch.Tensor):
+      return steps
+  return None
+
+
+def control_rate(env_cfg: ManagerBasedRlEnvCfg) -> float:
+  """Hz. A deadline is counted in control steps, so a dataset has to know this."""
+  return 1.0 / (env_cfg.sim.mujoco.timestep * env_cfg.decimation)
+
+
+def body_pos_b(robot: Entity) -> torch.Tensor:
+  """Every body's position in the root frame. (N, B, 3).
+
+  Forward kinematics of the joint angles, so it carries nothing the state does not already
+  hold, and it carries it where the error is felt: a small angle error at the hip is
+  centimetres at the foot. selector/build.py indexes entries by it and the diffusion bridge
+  predicts it alongside the angles.
+  """
+  data = robot.data
+  offset = data.body_link_pos_w - data.root_link_pos_w.unsqueeze(1)
+  quat = data.root_link_quat_w.unsqueeze(1).expand(-1, offset.shape[1], -1)
+  return quat_apply_inverse(quat, offset)
+
+
+def entry_context(env: ManagerBasedRlEnv) -> dict[str, np.ndarray]:
+  """Record the preceding action and the reference paired with the current state."""
+  from mjlab.tasks.bridging.config.g1.skills.jump_continuous.mdp.commands import (
+    JumpCommand,
+  )
+
+  robot = env.scene[ROBOT]
+  data = robot.data
+  foot_names = ("left_ankle_roll_link", "right_ankle_roll_link")
+  foot_indexes = [robot.body_names.index(name) for name in foot_names]
+  foot_pos = data.body_link_pos_w[:, foot_indexes]
+  foot_quat = data.body_link_quat_w[:, foot_indexes]
+  foot_offset = foot_pos - data.root_link_pos_w[:, None]
+  root_quat = data.root_link_quat_w[:, None].expand_as(foot_quat)
+  root_ang_vel = data.root_link_ang_vel_w[:, None].expand_as(foot_offset)
+  foot_lin_vel = data.body_link_lin_vel_w[:, foot_indexes]
+  foot_ang_vel = data.body_link_ang_vel_w[:, foot_indexes]
+  context = {
+    "previous_action": env.action_manager.action.detach().cpu().numpy().copy(),
+    "body_pos_b": body_pos_b(robot).detach().cpu().numpy().copy(),
+    "foot_pos_b": quat_apply_inverse(root_quat, foot_offset)
+    .detach()
+    .cpu()
+    .numpy()
+    .copy(),
+    "foot_quat_b": quat_mul(quat_conjugate(root_quat), foot_quat)
+    .detach()
+    .cpu()
+    .numpy()
+    .copy(),
+    "foot_lin_vel_b": quat_apply_inverse(
+      root_quat,
+      foot_lin_vel
+      - data.root_link_lin_vel_w[:, None]
+      - torch.cross(root_ang_vel, foot_offset, dim=-1),
+    )
+    .detach()
+    .cpu()
+    .numpy()
+    .copy(),
+    "foot_ang_vel_b": quat_apply_inverse(
+      root_quat, foot_ang_vel - data.root_link_ang_vel_w[:, None]
+    )
+    .detach()
+    .cpu()
+    .numpy()
+    .copy(),
+    "reference": np.full((env.num_envs, 7), np.nan, dtype=np.float32),
+    "motion_file": np.full(env.num_envs, "", dtype="U1"),
+    "motion_scale": np.ones(env.num_envs, dtype=np.float32),
+  }
+  feet = env.scene.sensors.get("feet_ground_contact")
+  if isinstance(feet, ContactSensor) and feet.data.found is not None:
+    context["foot_contact"] = (feet.data.found > 0).float().cpu().numpy().copy()
+  for name in env.command_manager.active_terms:
+    command = env.command_manager.get_term(name)
+    if not isinstance(command, JumpCommand):
+      continue
+    files = command.cfg.motion_files
+    pose = torch.cat([command.body_pos_w[:, 0], command.body_quat_w[:, 0]], dim=-1)
+    pose[:, :2] -= env.scene.env_origins[:, :2]
+    context["reference"] = pose.detach().cpu().numpy().copy()
+    ids = command.motion_ids.detach().cpu().numpy()
+    context["motion_file"] = np.asarray([Path(files[i]).name for i in ids])
+    context["motion_scale"] = command.scales.detach().cpu().numpy().copy()
+    break
+  return context
+
+
+def find_checkpoint(
+  experiments: tuple[str, ...], explicit: str | None = None, hint: str = ""
+) -> Path:
+  """The newest checkpoint under the first of these experiments that has one.
+
+  The caller prints the path it got. Picking by modification time has gone wrong here
+  before: an unrelated newer run left in logs/ outranks the one that was meant.
+  """
+  if explicit:
+    path = Path(explicit)
+    if not path.exists():
+      raise SystemExit(f"No checkpoint at {path}.")
+    return path
+  for experiment in experiments:
+    found = sorted(
+      (LOG_ROOT / experiment).rglob("model_*.pt"), key=lambda p: p.stat().st_mtime
+    )
+    if found:
+      return found[-1]
+  tried = ", ".join(str(LOG_ROOT / e) for e in experiments)
+  raise SystemExit(f"No checkpoint found. Looked under {tried}.{hint}")
+
+
+def record(
+  task: str,
+  env_cfg: ManagerBasedRlEnvCfg,
+  checkpoint: Path,
+  cfg: RolloutCfg,
+  label: str,
+  metadata: dict[str, np.ndarray] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+  """Drive one trained policy in one environment, recording every control step.
+
+  Returns the states, the environment and physical trajectory each row came from, how many
+  steps into that trajectory it was, which frame of its reference it was reading, and what
+  it was commanded to do at the time.
+
+  The caller configures env_cfg first, and that is the only difference between sources: a
+  skill wants its own environment untouched, a tracker wants the same environment with a
+  different clip in it.
+
+  Always the training config, never the play one. Play narrows command ranges and drops
+  the noise the policy trained under, which gives a tidier demo and a narrower dataset.
+  What is wanted here is the full spread of states the policy occupies in service,
+  including the ones at the edge of its command range.
+  """
+  from tensordict import TensorDict
+
+  env_cfg.scene.num_envs = cfg.num_envs
+  agent_cfg = load_rl_cfg(task)
+  print(f"[dataset] {label}: {checkpoint}")
+
+  env = ManagerBasedRlEnv(cfg=env_cfg, device=cfg.device)
+  wrapped = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+  runner_cls = load_runner_cls(task) or MjlabOnPolicyRunner
+  runner = runner_cls(wrapped, asdict(agent_cfg), device=cfg.device)
+  runner.load(
+    str(checkpoint), load_cfg={"actor": True}, strict=True, map_location=cfg.device
+  )
+  policy = runner.get_inference_policy(device=cfg.device)
+
+  robot: Entity = env.scene[ROBOT]
+  origin = env.scene.env_origins[:, :2]
+  obs, _ = env.reset()
+
+  age = torch.zeros(cfg.num_envs, dtype=torch.long, device=cfg.device)
+  trajectory = torch.arange(cfg.num_envs, dtype=torch.long, device=cfg.device)
+  rows: list[torch.Tensor] = []
+  ages: list[torch.Tensor] = []
+  phases: list[torch.Tensor] = []
+  trajectories: list[torch.Tensor] = []
+  goals: list[torch.Tensor] = []
+  keep: list[torch.Tensor] = []
+  contexts: list[dict[str, np.ndarray]] = []
+  for step in range(cfg.steps):
+    # Only the policy call goes in inference mode. Stepping the env inside it marks every
+    # buffer it writes as an inference tensor, and the next reset cannot write them
+    with torch.inference_mode():
+      action = policy(
+        TensorDict(obs, batch_size=[cfg.num_envs])  # ty: ignore[invalid-argument-type]
+      )
+    obs, _, terminated, truncated, _ = env.step(action)
+    done = terminated | truncated
+    age = torch.where(done, torch.zeros_like(age), age + 1)
+    # A reset starts a new physical trajectory. Adding num_envs keeps every trajectory id
+    # unique while retaining the environment identity in its remainder
+    trajectory = torch.where(done, trajectory + cfg.num_envs, trajectory)
+
+    here = state(robot).clone()
+    here[:, 0:2] -= origin
+    rows.append(here)
+    ages.append(age.clone())
+    # Read after the step for the same reason the command is, and it matters more here: the
+    # environment advances the clip after the physics, so this is the frame the policy will
+    # read alongside this very state when it picks its next action. That is the pair a
+    # hand-over reproduces, a robot in this state with the reference on this frame
+    clip = clip_phase(env)
+    phases.append(age.clone() if clip is None else clip.clone())
+    trajectories.append(trajectory.clone())
+    # Read after the step, so this is the command the policy was following when it
+    # produced the state, not one drawn for the episode about to start
+    goals.append(commanded(env).clone())
+    if metadata is not None:
+      contexts.append(entry_context(env))
+    keep.append(age >= cfg.settle)
+    if (step + 1) % 100 == 0:
+      print(f"[dataset] {label}: {step + 1}/{cfg.steps}")
+
+  env.close()
+  states = torch.stack(rows, dim=0).flatten(0, 1)
+  frames = torch.stack(ages, dim=0).flatten(0, 1)
+  clip_frames = torch.stack(phases, dim=0).flatten(0, 1)
+  trajectory_ids = torch.stack(trajectories, dim=0).flatten(0, 1)
+  commands = torch.stack(goals, dim=0).flatten(0, 1)
+  valid = torch.stack(keep, dim=0).flatten(0, 1)
+  if metadata is not None:
+    mask = valid.cpu().numpy()
+    for key in contexts[0]:
+      metadata[key] = np.concatenate([context[key] for context in contexts])[mask]
+  # Which environment each surviving row came from, so load_dataset can hold whole
+  # environments out rather than individual frames
+  env_id = torch.arange(cfg.num_envs, device=cfg.device).repeat(cfg.steps)[valid]
+  return (
+    states[valid].cpu().numpy().astype(np.float32),
+    env_id.to(torch.int16).cpu().numpy(),
+    trajectory_ids[valid].to(torch.int32).cpu().numpy(),
+    frames[valid].to(torch.int32).cpu().numpy(),
+    clip_frames[valid].to(torch.int32).cpu().numpy(),
+    commands[valid].cpu().numpy().astype(np.float32),
+  )
+
+
+def write(
+  path: Path,
+  states: list[np.ndarray],
+  env_ids: list[np.ndarray],
+  trajectory_ids: list[np.ndarray],
+  frames: list[np.ndarray],
+  sources: list[np.ndarray],
+  names: tuple[str, ...],
+  fps: float,
+  goals: list[np.ndarray] | None = None,
+  phases: list[np.ndarray] | None = None,
+  metadata: list[dict[str, np.ndarray]] | None = None,
+  trajectory_ids_global: bool = False,
+) -> Path:
+  """One npz, in the layout load_dataset expects.
+
+  The skill and skill_names keys keep their names even though a tracker dataset puts clip
+  names in them. Renaming would orphan the dataset already on disk.
+
+  Sources have different command widths, so goal is padded to the widest and goal_dim says
+  how much of each row is real. Padded into one table rather than one array per source,
+  because one row per state is the layout everything downstream indexes by.
+  """
+  everything = np.concatenate(states)
+  path.parent.mkdir(parents=True, exist_ok=True)
+  columns: dict[str, Any] = {
+    "states": everything,
+    "skill": np.concatenate(sources),
+    "env_id": np.concatenate(env_ids),
+    "trajectory": np.concatenate(trajectory_ids),
+    "frame": np.concatenate(frames),
+    "skill_names": np.asarray(names),
+    "fps": np.asarray(fps),
+    "trajectory_ids_global": np.asarray(trajectory_ids_global),
+  }
+  if phases is not None:
+    columns["phase"] = np.concatenate(phases)
+  if metadata:
+    for key in metadata[0]:
+      columns[key] = np.concatenate([context[key] for context in metadata])
+  if goals is not None:
+    width = max(g.shape[1] for g in goals)
+    columns["goal"] = np.concatenate(
+      [np.pad(g, ((0, 0), (0, width - g.shape[1]))) for g in goals]
+    ).astype(np.float32)
+    columns["goal_dim"] = np.asarray([g.shape[1] for g in goals], dtype=np.int16)
+  np.savez(path, **columns)
+  print(f"[dataset] wrote {path} ({len(everything)} states at {fps:.0f} Hz)")
+  return path
+
+
+@dataclass
+class Dataset:
+  """A loaded dataset, on the device, tagged with the source each row came from."""
+
+  states: torch.Tensor
+  """(N, 13 + 2J)."""
+  skill: torch.Tensor
+  """(N,) index into names."""
+  trajectory: torch.Tensor
+  """(N,) physical rollout identity. A reset always starts a new one."""
+  frame: torch.Tensor
+  """(N,) control step within trajectory."""
+  names: tuple[str, ...]
+  fps: float
+  goal: torch.Tensor | None = None
+  """(N, G) every command term's value at that step, padded to the widest source.
+
+  Optional because dataset written before the column exists still load. Read it with
+  `commands_of`, which trims the padding off."""
+  goal_dim: tuple[int, ...] = ()
+  """(S,) how much of `goal` is real, per source. The rest is padding."""
+  phase: torch.Tensor | None = None
+  """(N,) which frame of its own reference each row was recorded at.
+
+  None for a dataset written before the column. Equal to `frame` for a skill with no
+  reference. See clip_phase for why a tracker needs its own column."""
+
+  previous_action: torch.Tensor | None = None
+  reference: torch.Tensor | None = None
+  motion_file: np.ndarray | None = None
+  motion_scale: torch.Tensor | None = None
+
+  body_pos_b: torch.Tensor | None = None
+  """(N, B, 3) every body's position in the root frame, at that row.
+
+  Redundant with the joint angles, since it is their forward kinematics, and recorded
+  anyway. A small joint error compounds down the kinematic chain into a large body
+  position error, so a model that predicts only angles is not being told how wrong it is
+  where wrongness is felt. None for a corpus written before the column."""
+
+  body_names: tuple[str, ...] = ()
+  """(B,) which body each row of `body_pos_b` is, in that order."""
+
+  foot_contact: torch.Tensor | None = None
+  """(N, 2) left and right foot contact state."""
+
+  def commands_of(self, skill: str) -> torch.Tensor | None:
+    """The command column for one source, padding removed. (N, G_skill).
+
+    None when the dataset predates the column. A source with no command term gives a
+    zero width tensor, which is the honest answer: there is nothing to condition on.
+    """
+    if self.goal is None or not self.goal_dim:
+      return None
+    return self.goal[:, : self.goal_dim[self.names.index(skill)]]
+
+  @property
+  def num_joints(self) -> int:
+    return (self.states.shape[1] - ROOT_STATE_DIM) // 2
+
+  def of(self, names: tuple[str, ...] | None) -> torch.Tensor:
+    """Row indices belonging to these sources, or every row when names is None."""
+    if names is None:
+      return torch.arange(self.states.shape[0], device=self.states.device)
+    mask = torch.zeros_like(self.skill, dtype=torch.bool)
+    for name in names:
+      if name not in self.names:
+        raise ValueError(f"This dataset holds {self.names}, not '{name}'.")
+      mask |= self.skill == self.names.index(name)
+    if not bool(mask.any()):
+      raise ValueError(f"No states from {names} in this dataset.")
+    return mask.nonzero().flatten()
+
+  def segments(
+    self,
+    min_steps: int,
+    max_steps: int,
+    start_rows: torch.Tensor | None = None,
+    before: int = 0,
+    after: int = 0,
+  ) -> Segments:
+    """An index of every contiguous stretch of rollout long enough to be a window.
+
+    Both ends of a window come from one trajectory, so a window is never a pair of states
+    invented by putting two rollouts side by side: a robot was demonstrably in the first,
+    and steps control ticks later it was demonstrably in the second, under physics.
+
+    Both ends therefore also come from the same source. Restricting the start to a set of
+    sources restricts the target to the same set, which is why there is one filter here
+    and not two. before and after reserve contiguous context outside the window.
+    """
+    if min_steps < 1 or max_steps < min_steps:
+      raise ValueError("Segment bounds must satisfy 1 <= min_steps <= max_steps.")
+    if before < 0 or after < 0:
+      raise ValueError("Segment context must be nonnegative.")
+
+    # Sort into (trajectory, frame) order. The recording is time-major, so rows of one
+    # rollout are strided rather than adjacent, and the settle cut can shorten a rollout
+    # from the front. Sorting is what makes "the row k ticks later" an index offset
+    width = int(self.frame.max().item()) + 1
+    order = torch.argsort(self.trajectory * width + self.frame)
+    trajectory = self.trajectory[order]
+    frame = self.frame[order]
+
+    # A run is a maximal stretch whose frames step by one inside one trajectory. Inside a
+    # run, position + k is exactly the state k control ticks later
+    steps_by_one = (trajectory[1:] == trajectory[:-1]) & (frame[1:] == frame[:-1] + 1)
+    opens = torch.cat(
+      [
+        torch.ones(1, dtype=torch.bool, device=steps_by_one.device),
+        ~steps_by_one,
+      ]
+    )
+    run = opens.long().cumsum(0) - 1
+    last = torch.bincount(run).cumsum(0) - 1
+    first = torch.cat((torch.zeros_like(last[:1]), last[:-1] + 1))
+    positions = torch.arange(order.numel(), device=order.device)
+    available = last[run] - positions
+    preceding = positions - first[run]
+
+    eligible = (available >= min_steps + after) & (preceding >= before)
+    if start_rows is not None:
+      allowed = torch.zeros_like(eligible)
+      allowed[start_rows] = True
+      eligible &= allowed[order]
+    if not bool(eligible.any()):
+      raise ValueError(
+        "No contiguous rollout segment matches the requested sources and duration range."
+      )
+
+    return Segments(
+      order=order,
+      starts=positions[eligible],
+      available=(available[eligible] - after).clamp(max=max_steps),
+      min_steps=min_steps,
+    )
+
+
+@dataclass
+class Segments:
+  """Where every legal window lives, and how to draw one.
+
+  An index rather than a materialised table of pairs. A rollout of L usable steps contains
+  L * K windows for K admissible durations, and writing them all down costs memory
+  proportional to that product for no benefit: the duration is drawn per episode anyway,
+  and drawing it fresh is what stops a 15000 iteration run from seeing the same frozen set
+  of windows for its whole life.
+  """
+
+  order: torch.Tensor
+  """(N,) dataset row at each position, in (trajectory, frame) order."""
+  starts: torch.Tensor
+  """(K,) positions a window may open at."""
+  available: torch.Tensor
+  """(K,) longest window each start admits, in control steps, already capped."""
+  min_steps: int
+
+  def draw(
+    self, count: int
+  ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """count windows: start rows, target rows, durations in control ticks, and the position
+    each one opened at.
+
+    The duration is uniform over what the chosen start actually admits, which is not the
+    same as uniform over the configured range: a start near the end of its rollout only
+    offers short windows. Sampling the start first and the duration inside it is what
+    keeps every drawn window a demonstrated one.
+
+    The position is returned because the two endpoints are not all a window holds. Inside
+    a run, position plus k is the state k control ticks later, so the positions between a
+    start and its target are the crossing the robot actually made, and path reads them.
+    """
+    device = self.starts.device
+    picked = torch.randint(0, self.starts.numel(), (count,), device=device)
+    position = self.starts[picked]
+    span = self.available[picked] - self.min_steps + 1
+    steps = self.min_steps + (torch.rand(count, device=device) * span).long().clamp(
+      max=span - 1
+    )
+    return self.order[position], self.order[position + steps], steps, position
+
+  def history(self, position: torch.Tensor, steps_before: int) -> torch.Tensor:
+    """Rows from steps_before ticks before a window through its start."""
+    if steps_before < 0:
+      raise ValueError("steps_before must be nonnegative.")
+    offsets = torch.arange(-steps_before, 1, device=position.device)
+    return self.order[position.unsqueeze(-1) + offsets]
+
+  def path(
+    self,
+    position: torch.Tensor,
+    steps: torch.Tensor,
+    span: int,
+    post_steps: int = 0,
+  ) -> torch.Tensor:
+    """The rows of the recorded crossing, one per control tick. (N, span + 1).
+
+    Column k is the state k ticks after the window opened, so column 0 is the start and
+    column steps is the target. post_steps keeps the recorded continuation after the
+    target. Any remaining columns repeat the final requested row.
+    """
+    if post_steps < 0:
+      raise ValueError("post_steps must be nonnegative.")
+    offsets = torch.arange(span + post_steps + 1, device=position.device)
+    reach = torch.minimum(offsets.unsqueeze(0), steps.unsqueeze(-1) + post_steps)
+    return self.order[position.unsqueeze(-1) + reach]
+
+
+def load_dataset(
+  path: Path, device: str, split: str = "train", holdout: int = 8
+) -> Dataset:
+  """Read a dataset and keep one side of the split.
+
+  One environment in every holdout goes to eval. Splitting by environment rather than by
+  frame keeps evaluation pairs out of every rollout a training pair came from. Consecutive
+  frames of one rollout are nearly the same state, so a frame level split would put the
+  near twin of a row on the other side of it.
+
+  """
+  if split not in ("train", "eval"):
+    raise ValueError(f"split is 'train' or 'eval', not '{split}'.")
+  if not path.exists():
+    raise SystemExit(
+      f"No dataset at {path}. Build one with `uv run python -m "
+      f"mjlab.tasks.bridging.bridges.dataset.tracker`."
+    )
+
+  raw = np.load(path, allow_pickle=False)
+  env_id = torch.from_numpy(raw["env_id"]).to(device).long()
+  held = (env_id % holdout) == 0
+  mask = held if split == "eval" else ~held
+
+  if "trajectory" not in raw:
+    raise SystemExit(
+      f"{path} predates time-consistent bridge transitions. Rebuild it with the dataset "
+      "collector before training this bridge."
+    )
+
+  skill = torch.from_numpy(raw["skill"]).to(device).long()
+  trajectory = torch.from_numpy(raw["trajectory"]).to(device).long()
+  global_ids = "trajectory_ids_global" in raw and bool(raw["trajectory_ids_global"])
+  if not global_ids:
+    # Older collectors restart trajectory ids for every source
+    trajectory = skill * (int(trajectory.max().item()) + 1) + trajectory
+
+  loaded = Dataset(
+    states=torch.from_numpy(raw["states"]).to(device)[mask],
+    skill=skill[mask],
+    trajectory=trajectory[mask],
+    frame=torch.from_numpy(raw["frame"]).to(device).long()[mask],
+    names=tuple(str(n) for n in raw["skill_names"]),
+    fps=float(raw["fps"]),
+    goal=torch.from_numpy(raw["goal"]).to(device)[mask] if "goal" in raw else None,
+    goal_dim=tuple(int(v) for v in raw["goal_dim"]) if "goal_dim" in raw else (),
+    phase=torch.from_numpy(raw["phase"]).to(device).long()[mask]
+    if "phase" in raw
+    else None,
+    previous_action=torch.from_numpy(raw["previous_action"]).to(device)[mask]
+    if "previous_action" in raw
+    else None,
+    reference=torch.from_numpy(raw["reference"]).to(device)[mask]
+    if "reference" in raw
+    else None,
+    motion_file=raw["motion_file"][mask.cpu().numpy()]
+    if "motion_file" in raw
+    else None,
+    motion_scale=torch.from_numpy(raw["motion_scale"]).to(device)[mask]
+    if "motion_scale" in raw
+    else None,
+    body_pos_b=torch.from_numpy(raw["body_pos_b"]).to(device)[mask]
+    if "body_pos_b" in raw
+    else None,
+    body_names=tuple(str(n) for n in raw["body_names"]) if "body_names" in raw else (),
+    foot_contact=torch.from_numpy(raw["foot_contact"]).to(device)[mask]
+    if "foot_contact" in raw
+    else None,
+  )
+  print(f"[dataset] {loaded.states.shape[0]} states in '{split}' from {loaded.names}")
+  return loaded
