@@ -56,6 +56,8 @@ Requires a skill that tracks a reference, since the measure is tracking error. A
 locomotion skill has no clip to be off, and is refused rather than given a number.
 """
 
+# pyright: reportPrivateImportUsage=false
+
 from __future__ import annotations
 
 import datetime
@@ -72,11 +74,10 @@ from mjlab.tasks.bridging.bridges.dataset.dataset import (
   ROOT_STATE_DIM,
   find_checkpoint,
 )
-from mjlab.tasks.bridging.bridges.imitation.mdp.commands import (
+from mjlab.tasks.bridging.bridges.imitation.command import (
   CHANNELS,
-  UNITS,
-  arm_mask,
   channel_errors,
+  upper_body_mask,
 )
 from mjlab.tasks.bridging.config.g1 import selector as resume
 from mjlab.tasks.bridging.config.g1.skills import SKILLS
@@ -94,10 +95,21 @@ STEPS: dict[str, float] = {
   "root_ori": 0.05,
   "root_lin_vel": 0.10,
   "root_ang_vel": 0.15,
-  "leg_joint_pos": 0.05,
-  "leg_joint_vel": 0.50,
-  "arm_joint_pos": 0.05,
-  "arm_joint_vel": 0.50,
+  "lower_joint_pos": 0.05,
+  "lower_joint_vel": 0.50,
+  "upper_joint_pos": 0.05,
+  "upper_joint_vel": 0.50,
+}
+
+UNITS = {
+  "root_pos": "m",
+  "root_ori": "rad",
+  "root_lin_vel": "m/s",
+  "root_ang_vel": "rad/s",
+  "lower_joint_pos": "rad",
+  "lower_joint_vel": "rad/s",
+  "upper_joint_pos": "rad",
+  "upper_joint_vel": "rad/s",
 }
 """One rung of each channel's ladder, in that channel's own unit. Sized so the bottom rung
 is finer than any bridge has ever delivered and the top is past what any skill has held."""
@@ -169,7 +181,7 @@ class Outcome:
 
 
 def _shape(
-  channel: str, arms: torch.Tensor, generator: torch.Generator, device: str
+  channel: str, upper: torch.Tensor, generator: torch.Generator, device: str
 ) -> torch.Tensor:
   """A unit displacement for one channel. Scaling it walks the whole ladder.
 
@@ -182,8 +194,8 @@ def _shape(
   if channel.startswith("root"):
     vector = torch.randn(3, generator=generator, device=device)
     return vector / vector.norm().clamp(min=1e-6)
-  group = arms if channel.startswith("arm") else ~arms
-  vector = torch.zeros(arms.numel(), device=device)
+  group = upper if channel.startswith("upper") else ~upper
+  vector = torch.zeros(upper.numel(), device=device)
   drawn = torch.randn(int(group.sum()), generator=generator, device=device)
   vector[group] = drawn / drawn.abs().amax().clamp(min=1e-6)
   return vector
@@ -367,10 +379,10 @@ def measure(cfg: Config) -> tuple[float, list[Outcome], Entry, Path]:
     _prepare_scene(env, cfg.skill)
     base = resume.target(env, entry)
 
-    arms = arm_mask(tuple(env.scene["robot"].joint_names), env.device)
+    upper = upper_body_mask(tuple(env.scene["robot"].joint_names), env.device)
     generator = torch.Generator(device=cfg.device).manual_seed(cfg.seed)
     shapes = {
-      (channel, direction): _shape(channel, arms, generator, cfg.device)
+      (channel, direction): _shape(channel, upper, generator, cfg.device)
       for channel in CHANNELS
       for direction in range(cfg.directions)
     }
@@ -390,7 +402,7 @@ def measure(cfg: Config) -> tuple[float, list[Outcome], Entry, Path]:
         for index, case in enumerate(cases)
       ]
     )
-    injected = channel_errors(targets, base, arms)
+    injected = channel_errors(targets, base, upper)
     _place(env, entry, targets)
 
     # An env that terminates is auto reset, so its error is frozen on the done flag rather

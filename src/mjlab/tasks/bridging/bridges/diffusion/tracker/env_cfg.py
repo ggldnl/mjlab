@@ -38,7 +38,7 @@ def tracker_env_cfg(
   motion_patterns: tuple[str, ...] | None = None,
   sources: tuple[str, ...] | None = None,
 ) -> ManagerBasedRlEnvCfg:
-  """Build a short-window path tracker with endpoint-aware objectives."""
+  """Build a short-window path tracker with uniform route tracking."""
   if motion_patterns is None and dataset_path is None:
     motion_patterns = BABEL_EVAL_MOTIONS if split == "eval" else BABEL_TRAIN_MOTIONS
   cfg = unitree_g1_flat_tracking_env_cfg(play=play)
@@ -130,13 +130,7 @@ def tracker_env_cfg(
   }
   cfg.rewards = {
     "trajectory_tracking": RewardTermCfg(
-      func=mdp.trajectory_tracking, weight=1.0, params={"command_name": COMMAND}
-    ),
-    "endpoint_focus": RewardTermCfg(
-      func=mdp.endpoint_focus, weight=3.0, params={"command_name": COMMAND}
-    ),
-    "terminal_target": RewardTermCfg(
-      func=mdp.terminal_target, weight=12.0, params={"command_name": COMMAND}
+      func=mdp.trajectory_tracking, weight=10.0, params={"command_name": COMMAND}
     ),
     "action_rate": RewardTermCfg(func=base_mdp.action_rate_l2, weight=-0.05),
     "action_acc": RewardTermCfg(func=base_mdp.action_acc_l2, weight=-0.002),
@@ -149,8 +143,8 @@ def tracker_env_cfg(
     "failed": RewardTermCfg(func=base_mdp.is_terminated, weight=-20.0),
   }
   cfg.terminations = {
-    "deadline": TerminationTermCfg(
-      func=mdp.deadline, params={"command_name": COMMAND}, time_out=True
+    "route_done": TerminationTermCfg(
+      func=mdp.route_done, params={"command_name": COMMAND}, time_out=True
     ),
     "fell_over": TerminationTermCfg(
       func=mdp.fell_over,

@@ -33,7 +33,7 @@ from mjlab.tasks.bridging.bridges.cvae.goal.command import (
   rotation_6d,
 )
 from mjlab.tasks.bridging.bridges.dataset.dataset import find_checkpoint
-from mjlab.tasks.bridging.bridges.diffusion import COTRAIN_EXPERIMENT
+from mjlab.tasks.bridging.bridges.diffusion import TRAIN_EXPERIMENT
 from mjlab.tasks.bridging.bridges.diffusion.execution.learned_tracker import (
   LearnedTrackerExecutor,
 )
@@ -98,8 +98,8 @@ class Config:
 
 def _diffusion_checkpoints(cfg: Config) -> tuple[Path, Path | None]:
   planner = cfg.bridge_checkpoint or find_checkpoint(
-    (COTRAIN_EXPERIMENT,),
-    hint=" Train one with `uv run train Mjlab-G1-Diffusion-CoTrain`.",
+    (TRAIN_EXPERIMENT,),
+    hint=" Train one with `uv run train Mjlab-G1-Diffusion-Planner-Improvement`.",
   )
   tracker = cfg.tracker_checkpoint
   if tracker is None:

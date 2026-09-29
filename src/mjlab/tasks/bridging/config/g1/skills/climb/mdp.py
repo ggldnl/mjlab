@@ -10,14 +10,22 @@ change to the scene rather than a change to the observation, and a policy traine
 the input width its successor needs.
 """
 
+# pyright: reportPrivateImportUsage=false
+
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import torch
 
 from mjlab.entity import Entity
 from mjlab.tasks.bridging.config.g1.skills.jump_continuous.mdp import *  # noqa: F401, F403
+from mjlab.tasks.bridging.config.g1.skills.jump_continuous.mdp.commands import (
+  JumpCommand,
+)
+from mjlab.tasks.bridging.config.g1.skills.jump_continuous.mdp.terminations import (
+  motion_too_far,
+)
 from mjlab.utils.lab_api.math import quat_apply_inverse, yaw_quat
 
 if TYPE_CHECKING:
@@ -38,7 +46,11 @@ def _heading_quat(env: ManagerBasedRlEnv) -> torch.Tensor:
   return yaw_quat(robot.data.root_link_quat_w)
 
 
-def box_pose_b(env: ManagerBasedRlEnv, half_size: tuple[float, float, float]):
+def box_pose_b(
+  env: ManagerBasedRlEnv,
+  half_size: tuple[float, float, float],
+  box_name: str = BOX,
+):
   """The obstacle from the robot: where it is, which way it faces, how big it is.
 
   Eight numbers, shaped (num_envs, 8): the centre in the robot's heading frame, the box's
@@ -58,7 +70,7 @@ def box_pose_b(env: ManagerBasedRlEnv, half_size: tuple[float, float, float]):
       model, because a compiled geom size is not something a term can ask for cheaply and
       the environment already knows it.
   """
-  box: Entity = env.scene[BOX]
+  box: Entity = env.scene[box_name]
   heading = _heading_quat(env)
 
   robot: Entity = env.scene[ROBOT]
@@ -84,3 +96,28 @@ def box_pose_b(env: ManagerBasedRlEnv, half_size: tuple[float, float, float]):
     ],
     dim=-1,
   )
+
+
+def motion_too_far_after_lean(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  threshold: float,
+  lean_steps: int,
+  lean_threshold: float,
+) -> torch.Tensor:
+  """motion_too_far, with a looser threshold until the robot has leaned onto the box.
+
+  The reference goes from standing to hands on the box edge, and the wrists travel close to
+  0.4 m in under a second. The lean is synthesized, so the policy has to find its own way
+  onto the hands, and the curriculum's tight threshold would end those episodes early.
+
+  Args:
+    threshold: Normal threshold. The curriculum edits this one.
+    lean_steps: Reference frame where the loose threshold stops applying.
+    lean_threshold: Threshold used before lean_steps. Never tighter than threshold.
+  """
+  command = cast(JumpCommand, env.command_manager.get_term(command_name))
+  leaning = command.time_steps < lean_steps
+  strict = motion_too_far(env, command_name, threshold)
+  loose = motion_too_far(env, command_name, max(threshold, lean_threshold))
+  return torch.where(leaning, loose, strict)

@@ -28,10 +28,73 @@ from mjlab.utils.lab_api.math import (
   yaw_quat,
 )
 
-BABEL_ROOT = Path("data") / "babel_retargeted" / "unitree_g1"
+BABEL_ROOT = Path("data") / "babel_retargeted" / "unitree_g1_locomotion_v1"
 BABEL_TRAIN_MOTIONS = (str(BABEL_ROOT / "train" / "**" / "*.npz"),)
 BABEL_EVAL_MOTIONS = (str(BABEL_ROOT / "val" / "**" / "*.npz"),)
 DEFAULT_MOTIONS = BABEL_TRAIN_MOTIONS
+
+_G1_MIRROR_JOINTS = (
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  12,
+  13,
+  14,
+  22,
+  23,
+  24,
+  25,
+  26,
+  27,
+  28,
+  15,
+  16,
+  17,
+  18,
+  19,
+  20,
+  21,
+)
+_G1_MIRROR_SIGNS = (
+  1,
+  -1,
+  -1,
+  1,
+  1,
+  -1,
+  1,
+  -1,
+  -1,
+  1,
+  1,
+  -1,
+  -1,
+  -1,
+  1,
+  1,
+  -1,
+  -1,
+  1,
+  -1,
+  1,
+  -1,
+  1,
+  -1,
+  -1,
+  1,
+  -1,
+  1,
+  -1,
+)
 
 
 @dataclass(frozen=True)
@@ -135,6 +198,72 @@ def decode(
   )
 
 
+def perturb_start_states(
+  states: torch.Tensor,
+  duration: torch.Tensor,
+  history: int,
+  fps: float,
+  xy_range: float,
+  joint_range: float,
+  probability: float,
+) -> torch.Tensor:
+  """Perturb A and blend exactly back to the demonstrated B state."""
+  if states.ndim != 3 or (states.shape[-1] - 13) % 2:
+    raise ValueError("states must have shape (batch, time, 13 + 2 * joints)")
+  if duration.shape != states.shape[:1] or history < 1 or fps <= 0:
+    raise ValueError("duration, history, and fps do not match the states")
+  if history > states.shape[1] or bool(
+    ((duration < 1) | (duration > states.shape[1] - history)).any()
+  ):
+    raise ValueError("duration must place B inside the state window")
+  if min(xy_range, joint_range, probability) < 0 or probability > 1:
+    raise ValueError("perturbation ranges and probability must be valid")
+  if probability == 0 or (xy_range == 0 and joint_range == 0):
+    return states
+
+  batch, columns, width = states.shape
+  joints = (width - 13) // 2
+  active = (torch.rand(batch, 1, device=states.device) < probability).to(states.dtype)
+  delta_xy = torch.empty(batch, 2, device=states.device, dtype=states.dtype).uniform_(
+    -xy_range, xy_range
+  )
+  delta_joint = torch.empty(
+    batch, joints, device=states.device, dtype=states.dtype
+  ).uniform_(-joint_range, joint_range)
+  delta_xy *= active
+  delta_joint *= active
+
+  frame = torch.arange(columns, device=states.device) - (history - 1)
+  phase = (frame[None] / duration[:, None]).clamp(0.0, 1.0)
+  weight = 1 - 3 * phase.square() + 2 * phase.pow(3)
+  rate = (6 * phase.square() - 6 * phase) * fps / duration[:, None]
+
+  out = states.clone()
+  out[..., :2] += weight[..., None] * delta_xy[:, None]
+  out[..., 7:9] += rate[..., None] * delta_xy[:, None]
+  out[..., 13 : 13 + joints] += weight[..., None] * delta_joint[:, None]
+  out[..., 13 + joints :] += rate[..., None] * delta_joint[:, None]
+  return out
+
+
+def mirror_g1_features(features: torch.Tensor) -> torch.Tensor:
+  """Reflect local G1 features across the sagittal plane."""
+  layout = Layout(29)
+  if features.shape[-1] != layout.width:
+    raise ValueError("G1 mirroring requires 29 joints")
+  out = features.clone()
+  out[..., (1, 4, 6, 8, 10, 12, 14)] *= -1
+  indexes = torch.as_tensor(_G1_MIRROR_JOINTS, device=features.device)
+  signs = features.new_tensor(_G1_MIRROR_SIGNS)
+  out[..., layout.joint_positions] = (
+    features[..., layout.joint_positions][..., indexes] * signs
+  )
+  out[..., layout.joint_velocities] = (
+    features[..., layout.joint_velocities][..., indexes] * signs
+  )
+  return out
+
+
 @dataclass
 class Normalizer:
   mean: torch.Tensor
@@ -158,6 +287,8 @@ class MotionCorpus:
 
   states: torch.Tensor
   starts: torch.Tensor
+  trajectory: torch.Tensor
+  frame: torch.Tensor
   names: tuple[str, ...]
   fps: float
   num_joints: int
@@ -167,6 +298,17 @@ class MotionCorpus:
   @property
   def num_windows(self) -> int:
     return int(self.starts.numel())
+
+  def dataset(self) -> Dataset:
+    """Expose the same BABEL clips as contiguous endpoint sequences."""
+    return Dataset(
+      states=self.states,
+      skill=self.trajectory,
+      trajectory=self.trajectory,
+      frame=self.frame,
+      names=self.names,
+      fps=self.fps,
+    )
 
 
 def motion_files(patterns: tuple[str, ...]) -> tuple[Path, ...]:
@@ -206,6 +348,8 @@ def load_motions(
 
   clips: list[torch.Tensor] = []
   starts: list[torch.Tensor] = []
+  trajectories: list[torch.Tensor] = []
+  frames: list[torch.Tensor] = []
   names: list[str] = []
   fps: float | None = None
   joints: int | None = None
@@ -249,8 +393,11 @@ def load_motions(
       )
       for reason, count in rejected.items():
         rejected_windows[reason] = rejected_windows.get(reason, 0) + count
+    trajectory = len(names)
     clips.append(torch.from_numpy(state))
     starts.append(torch.from_numpy(kept + offset))
+    trajectories.append(torch.full((len(state),), trajectory))
+    frames.append(torch.arange(len(state)))
     names.append(path.stem)
     offset += len(state)
   if not clips or fps is None or joints is None:
@@ -260,6 +407,8 @@ def load_motions(
   return MotionCorpus(
     states=torch.cat(clips).to(device),
     starts=torch.cat(starts).to(device),
+    trajectory=torch.cat(trajectories).to(device),
+    frame=torch.cat(frames).to(device),
     names=tuple(names),
     fps=fps,
     num_joints=joints,
@@ -336,6 +485,11 @@ class Windows:
     future: int,
     min_steps: int,
     max_steps: int,
+    time_scale_range: tuple[float, float] = (1.0, 1.0),
+    start_xy_range: float = 0.0,
+    start_joint_range: float = 0.0,
+    start_perturb_probability: float = 0.0,
+    mirror_probability: float = 0.0,
   ) -> None:
     if history < 1 or future < 1 or min_steps < 2 or max_steps < min_steps:
       raise ValueError("invalid boundary or duration bounds")
@@ -344,6 +498,20 @@ class Windows:
     self.future = future
     self.min_steps = min_steps
     self.max_steps = max_steps
+    low, high = time_scale_range
+    if low <= 0 or high < low:
+      raise ValueError("time_scale_range must be positive and ordered")
+    if min(start_xy_range, start_joint_range, start_perturb_probability) < 0:
+      raise ValueError("start perturbation values must be nonnegative")
+    if start_perturb_probability > 1 or not 0 <= mirror_probability <= 1:
+      raise ValueError("augmentation probabilities must lie in [0, 1]")
+    if mirror_probability and data.num_joints != 29:
+      raise ValueError("mirroring requires G1's 29-joint layout")
+    self.time_scale_range = time_scale_range
+    self.start_xy_range = start_xy_range
+    self.start_joint_range = start_joint_range
+    self.start_perturb_probability = start_perturb_probability
+    self.mirror_probability = mirror_probability
     self.columns = history + max_steps + future - 1
     self.layout = Layout(data.num_joints)
     self.offsets = torch.arange(self.columns, device=data.states.device)
@@ -356,10 +524,39 @@ class Windows:
     picked = torch.randint(self.data.starts.numel(), (count,), device=device)
     rows = self.data.starts[picked, None] + self.offsets
     states = self.data.states[rows]
-    duration = torch.randint(
+    source_duration = torch.randint(
       self.min_steps, self.max_steps + 1, (count,), device=device
     )
+    states = perturb_start_states(
+      states,
+      source_duration,
+      self.history,
+      self.data.fps,
+      self.start_xy_range,
+      self.start_joint_range,
+      self.start_perturb_probability,
+    )
     features = encode(states, states[:, self.history - 1])
+    low, high = self.time_scale_range
+    scale = torch.empty(count, device=device).uniform_(low, high)
+    duration = (
+      (source_duration.float() * scale)
+      .round()
+      .long()
+      .clamp(self.min_steps, self.max_steps)
+    )
+    if bool((duration != source_duration).any()):
+      features = rescale_bridge_features(
+        features,
+        source_duration,
+        duration,
+        self.layout,
+        self.history,
+        self.future,
+      )
+    if self.mirror_probability:
+      mirrored = torch.rand(count, 1, 1, device=device) < self.mirror_probability
+      features = torch.where(mirrored, mirror_g1_features(features), features)
     target_last = self.history - 1 + duration + self.future - 1
     time = torch.arange(self.columns, device=device)[None]
     last = features[torch.arange(count, device=device), target_last]
@@ -380,6 +577,51 @@ class Windows:
       self.min_steps, self.max_steps + 1, (count,), device=device
     )
     return states, duration
+
+
+def rescale_bridge_features(
+  features: torch.Tensor,
+  source_duration: torch.Tensor,
+  duration: torch.Tensor,
+  layout: Layout,
+  history: int,
+  future: int,
+) -> torch.Tensor:
+  """Time-warp A to B while preserving both endpoint states exactly."""
+  if source_duration.shape != duration.shape or features.shape[0] != duration.numel():
+    raise ValueError("duration tensors must match the feature batch")
+  out = features.clone()
+  anchor = history - 1
+  for row in range(features.shape[0]):
+    old_steps = int(source_duration[row])
+    new_steps = int(duration[row])
+    old_end = anchor + old_steps
+    new_end = anchor + new_steps
+    source = features[row, anchor : old_end + 1]
+    phase = torch.linspace(0.0, 1.0, new_steps + 1, device=features.device)
+    stretch = new_steps / old_steps
+    source_phase = stretch * phase + (1 - stretch) * (
+      3 * phase.square() - 2 * phase.pow(3)
+    )
+    source_at = (source_phase * old_steps).clamp(0, old_steps)
+    lower = source_at.floor().long()
+    upper = source_at.ceil().long()
+    blend = source_at.frac()[:, None]
+    bridge = source[lower] * (1 - blend) + source[upper] * blend
+    speed = (old_steps / new_steps) * (
+      stretch + (1 - stretch) * (6 * phase - 6 * phase.square())
+    )
+    bridge[:, layout.root_linear_velocity] *= speed[:, None]
+    bridge[:, layout.root_angular_velocity] *= speed[:, None]
+    bridge[:, layout.joint_velocities] *= speed[:, None]
+    out[row, anchor : new_end + 1] = bridge
+    if future > 1:
+      out[row, new_end + 1 : new_end + future] = features[
+        row, old_end + 1 : old_end + future
+      ]
+    final = out[row, new_end + future - 1]
+    out[row, new_end + future :] = final
+  return out
 
 
 def bridge_mask(

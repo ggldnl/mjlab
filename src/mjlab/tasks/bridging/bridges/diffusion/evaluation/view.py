@@ -4,7 +4,7 @@ Run:
 
     uv run python -m \
       mjlab.tasks.bridging.bridges.diffusion.evaluation.view \
-      --checkpoint logs/rsl_rl/g1_kinematic_diffusion_bridge/<run>/model_30000.pt
+      --checkpoint logs/rsl_rl/g1_kinematic_diffusion_planner/<run>/model_30000.pt
 """
 
 # pyright: reportPrivateImportUsage=false

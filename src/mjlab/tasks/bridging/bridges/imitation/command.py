@@ -172,6 +172,7 @@ class ImitationCommand(CommandTerm):
 
     self._target_ghost: mujoco.MjModel | None = None
     self._reference_ghost: mujoco.MjModel | None = None
+    self.preview_targets: torch.Tensor | None = None
 
     for name in CHANNELS:
       self.metrics[f"error_{name}"] = torch.zeros(self.num_envs, device=self.device)
@@ -360,6 +361,10 @@ class ImitationCommand(CommandTerm):
     pass
 
   def _debug_vis_impl(self, visualizer: DebugVisualizer) -> None:
+    if self.preview_targets is not None:
+      for index, target in enumerate(self.preview_targets):
+        self._draw_ghost(visualizer, target, index, "bridge_preview")
+      return
     if self._reference_ghost is None:
       self._reference_ghost = self._make_target_ghost(REFERENCE_COLOR)
     reference = self.reference_now()
@@ -373,6 +378,14 @@ class ImitationCommand(CommandTerm):
         model=self._reference_ghost,
         alpha=REFERENCE_COLOR[3],
       )
+
+  def set_preview_targets(self, targets: torch.Tensor | None) -> None:
+    """Draw fixed target poses instead of the current command and route ghosts."""
+    if targets is not None and (
+      targets.ndim != 2 or targets.shape[1] != self.state_dim
+    ):
+      raise ValueError(f"preview targets must have shape (count, {self.state_dim})")
+    self.preview_targets = None if targets is None else targets.detach().clone()
 
   def _draw_ghost(
     self,

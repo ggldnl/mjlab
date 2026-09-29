@@ -1,5 +1,7 @@
 """Generate an exact-boundary kinematic plan between dynamic states."""
 
+# pyright: reportPrivateImportUsage=false
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -23,7 +25,8 @@ from mjlab.tasks.bridging.bridges.diffusion.planner.process import (
   ProcessCfg,
 )
 
-EXPERIMENT = "g1_kinematic_diffusion_bridge"
+EXPERIMENT = "g1_kinematic_diffusion_planner"
+CHECKPOINT_FORMAT = "mjlab-kinematic-diffusion-v5"
 
 
 @dataclass
@@ -66,7 +69,7 @@ class DiffusionBridge:
   ) -> DiffusionBridge:
     saved = torch.load(checkpoint, map_location=device, weights_only=True)
     saved = saved.get("planner", saved)
-    if saved.get("format") != "mjlab-kinematic-diffusion-v2":
+    if saved.get("format") != CHECKPOINT_FORMAT:
       raise ValueError(
         f"{checkpoint} is not a kinematic diffusion checkpoint; retrain it"
       )
@@ -179,7 +182,7 @@ def checkpoint_metadata(
   iteration: int,
 ) -> dict:
   return {
-    "format": "mjlab-kinematic-diffusion-v2",
+    "format": CHECKPOINT_FORMAT,
     "model_cfg": asdict(model_cfg),
     "process_cfg": asdict(process_cfg),
     "layout": asdict(layout),

@@ -106,7 +106,7 @@ def evaluate(cfg: EvaluateCfg) -> dict[str, Any]:
   env_cfg.scene.num_envs = cfg.batch
   env_cfg.auto_reset = False
   env_cfg.seed = cfg.seed
-  env_cfg.terminations = {"deadline": env_cfg.terminations["deadline"]}
+  env_cfg.terminations = {"route_done": env_cfg.terminations["route_done"]}
   command_cfg = cast(TrackerCommandCfg, env_cfg.commands[COMMAND])
   command_cfg.duration_s_range = (cfg.duration_s, cfg.duration_s)
   command_cfg.debug_vis = False
@@ -126,18 +126,26 @@ def evaluate(cfg: EvaluateCfg) -> dict[str, Any]:
     command = cast(TrackerCommand, env.command_manager.get_term(COMMAND))
     observation = wrapped.get_observations()
     fell = torch.zeros(cfg.batch, dtype=torch.bool, device=cfg.device)
-    ticks = int(round(cfg.duration_s / env.step_dt))
+    endpoint_ticks = int(round(cfg.duration_s / env.step_dt))
+    ticks = endpoint_ticks + command.post_steps
     print(
-      f"[tracker] {cfg.batch} held-out windows, {ticks} ticks, checkpoint {checkpoint}"
+      f"[tracker] {cfg.batch} held-out windows, {endpoint_ticks} + "
+      f"{command.post_steps} post-B ticks, checkpoint {checkpoint}"
     )
     done = torch.zeros(cfg.batch, dtype=torch.bool, device=cfg.device)
-    for _ in range(ticks):
+    errors = None
+    for tick in range(ticks):
       observation, _, done, _ = wrapped.step(policy(observation))
       fell |= env.scene["robot"].data.projected_gravity_b[:, 2] > -0.7
+      if tick + 1 == endpoint_ticks:
+        errors = command.target_errors().clone()
     if not bool(done.all()):
-      raise RuntimeError("Not every evaluation window ended at its configured deadline")
+      raise RuntimeError(
+        "Not every evaluation window completed its post-B continuation"
+      )
+    if errors is None:
+      raise RuntimeError("Tracker evaluation did not reach the endpoint")
 
-    errors = command.target_errors()
     tolerances = command.tolerances
     worst = (errors / tolerances).amax(dim=-1)
     survived = ~fell

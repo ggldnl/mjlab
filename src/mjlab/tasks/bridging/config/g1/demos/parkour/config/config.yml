@@ -1,0 +1,61 @@
+seed: 0
+
+obstacles:
+  count: 6
+  pattern: [tall, short]
+  first_run_up: 3.0
+  spacing: [3.0, 4.5]
+  lateral_offset: [-0.8, 0.8]
+  yaw_degrees: [-20.0, 20.0]
+  goal_clearance: 2.0
+  colors:
+    - [0.91, 0.30, 0.24, 1.0]
+    - [0.96, 0.65, 0.14, 1.0]
+    - [0.28, 0.62, 0.86, 1.0]
+    - [0.36, 0.72, 0.42, 1.0]
+    - [0.60, 0.40, 0.78, 1.0]
+
+  # Height and length are fixed by the measured jump flight window
+  # Width is the dimension the skill does not track
+  short:
+    height: 0.10
+    length: 0.40
+    width: [0.80, 1.20]
+
+# Scenery only: the controller never plans against these boxes.
+side_obstacles:
+  count: 18
+  side_offset: [2.5, 6.0]
+  yaw_degrees: [-180.0, 180.0]
+
+goal:
+  position: [32.0, 0.0]
+  radius: 0.50
+  color: [0.20, 0.90, 0.30, 0.70]
+
+controller:
+  position_tolerance: 0.15
+  yaw_tolerance: 0.25
+  position_gain: 1.5
+  walk_speed: 0.70
+  bridge_distance:
+    climb: 0.20
+    jump: 0.50
+  hurdle_takeoff: 0.44
+  bridge_duration_s:
+    climb: 1.20
+    jump: 0.80
+  capture_grace_s: 0.50
+  capture_tolerance_scale: 2.0
+  lift_height: 0.12
+  land_height: 0.08
+  stand_angle: 0.60
+  settle_steps: 25
+  stuck_steps: 900
+  traverse_patience: 200
+  fall_height: 0.40
+
+skills:
+  # Exact EntryTable rows, not arbitrary motion frames.
+  jump_entry_frame: 87
+  climb_entry_frame: 28

@@ -15,10 +15,10 @@ One clip is one policy. The clip covers getting on and getting off, because the 
 motion does: the subject walks in, climbs, crosses the top and steps down the far side, and
 cutting that in half would leave a skill that ends standing on an obstacle.
 
-The approach walk is cut out in the converter. The controller drives the robot up to the
-box with the walk and hands over facing it, so the reference opens with the robot standing
-still a quarter of a metre from the near face. What varies about that hand-over is the
-angle it arrives at, and that lives in APPROACH_YAW_RANGE below.
+No walking in. The reference opens with the robot standing upright, the box within arm's
+reach, then leans onto the box edge with the feet planted (the lead-in, see dataset.py).
+The lean is synthesized, so motion_far stays loose until it has settled, see
+LEAN_FAR_THRESHOLD. The start angle varies within APPROACH_YAW_RANGE below.
 
 What to watch:
 
@@ -75,6 +75,7 @@ from mjlab.tasks.bridging.config.g1.skills.climb import mdp
 from mjlab.tasks.bridging.config.g1.skills.climb.dataset import (
   Box,
   box_from_manifest,
+  lead_in_from_manifest,
 )
 from mjlab.tasks.bridging.config.g1.skills.jump_continuous.mdp import (
   JumpCommandCfg,
@@ -154,8 +155,8 @@ thing and neither moves: what is perturbed is where the robot is spawned relativ
 because every reference observation is the reference expressed in the robot's own frame and
 rotating the whole scene together leaves all of them unchanged.
 
-Plus or minus 0.15 is about eight degrees, which the tracker can walk off during the half
-second of held stance and the stride into the box. Wider does not work by tracking alone:
+Plus or minus 0.15 is about eight degrees, which the tracker can correct during the stand
+and the lean. Wider does not work by tracking alone:
 the reference plants a hand at a fixed spot on the edge, and past roughly ten degrees the
 motion that reaches it is a different motion, not this one started crooked. Re-retargeting
 against a turned box is what buys more, not a wider range here."""
@@ -189,6 +190,15 @@ PUSH_VELOCITY_RANGE = {
   "pitch": (-0.3, 0.3),
   "yaw": (-0.4, 0.4),
 }
+
+LEAN_SETTLE_S = 0.5
+"""How long past the end of the lead-in motion_far stays loose, in seconds. Covers the hands
+taking load on the box edge, which is where a policy that leaned its own way catches up."""
+
+LEAN_FAR_THRESHOLD = 1.0
+"""motion_far threshold from the standing start until the lean has settled. The curriculum's
+first stage value, kept for the whole run. The wrists travel about 0.4 m in the lean and the
+curriculum ends at 0.45."""
 
 # Curriculum thresholds are in environment steps. At 24 steps per env per iteration,
 # 24_000 steps is about 1000 iterations
@@ -226,12 +236,14 @@ def g1_climb_env_cfg(
     motion_dir: Where dataset.py wrote the motion's npz and manifest.
     motion_files: Converted npz clips. Defaults to everything in motion_dir, which for this
       task is the one clip.
-    play: Start every episode at the beginning of the clip, which is the standstill in front
-      of the box, drop the observation noise and the pushes, and leave the reference
+    play: Start every episode at the beginning of the clip, standing upright in front of
+      the box, drop the observation noise and the pushes, and leave the reference
       unperturbed.
   """
   motion_files = motion_files or discover_motion_files(motion_dir)
   box = box_from_manifest(motion_dir)
+  # 50 Hz control, see decimation below
+  lean_steps = lead_in_from_manifest(motion_dir) + int(round(LEAN_SETTLE_S * 50))
 
   ##
   # Observations
@@ -517,9 +529,17 @@ def g1_climb_env_cfg(
     "motion_ended": TerminationTermCfg(
       func=mdp.motion_ended, params={"command_name": "motion"}, time_out=True
     ),
+    # Loose until the robot has leaned onto the box, see LEAN_FAR_THRESHOLD. The anchor
+    # terms need no such window: the lean moves the torso 0.13 m and tilts it 35 degrees,
+    # well inside both of their thresholds
     "motion_far": TerminationTermCfg(
-      func=mdp.motion_too_far,
-      params={"command_name": "motion", "threshold": 1.0},
+      func=mdp.motion_too_far_after_lean,
+      params={
+        "command_name": "motion",
+        "threshold": 1.0,
+        "lean_steps": lean_steps,
+        "lean_threshold": LEAN_FAR_THRESHOLD,
+      },
     ),
     # Against the reference, not against the ground, so this reads the same whether the
     # reference is on the floor or on top of the box
@@ -656,9 +676,9 @@ def g1_climb_env_cfg(
     ),
     # 0.005 * 4 gives 50 Hz control, the rate the clip is converted at
     decimation=4,
-    # The clip is a little over nine seconds with its held opening. The motion ends the
+    # The clip is just under ten seconds with its standing lead-in. The motion ends the
     # episode before this
-    episode_length_s=10.0,
+    episode_length_s=11.0,
   )
 
   if play:

@@ -166,6 +166,10 @@ class TrackerCommand(CommandTerm):
     return self.step >= self.window_steps
 
   @property
+  def route_done(self) -> torch.Tensor:
+    return self.step >= self.window_steps + self.post_steps
+
+  @property
   def phase(self) -> torch.Tensor:
     return (self.step.float() / self.window_steps.float()).clamp(0.0, 1.0)
 
@@ -174,18 +178,39 @@ class TrackerCommand(CommandTerm):
     """Hybrid future, exact endpoint, phase, and time remaining."""
     current = self.state_now()
     future = self.reference_at(self.offsets)
-    remaining_steps = (self.window_steps - self.step).clamp(min=0)
+    post = self.step > self.window_steps
+    post_end = self.window_steps + self.post_steps
+    active_target = torch.where(post[:, None], self._post_target(), self.target)
+    remaining_steps = torch.where(
+      post,
+      (post_end - self.step).clamp(min=0),
+      (self.window_steps - self.step).clamp(min=0),
+    )
+    phase = torch.where(
+      post,
+      (self.step - self.window_steps).float() / max(self.post_steps, 1),
+      self.step.float() / self.window_steps.float(),
+    ).clamp(0.0, 1.0)
     future_time = self.offsets[None].expand(self.num_envs, -1).float() / self.fps
     return torch.cat(
       (
         reference_features(current, future).flatten(1),
         future_time,
-        reference_features(current, self.target),
-        self.phase[:, None],
+        reference_features(current, active_target),
+        phase[:, None],
         (remaining_steps.float() / self.fps)[:, None],
       ),
       dim=-1,
     )
+
+  def _post_target(self) -> torch.Tensor:
+    if self.dataset is None:
+      return self.target
+    tick = (self.window_steps + self.post_steps).clamp(
+      max=self.max_steps + self.post_steps
+    )
+    rows = self.route_rows.gather(1, tick[:, None]).squeeze(1)
+    return self._place_state(self.dataset.states[rows])
 
   def state_now(self) -> torch.Tensor:
     data = self.robot.data

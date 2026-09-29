@@ -4,7 +4,7 @@ Run:
 
   uv run python -m mjlab.tasks.bridging.diagnose_motions \
     --datasets "('LAFAN1=data/lafan1_g1/motions/*.npz', \
-    'BABEL=data/babel_retargeted/unitree_g1/**/*.npz')"
+    'BABEL=data/babel_retargeted/unitree_g1_locomotion_v1/**/*.npz')"
 """
 
 from __future__ import annotations

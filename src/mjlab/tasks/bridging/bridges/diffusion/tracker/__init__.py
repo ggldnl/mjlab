@@ -1,4 +1,4 @@
-"""Endpoint-precise universal tracker trained on retargeted BABEL clips."""
+"""Universal trajectory tracker trained on retargeted BABEL clips."""
 
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 from mjlab.tasks.bridging.bridges.diffusion.tracker.env_cfg import (

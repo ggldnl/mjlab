@@ -20,8 +20,9 @@ What happens to a clip, in order:
        on at the opening frame rather than against the source floor.
     3. Rotate and translate clip and box together, so the clip starts at the origin facing
        +x and the box keeps the pose it had relative to the robot.
-    4. Resample to the control rate and hold the first frame still for half a second, so the
-       clip starts from a standstill in front of the box.
+    4. Resample to the control rate and prepend a synthetic lead-in: the robot standing
+       upright on the clip's own footprint, then leaning forward until it reaches the
+       clip's first frame, hands on the box edge. Leg IK keeps both feet planted throughout.
     5. Shift the clip vertically so the opening stance sits at mjlab's standing foot height.
        The capture platform disappears into that shift, and the box is rebuilt on the plane
        at the height measured in step 2, which is a difference of two surfaces and so does
@@ -29,11 +30,12 @@ What happens to a clip, in order:
     6. Replay through MuJoCo to log every body world pose and velocity, and write the box
        into the manifest for the environment to read.
 
-The crop is where the approach walk is thrown away. The controller walks the robot up to the
-obstacle and hands over facing it, so the skill does not have to learn the walk in; what it
-has to do is start from a standstill close enough to reach. near_face in the printed summary
-is how much floor is left in front of the box when the clip opens, and it is the number a
-hand-over has to deliver.
+Why the lead-in exists: the source has no upright frame. The subject already has both hands
+on the box edge when the capture starts, torso 35 degrees forward and centre of mass past the
+toes, so the first frame is a lean that only holds while the hands carry load. The lead-in
+gives the skill a standing start with the box within arm's reach, and the feet never move.
+near_face in the printed summary is how much floor there is between the clip origin and the
+box.
 
 Run
 
@@ -50,6 +52,8 @@ Run
     uv run python -m mjlab.tasks.bridging.config.g1.skills.climb.dataset --motion climb --crop-start 40 --crop-end 314
 """
 
+# pyright: reportPrivateImportUsage=false
+
 from __future__ import annotations
 
 import json
@@ -59,6 +63,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import mujoco
 import numpy as np
 import torch
 import tyro
@@ -135,10 +140,29 @@ def motion_dir(name: str) -> Path:
   return CLIP_DIR / name
 
 
-# How long the reference stands still in front of the box before the climb begins. The same
-# half second the martial motions open with, and for the same reason: the skill is entered
-# from a robot that is standing there, not one already moving
-STILL_HOLD_S = 0.5
+# How long the reference stands upright before it starts leaning, and how long the lean onto
+# the box takes
+STAND_S = 0.4
+LEAN_S = 0.8
+
+# Fraction of the lean the arms move ahead of the torso, so the hands are over the box before
+# the weight goes forward
+ARM_LEAD = 0.3
+
+LEG_JOINTS: tuple[str, ...] = (
+  "hip_pitch",
+  "hip_roll",
+  "hip_yaw",
+  "knee",
+  "ankle_pitch",
+  "ankle_roll",
+)
+ARM_JOINT_PATTERN = re.compile(r"shoulder|elbow|wrist")
+
+
+def lead_in_steps(fps: float, stand_s: float = STAND_S, lean_s: float = LEAN_S) -> int:
+  """Frames before the source clip's first frame: the stand plus the lean."""
+  return int(round(stand_s * fps)) + int(round(lean_s * fps))
 
 
 @dataclass(frozen=True)
@@ -367,24 +391,206 @@ def canonicalize(
   )
 
 
-def prepend_hold(motion: RawMotion, seconds: float) -> RawMotion:
-  """Repeat the first frame, so the clip opens from a standstill.
+FootPose = tuple[np.ndarray, np.ndarray]
 
-  The window is cut where the subject is standing in front of the box, and this stretches
-  that standstill out. Velocities are finite differenced after this, so the held frames
-  carry no motion and the climb gets one frame of ramp into it.
+
+class FootPinner:
+  """Leg IK on a CPU copy of the robot model. Keeps both feet at a target pose.
+
+  Only the twelve leg joints move. Root pose and every other joint are inputs.
+  Damped least squares on the position and orientation of both ankle roll links.
   """
-  frames = int(round(seconds * motion.fps))
-  if frames <= 0:
+
+  def __init__(
+    self,
+    model: mujoco.MjModel,
+    robot: Entity,
+    iterations: int = 100,
+    damping: float = 1e-4,
+  ):
+    self.model = model
+    self.data = mujoco.MjData(model)
+    self.iterations = iterations
+    self.damping = damping
+
+    self.root_q = robot.indexing.free_joint_q_adr.cpu().numpy()
+    self.joint_q = robot.indexing.joint_q_adr.cpu().numpy()
+    names = list(robot.joint_names)
+    self.leg = np.array(
+      [
+        names.index(f"{side}_{j}_joint")
+        for side in ("left", "right")
+        for j in LEG_JOINTS
+      ]
+    )
+    self.leg_dofs = robot.indexing.joint_v_adr.cpu().numpy()[self.leg]
+    joint_ids = robot.indexing.joint_ids.cpu().numpy()[self.leg]
+    self.leg_range = model.jnt_range[joint_ids]
+    local = robot.find_bodies(list(FOOT_BODY_NAMES), preserve_order=True)[0]
+    self.feet_ids = [int(robot.indexing.body_ids[i]) for i in local]
+
+  def _forward(
+    self, root_pos: np.ndarray, root_quat: np.ndarray, joint_pos: np.ndarray
+  ) -> None:
+    self.data.qpos[self.root_q[:3]] = root_pos
+    self.data.qpos[self.root_q[3:]] = root_quat
+    self.data.qpos[self.joint_q] = joint_pos
+    mujoco.mj_kinematics(self.model, self.data)
+    mujoco.mj_comPos(self.model, self.data)
+
+  def feet(
+    self, root_pos: np.ndarray, root_quat: np.ndarray, joint_pos: np.ndarray
+  ) -> list[FootPose]:
+    """World pose of both feet, left first."""
+    self._forward(root_pos, root_quat, joint_pos)
+    return [
+      (self.data.xpos[b].copy(), self.data.xquat[b].copy()) for b in self.feet_ids
+    ]
+
+  def solve(
+    self,
+    root_pos: np.ndarray,
+    root_quat: np.ndarray,
+    joint_pos: np.ndarray,
+    targets: list[FootPose],
+  ) -> np.ndarray:
+    """Leg joints that put both feet on targets, starting from joint_pos."""
+    q = joint_pos.copy()
+    jacp = np.zeros((3, self.model.nv))
+    jacr = np.zeros((3, self.model.nv))
+    rot_error = np.zeros(3)
+    for _ in range(self.iterations):
+      self._forward(root_pos, root_quat, q)
+      errors, rows = [], []
+      for body, (pos, quat) in zip(self.feet_ids, targets, strict=True):
+        # subQuat gives the error in the body frame, the jacobian is in the world frame
+        mujoco.mju_subQuat(rot_error, quat, self.data.xquat[body])
+        errors += [
+          pos - self.data.xpos[body],
+          self.data.xmat[body].reshape(3, 3) @ rot_error,
+        ]
+        mujoco.mj_jacBody(self.model, self.data, jacp, jacr, body)
+        rows += [jacp[:, self.leg_dofs].copy(), jacr[:, self.leg_dofs].copy()]
+      error = np.concatenate(errors)
+      if np.abs(error).max() < 1e-6:
+        break
+      jac = np.vstack(rows)
+      step = jac.T @ np.linalg.solve(
+        jac @ jac.T + self.damping * np.eye(jac.shape[0]), error
+      )
+      q[self.leg] = np.clip(
+        q[self.leg] + step, self.leg_range[:, 0], self.leg_range[:, 1]
+      )
+    return q
+
+
+def _yaw_only(quat: np.ndarray) -> np.ndarray:
+  w, x, y, z = quat
+  yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+  return np.array([math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)])
+
+
+def _slerp(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
+  dot = float(np.dot(a, b))
+  if dot < 0.0:
+    b, dot = -b, -dot
+  if dot > 0.9995:
+    q = a + t * (b - a)
+    return q / np.linalg.norm(q)
+  theta = math.acos(dot)
+  return (math.sin((1.0 - t) * theta) * a + math.sin(t * theta) * b) / math.sin(theta)
+
+
+def _min_jerk(t: float) -> float:
+  """Smooth 0 to 1 ramp with zero velocity and acceleration at both ends."""
+  t = min(max(t, 0.0), 1.0)
+  return t * t * t * (10.0 - 15.0 * t + 6.0 * t * t)
+
+
+def standing_pose(
+  pinner: FootPinner,
+  feet: list[FootPose],
+  heading: np.ndarray,
+  default_root_pos: np.ndarray,
+  default_joint_pos: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+  """Upright stance with the feet exactly on the given footprint.
+
+  The robot's default knees bent pose, turned to the clip heading and moved over the
+  footprint, then leg IK closes the remaining gap. Waist and arms keep their default.
+
+  Returns root position and joint positions. Root orientation is heading.
+  """
+  identity = np.array([1.0, 0.0, 0.0, 0.0])
+  default_feet = pinner.feet(default_root_pos, identity, default_joint_pos)
+  pelvis_offset = default_root_pos - np.mean([pos for pos, _ in default_feet], axis=0)
+  rotated = np.zeros(3)
+  mujoco.mju_rotVecQuat(rotated, pelvis_offset, heading)
+  root_pos = np.mean([pos for pos, _ in feet], axis=0) + rotated
+  return root_pos, pinner.solve(root_pos, heading, default_joint_pos, feet)
+
+
+def prepend_lead_in(
+  motion: RawMotion,
+  pinner: FootPinner,
+  joint_names: list[str],
+  default_root_pos: np.ndarray,
+  default_joint_pos: np.ndarray,
+  stand_s: float,
+  lean_s: float,
+) -> RawMotion:
+  """Open the clip standing upright, then lean into its first frame.
+
+  Frames, in order:
+
+    stand   standing_pose on the first frame's footprint, held still
+    lean    blend from the stand to the first frame. Arms start first (ARM_LEAD) so the
+            hands are over the box before the torso tips. Root pose, waist and legs follow.
+            Min jerk easing, so velocities are zero at both ends
+    clip    the source, unchanged
+
+  Every lead-in frame goes through leg IK, so the feet stay exactly where the first frame
+  has them. A joint space blend alone would slide them.
+  """
+  stand_frames = int(round(stand_s * motion.fps))
+  lean_frames = int(round(lean_s * motion.fps))
+  if stand_frames + lean_frames <= 0:
     return motion
 
-  def hold(tensor: torch.Tensor) -> torch.Tensor:
-    return torch.cat([tensor[0:1].expand(frames, *tensor.shape[1:]), tensor], dim=0)
+  root0 = motion.root_pos[0].cpu().numpy().astype(np.float64)
+  quat0 = motion.root_quat[0].cpu().numpy().astype(np.float64)
+  joints0 = motion.joint_pos[0].cpu().numpy().astype(np.float64)
+  feet = pinner.feet(root0, quat0, joints0)
+
+  heading = _yaw_only(quat0)
+  stand_root, stand_joints = standing_pose(
+    pinner, feet, heading, default_root_pos, default_joint_pos
+  )
+  arms = np.array([bool(ARM_JOINT_PATTERN.search(n)) for n in joint_names])
+
+  root_pos, root_quat, joint_pos = [], [], []
+  for i in range(stand_frames + lean_frames):
+    k = max(i - stand_frames, 0) / max(lean_frames, 1)
+    body = _min_jerk((k - ARM_LEAD) / (1.0 - ARM_LEAD))
+    arm = _min_jerk(k / (1.0 - ARM_LEAD))
+
+    pos = stand_root + body * (root0 - stand_root)
+    quat = _slerp(heading, quat0, body)
+    q = stand_joints + body * (joints0 - stand_joints)
+    q[arms] = stand_joints[arms] + arm * (joints0[arms] - stand_joints[arms])
+
+    root_pos.append(pos)
+    root_quat.append(quat)
+    joint_pos.append(pinner.solve(pos, quat, q, feet))
+
+  def prepend(frames: list[np.ndarray], tensor: torch.Tensor) -> torch.Tensor:
+    lead = torch.tensor(np.stack(frames), dtype=tensor.dtype, device=tensor.device)
+    return torch.cat([lead, tensor], dim=0)
 
   return RawMotion(
-    root_pos=hold(motion.root_pos),
-    root_quat=hold(motion.root_quat),
-    joint_pos=hold(motion.joint_pos),
+    root_pos=prepend(root_pos, motion.root_pos),
+    root_quat=prepend(root_quat, motion.root_quat),
+    joint_pos=prepend(joint_pos, motion.joint_pos),
     fps=motion.fps,
   )
 
@@ -447,6 +653,19 @@ def box_from_manifest(directory: Path) -> Box:
   return Box.from_dict(entries[0]["box"])
 
 
+def lead_in_from_manifest(directory: Path, fps: float = 50.0) -> int:
+  """Frame where the source clip starts, after the stand and the lean.
+
+  Falls back to the default lead-in, for the same reason box_from_manifest does.
+  """
+  manifest = directory / "manifest.json"
+  if manifest.exists():
+    entries = json.loads(manifest.read_text())
+    if entries and "lead_in_steps" in entries[0]:
+      return int(entries[0]["lead_in_steps"])
+  return lead_in_steps(fps)
+
+
 def convert_clip(
   sim: Simulation,
   scene: Scene,
@@ -458,7 +677,8 @@ def convert_clip(
   output_path: Path,
   output_fps: float,
   standing_height: float,
-  hold_s: float,
+  stand_s: float,
+  lean_s: float,
   input_fps: float = SOURCE_FPS,
 ) -> dict[str, Any]:
   # The clip is read before the obstacle, because how tall the obstacle is depends on what
@@ -466,19 +686,29 @@ def convert_clip(
   raw = load_qpos(clip_path, crop, joint_names, str(sim.device), input_fps)
   corners, height = load_obstacle(urdf_path, raw.root_pos[0, :2].cpu().numpy())
   motion, corners = canonicalize(raw, corners)
-  motion = prepend_hold(resample(motion, output_fps), hold_s)
+  pinner = FootPinner(sim.mj_model, robot)
+  motion = prepend_lead_in(
+    resample(motion, output_fps),
+    pinner,
+    joint_names,
+    default_root_pos=robot.data.default_root_state[0, :3].cpu().numpy(),
+    default_joint_pos=robot.data.default_joint_pos[0].cpu().numpy(),
+    stand_s=stand_s,
+    lean_s=lean_s,
+  )
+  lead_in = lead_in_steps(output_fps, stand_s, lean_s)
   root_lin_vel, root_ang_vel, joint_vel = velocities(motion)
 
   foot_ids = robot.find_bodies(list(FOOT_BODY_NAMES), preserve_order=True)[0]
 
   # First pass: find how far off the ground the retargeted clip sits.
   #
-  # The baseline is measured over the held opening alone, not over the first second. The
-  # frames after the hold are the step into the box, and a climb has no second standing
-  # phase to average with: the next time both feet are still they are on top of the box
+  # The baseline is measured over the lead-in alone, where both feet are pinned to the
+  # opening footprint. A climb has no second standing phase to average with: the next time
+  # both feet are still they are on top of the box
   probe = replay(sim, scene, robot, motion, root_lin_vel, root_ang_vel, joint_vel)
   probe_foot = probe["body_pos_w"][:, foot_ids, 2]
-  stance_frames = max(1, int(round(hold_s * output_fps)))
+  stance_frames = max(1, lead_in)
   baseline = stance_baseline(probe_foot, stance_frames)
   z_shift = max(
     standing_height - baseline,
@@ -508,6 +738,8 @@ def convert_clip(
   np.savez(output_path, **payload)  # ty: ignore[invalid-argument-type]
 
   root_z = log["body_pos_w"][:, 0, 2]
+  lead_in_feet = log["body_pos_w"][: lead_in + 1, foot_ids]
+  lead_in_drift = np.linalg.norm(lead_in_feet - lead_in_feet[:1], axis=-1).max()
   summary = {
     "name": output_path.stem,
     "file": output_path.name,
@@ -529,6 +761,10 @@ def convert_clip(
     "ground_penetration": round(
       standing_height - float(log["body_pos_w"][:, foot_ids, 2].min()), 4
     ),
+    # Frame where the source clip starts, after the stand and the lean
+    "lead_in_steps": lead_in,
+    # How far either foot moves during the lead-in. Leg IK should keep this near zero
+    "lead_in_foot_drift": round(float(lead_in_drift), 4),
   }
   print(
     f"  {summary['name']:<12} {summary['frames']:>4} frames  "
@@ -536,7 +772,8 @@ def convert_clip(
     f"yaw {math.degrees(box.yaw):+.1f} deg  rise {summary['rise']:.2f} m  "
     f"travel {summary['distance']:.2f} m  "
     f"float {summary['stance_float']:+.3f} m  "
-    f"sink {summary['ground_penetration']:+.3f} m"
+    f"sink {summary['ground_penetration']:+.3f} m  "
+    f"lead-in {lead_in} frames, foot drift {summary['lead_in_foot_drift']:.4f} m"
   )
   return summary
 
@@ -546,7 +783,8 @@ def convert(
   clip_dir: Path,
   source_dir: Path,
   output_fps: float,
-  hold_s: float,
+  stand_s: float,
+  lean_s: float,
   device: str,
   input_fps: float = SOURCE_FPS,
 ) -> None:
@@ -594,7 +832,8 @@ def convert(
       output_path=output_dir / f"{name}.npz",
       output_fps=output_fps,
       standing_height=standing_height,
-      hold_s=hold_s,
+      stand_s=stand_s,
+      lean_s=lean_s,
       input_fps=input_fps,
     )
 
@@ -613,7 +852,8 @@ def main(
   clip_dir: Path = CLIP_DIR,
   source_dir: Path = SOURCE_DIR,
   output_fps: float = 50.0,
-  hold_s: float = STILL_HOLD_S,
+  stand_s: float = STAND_S,
+  lean_s: float = LEAN_S,
   device: str = "cuda:0",
 ) -> None:
   """Convert the climbing windows into mjlab motion npz files.
@@ -631,7 +871,8 @@ def main(
     clip_dir: Parent of the per motion output directories.
     source_dir: Where the downloader caches the archive and the obstacle models.
     output_fps: Should match the env control rate, 1 / (timestep * decimation).
-    hold_s: How long the reference stands still before the climb starts.
+    stand_s: How long the reference stands upright before it leans.
+    lean_s: How long the lean from standing onto the box edge takes.
     device: Torch device for the replay.
   """
   if motion is None:
@@ -651,7 +892,7 @@ def main(
       )
     }
 
-  convert(selected, clip_dir, source_dir, output_fps, hold_s, device)
+  convert(selected, clip_dir, source_dir, output_fps, stand_s, lean_s, device)
 
 
 if __name__ == "__main__":

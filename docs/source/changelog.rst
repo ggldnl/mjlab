@@ -5,8 +5,66 @@ Changelog
 Upcoming version (not yet released)
 -----------------------------------
 
+Changed
+^^^^^^^
+
+- BABEL bridge data now defaults to strictly labeled locomotion from BMLrub, CMU,
+  KIT, and ACCAD. Object-supported, posed, athletic, ambiguous, and unknown overlaps
+  are cut before retargeting. G1 retargeting applies only a robust constant floor
+  offset, rejects suspect clips into a JSONL QA report, and no longer changes height
+  while loading. Diffusion planner training penalizes horizontal sole motion during
+  demonstrated ground contact through differentiable G1 forward kinematics.
+
+- Replaced diffusion co-training with frozen-tracker planner improvement. The tracker and
+  planner pretrain independently; cross-clip BABEL endpoints are placed using empirical motion
+  limits, all hard-gate survivors are physically executed, and the post-B continuation is
+  evaluated. Successful paths and stable achieved-goal relabels train the planner through
+  bounded replay, while failures remain diagnostics. Planner windows also receive bounded
+  start-state perturbations, left-right mirroring, and mild derivative-aware duration
+  rescaling. Tracker training no longer emphasizes endpoints.
+  New planner runs use clean planner and planner-improvement log namespaces so incompatible
+  cotrain and earlier planner checkpoints are not selected.
+
+- Universal tracker training now follows the recorded post-B continuation used by planner
+  evaluation, and keeps a uniformly weighted route objective through that continuation.
+
+- Moved the climb selector window to frames 45 through 50, selecting the more upright,
+  two-foot-loaded frame 48 instead of the dynamic single-support frame 42. The entry
+  tolerance tool now uses the current lower/upper-body channel names again.
+
 Added
 ^^^^^
+
+- Added a BABEL trajectory viewer that overlays stored and pre-correction heights,
+  draws sample-preserving root and sole paths, and reports per-clip ground-height
+  statistics.
+
+- Added ``diffusion.planner.view`` for browsing held-out BABEL planner windows with
+  start, end, and animated trajectory ghosts.
+
+- Added the G1 parkour demo under ``config/g1/demos/parkour``. A seeded course places
+  tilted climb boxes and jump hurdles between the robot and a visible goal, plus ignored
+  side obstacles for denser scenery. A four-state rule controller walks to each approach
+  pose, runs the diffusion bridge, traverses the obstacle and continues. Course geometry,
+  colors, spacing, yaw, goal and control defaults are configured in
+  ``parkour/config/config.yml``; the Viser panel adjusts per-skill bridge distance and
+  duration live. Fixed selector-entry ghosts show every planned landing pose across resets.
+
+- Diffusion bridges now hand off when their planned path ends instead of waiting for every
+  endpoint channel to enter its tolerance box. The box result remains available as the
+  ``within_endpoint_box`` diagnostic beside per-channel errors and endpoint score.
+
+- Robot-specific bridge diagnostics now live beside their configuration under
+  ``bridging.config.<robot>.tests`` while shared stage and retargeting helpers remain
+  under ``bridging.tests``. The G1 walk-to-kick transition accepts one unified
+  diffusion planner-improvement checkpoint for both planner and tracker, defaults to the newest
+  one when no path is given, and reports endpoint-box diagnostics without using them
+  to block the handoff. Its diagnostic limits default to twice the training tolerances,
+  can be adjusted with ``--capture-tolerance-scale``, and print as actual/allowed values.
+
+- Bridging now keeps shared bridges and selectors at package root and robot-specific
+  skills under ``config/g1`` and ``config/t1``. Shared tools select robots through one
+  registry.
 
 - Added a tracker-independent bridge motion diagnostic with two kinematic
   filters: conservative locomotion filtering and label-aware quality filtering.
@@ -97,7 +155,7 @@ Added
   and running in the imitation bridge's arena so the two are scored on the same windows by
   the same code. Train it with::
 
-      uv run python -m mjlab.tasks.bridging.experiments.humanoid.bridges.diffusion.train
+      uv run python -m mjlab.tasks.bridging.bridges.diffusion.train
 
   ``uv run train Mjlab-G1-Diffusion-Bridge`` refuses with that message: there is no reward
   and no episode behind this architecture. Everything that loads a bridge by task id drives
@@ -984,7 +1042,7 @@ Added
 
 - A Record box in the Viser viewer's Controls tab writes the episode to an mp4
   while it plays, so ``play`` and the transition scripts under
-  ``bridging/experiments/humanoid/tests`` can produce a video without a rerun. The
+  ``bridging/tests`` can produce a video without a rerun. The
   panel holds the output folder, a frame size and one button; the file is
   ``<folder>/<name>-<timestamp>.mp4``, under the run's ``videos/play`` for
   ``play`` and under ``videos/`` for a transition. This is separate from
@@ -1528,7 +1586,7 @@ Changed
   both entries, and the bridge's skills dataset keeps recording the continuous
   jump by default, which is the skill it recorded before.
 
-- The transition harness under ``bridging/experiments/humanoid/tests`` now
+- The transition harness under ``bridging/tests`` now
   calls the selector's own API instead of the compatibility shim that was
   deleted with the new selector, so ``tests/stage.py``, ``tests/handoff.py``
   and every ``tests/transitions`` script import and run again. Entries are

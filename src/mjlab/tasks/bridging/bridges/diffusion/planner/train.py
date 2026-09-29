@@ -6,6 +6,8 @@ Run:
       mjlab.tasks.bridging.bridges.diffusion.planner.train
 """
 
+# pyright: reportPrivateImportUsage=false
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -32,6 +34,7 @@ from mjlab.tasks.bridging.bridges.diffusion.planner.model import (
 )
 from mjlab.tasks.bridging.bridges.diffusion.planner.process import (
   Diffusion,
+  G1FootSlipLoss,
   ProcessCfg,
 )
 
@@ -46,9 +49,17 @@ class TrainCfg:
   future: int = 1
   min_steps: int = 15
   max_steps: int = 60
+  time_scale_range: tuple[float, float] = (0.95, 1.05)
+  start_xy_range: float = 0.02
+  start_joint_range: float = 0.03
+  start_perturb_probability: float = 0.5
+  mirror_probability: float = 0.5
   holdout: int = 8
   model: ModelCfg = field(default_factory=ModelCfg)
   process: ProcessCfg = field(default_factory=ProcessCfg)
+  foot_slip_weight: float = 1.0
+  foot_contact_height: float = 0.05
+  foot_contact_speed: float = 0.2
   batch: int = 256
   iterations: int = 30_000
   learning_rate: float = 2e-4
@@ -68,7 +79,18 @@ def train(cfg: TrainCfg) -> Path:
   torch.manual_seed(cfg.seed)
   columns = cfg.history + cfg.max_steps + cfg.future - 1
   corpus = load_motions(cfg.motions, columns, cfg.device, "all", cfg.holdout)
-  windows = Windows(corpus, cfg.history, cfg.future, cfg.min_steps, cfg.max_steps)
+  windows = Windows(
+    corpus,
+    cfg.history,
+    cfg.future,
+    cfg.min_steps,
+    cfg.max_steps,
+    cfg.time_scale_range,
+    cfg.start_xy_range,
+    cfg.start_joint_range,
+    cfg.start_perturb_probability,
+    cfg.mirror_probability,
+  )
   print(
     f"[diffusion] {corpus.num_windows} windows from {len(corpus.names)} "
     f"kinematic clips at {corpus.fps:g} Hz"
@@ -80,6 +102,14 @@ def train(cfg: TrainCfg) -> Path:
 
   model = Denoiser(windows.layout.width, windows.columns, cfg.model).to(cfg.device)
   process = Diffusion(model, cfg.process).to(cfg.device)
+  foot_slip = G1FootSlipLoss(
+    normalizer,
+    windows.layout,
+    corpus.fps,
+    cfg.foot_slip_weight,
+    cfg.foot_contact_height,
+    cfg.foot_contact_speed,
+  ).to(cfg.device)
   optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate)
   ema = {name: value.detach().clone() for name, value in model.state_dict().items()}
   cfg.output.mkdir(parents=True, exist_ok=True)
@@ -116,7 +146,7 @@ def train(cfg: TrainCfg) -> Path:
     known[indexes, rows[:, None] + offsets] = True
     time = torch.arange(windows.columns, device=cfg.device)[None]
     valid = time <= rows[:, None] + cfg.future - 1
-    loss = process.loss(clean, known, valid)
+    loss = process.loss(clean, known, valid, foot_slip)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

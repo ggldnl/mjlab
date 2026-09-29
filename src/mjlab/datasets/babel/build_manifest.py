@@ -20,20 +20,84 @@ import tyro
 
 import mjlab
 
-DEFAULT_SUBSETS = ("ACCAD", "Transitions_mocap", "MPI_HDM05")
+DEFAULT_SUBSETS = ("BMLrub", "CMU", "KIT", "ACCAD")
 DEFAULT_ALLOW = (
   "walk",
   "run",
   "jog",
-  "stand",
   "turn",
   "step",
-  "crouch",
-  "squat",
+)
+DEFAULT_CONTEXT = (
   "transition",
+  "stand",
   "stop",
+  "forward movement",
+  "backwards movement",
+  "sideways movement",
+  "circular movement",
+  "face direction",
+  "look",
+  "arm movements",
+  "hand movements",
+  "head movements",
+  "leg movements",
+  "foot movements",
+  "feet movements",
+  "waist movements",
 )
 DEFAULT_DENY = (
+  "unknown",
+  "noisy labels",
+  "misc. action",
+  "misc. activities",
+  "misc. abstract action",
+  "interact with/use object",
+  "interact with object",
+  "use object",
+  "touch object",
+  "take/pick something up",
+  "pick something up",
+  "place something",
+  "grasp object",
+  "move something",
+  "lift something",
+  "clean something",
+  "open something",
+  "close something",
+  "press something",
+  "give something",
+  "release something",
+  "object",
+  "chair",
+  "couch",
+  "bench",
+  "table",
+  "shelf",
+  "box",
+  "ball",
+  "tool",
+  "rope",
+  "rail",
+  "wall",
+  "support",
+  "sit",
+  "lie",
+  "kneel",
+  "crouch",
+  "squat",
+  "lunge",
+  "yoga",
+  "exercise",
+  "training",
+  "sport",
+  "pose",
+  "t pose",
+  "a pose",
+  "balance",
+  "stretch",
+  "bend",
+  "lean",
   "jump",
   "hop",
   "leap",
@@ -47,7 +111,6 @@ DEFAULT_DENY = (
   "punch",
   "hit",
   "fall",
-  "lie",
   "crawl",
   "dance",
   "trip",
@@ -83,11 +146,12 @@ def _categories(label: dict[str, Any]) -> tuple[str, ...]:
 
 def _contains_denied_motion(text: str, denied: set[str]) -> bool:
   normalized = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
-  tokens = normalized.split()
-  return any(
-    term in normalized if " " in term else any(term in token for token in tokens)
-    for term in denied
-  )
+  for term in denied:
+    normalized_term = re.sub(r"[^a-z0-9]+", " ", term).strip()
+    pattern = re.escape(normalized_term).replace(r"\ ", r"\s+")
+    if re.search(rf"\b{pattern}\w*\b", normalized):
+      return True
+  return False
 
 
 def _labels(record: dict[str, Any]) -> list[tuple[dict[str, Any], float, float]]:
@@ -116,10 +180,11 @@ def _labels(record: dict[str, Any]) -> list[tuple[dict[str, Any], float, float]]
 def _safe_regions(
   labels: list[tuple[dict[str, Any], float, float]],
   allowed: set[str] | None,
+  context: set[str],
   denied: set[str],
   min_duration_s: float,
 ) -> list[tuple[float, float, list[dict[str, Any]]]]:
-  """Merge allowed intervals and remove intervals with denied motion."""
+  """Merge locomotion intervals after removing blocked and unknown motion."""
   safe = []
   blocked = []
   for label, start, end in labels:
@@ -133,8 +198,12 @@ def _safe_regions(
     )
     if _contains_denied_motion(description, denied):
       blocked.append((start, end))
-    elif allowed is None or not allowed.isdisjoint(categories):
+    elif allowed is None:
       safe.append((label, start, end))
+    elif not allowed.isdisjoint(categories) and categories.issubset(allowed | context):
+      safe.append((label, start, end))
+    elif not categories or not categories.issubset(context):
+      blocked.append((start, end))
 
   merged: list[list[float]] = []
   for _, start, end in sorted(safe, key=lambda item: (item[1], item[2])):
@@ -173,6 +242,7 @@ def build_manifest(
   annotations_dir: Path,
   subsets: tuple[str, ...] = DEFAULT_SUBSETS,
   allow: tuple[str, ...] = DEFAULT_ALLOW,
+  context: tuple[str, ...] = DEFAULT_CONTEXT,
   deny: tuple[str, ...] = DEFAULT_DENY,
   min_duration_s: float = 1.0,
   allow_all: bool = False,
@@ -185,6 +255,7 @@ def build_manifest(
     raise ValueError("min_duration_s must be nonnegative")
   selected_subsets = {BABEL_SUBSET_NAMES.get(value, value) for value in subsets}
   allowed = None if allow_all else _normalized(allow)
+  safe_context = _normalized(context)
   denied = _normalized(deny)
   if allowed is not None and not allowed:
     raise ValueError("allow must contain at least one category")
@@ -209,10 +280,11 @@ def build_manifest(
       if subset != raw_subset:
         source = subset + separator + relative
       labels = _labels(raw_record)
-      if _contains_denied_motion(source, denied):
+      source_description = re.sub(r"_poses(?=\.npz$)", "", source)
+      if _contains_denied_motion(source_description, denied):
         continue
       for index, (start, end, contributors) in enumerate(
-        _safe_regions(labels, allowed, denied, min_duration_s)
+        _safe_regions(labels, allowed, safe_context, denied, min_duration_s)
       ):
         categories = sorted(
           {category for label in contributors for category in _categories(label)}
@@ -303,13 +375,14 @@ def main(
   output_path: Path = Path("data/babel/manifest.jsonl"),
   subsets: tuple[str, ...] = DEFAULT_SUBSETS,
   allow: tuple[str, ...] = DEFAULT_ALLOW,
+  context: tuple[str, ...] = DEFAULT_CONTEXT,
   deny: tuple[str, ...] = DEFAULT_DENY,
   min_duration_s: float = 1.0,
   allow_all: bool = False,
 ) -> None:
   """Build a BABEL manifest without downloading or retargeting motion files."""
   entries = build_manifest(
-    annotations_dir, subsets, allow, deny, min_duration_s, allow_all
+    annotations_dir, subsets, allow, context, deny, min_duration_s, allow_all
   )
   write_manifest(entries, output_path)
   _print_summary(entries, output_path)

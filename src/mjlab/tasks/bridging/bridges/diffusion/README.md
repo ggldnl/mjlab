@@ -1,248 +1,114 @@
 # Kinematic diffusion bridge
 
-The bridge has two independent stages:
+The bridge has two stages:
 
-1. The planner inpaints a kinematic G1 trajectory between full boundary states
-   A and B. It copies their poses and velocities exactly and may use the motion
-   immediately before A and after B as boundary context.
-2. A universal tracker realizes that trajectory under physics and is explicitly
-   scored on matching B's root pose, joint pose, root velocities, and joint
-   velocities at the requested tick.
+1. The planner generates a kinematic trajectory from A to B.
+2. The universal tracker executes that trajectory in MuJoCo.
 
-Both stages train from the retargeted AMASS motions selected by BABEL under
-`data/babel_retargeted/unitree_g1`. The planner learns demonstrated inpainting
-windows. The tracker executes those kinematic windows under physics.
+Both stages use the G1 retargeted BABEL data under
+`data/babel_retargeted/unitree_g1_locomotion_v1`. The planner uses contiguous kinematic
+windows. The tracker learns to follow those windows and their recorded post-B
+continuation with physics randomization and perturbations.
+
+Inspect the held-out trajectories exactly as the tracker reads them:
+
+```sh
+uv run python -m mjlab.tasks.bridging.bridges.diffusion.dataset.view
+```
+
+Blue is the stored trajectory, red is its pre-correction height, and the two
+colored lines connect the recorded root and sole samples without interpolation.
 
 ## Package layout
 
 ```text
 diffusion/
-├── cotrain.py           alternating planner and tracker training task
-├── dataset/
-│   └── motions.py       BABEL loading, encoding, and windows
-├── planner/
-│   ├── model.py         temporal denoiser
-│   ├── process.py       masked diffusion process
-│   ├── bridge.py        checkpoint loading and A to B generation
-│   └── train.py         planner training entry point
-├── execution/
-│   ├── tracker.py       TextOp UniTracker observation and action adapter
-│   ├── protomotions.py  G1 BONES deployment adapter and download helper
-│   ├── learned_tracker.py learned tracker deployment adapter
-│   └── runtime.py       plan execution and handoff gate
-├── tracker/
-│   ├── command.py       kinematic clip windows and hybrid path reference
-│   ├── actions.py       next-reference joint targets plus learned residual
-│   ├── env_cfg.py       observations, physics randomization, rewards, metrics
-│   └── evaluate.py      held-out exact-arrival benchmark
-└── evaluation/
-    ├── kinematic.py     held-out plan errors
-    └── physics.py       UniTracker ceiling and simulated arrival errors
+├── dataset/motions.py       BABEL loading and window sampling
+├── planner/                 diffusion model, checkpoints, and pretraining
+├── tracker/                 universal tracker task and evaluation
+├── execution/               runtime planner and tracker adapters
+├── evaluation/kinematic.py  held-out planner evaluation
+└── train.py                 frozen-tracker planner improvement
 ```
 
-The interactive programs live with the other experiments:
-
-- `tests/experiments/unitracker_viewer.py` shows the physical robot, reference
-  ghost, root path, and live tracking errors on a retargeted clip.
-- `tests/experiments/diffusion_plan_viewer.py` shows the generated kinematic
-  walk to bridge to kick sequence without bridge physics.
-
-## Workflow
-
-All commands run from the repository root.
-
-### 1. Train both stages
-
-The co-training task starts without checkpoints. Cycle zero trains the planner
-on contiguous BABEL windows and the tracker on BABEL references. Later cycles
-ramp planner-generated cross-clip routes into tracker training. For each pair,
-the planner produces several candidates. MuJoCo forward kinematics scores joint
-and root rates, velocity consistency, joint limits, penetration, non-foot
-contacts, planted-foot sliding, and unreasonable foot reach. The best plausible
-candidate is used for reward-weighted diffusion self-training and as a tracker
-reference. The generated-data weight is scaled by the share of candidates that
-pass the threshold, so a small accepted pool cannot dominate either stage.
-Tracker performance is not part of the planner score.
+## Train the tracker
 
 ```sh
-uv run train Mjlab-G1-Diffusion-CoTrain
+uv run train Mjlab-G1-Diffusion-Universal-Tracker
 ```
 
-The run logs under `logs/rsl_rl/g1_diffusion_cotrain`. Every `model_N.pt`
-contains the PPO tracker, diffusion planner, both optimizers, curriculum cycle,
-and the scored candidate batch needed by the next cycle. The same checkpoint
-can be passed to planner and tracker runtime loaders.
+Checkpoints are written to
+`logs/rsl_rl/g1_diffusion_universal_tracker/<run>/`.
 
-Warm starts are optional and independent:
+Evaluate a checkpoint on held-out BABEL clips:
 
 ```sh
-uv run train Mjlab-G1-Diffusion-CoTrain \
-  --agent.planner-checkpoint logs/rsl_rl/<planner-run>/model_30000.pt \
-  --agent.tracker-checkpoint logs/rsl_rl/<tracker-run>/model_30000.pt
+uv run python -m mjlab.tasks.bridging.bridges.diffusion.tracker.evaluate --checkpoint logs/rsl_rl/g1_diffusion_universal_tracker/<run>/model_2999.pt
 ```
 
-The old `diffusion_cotrain` package, outcome critic, and rollout replay are not
-used.
+## Pretrain the planner
 
-### 2. Train the universal tracker separately
+Training rescales each demonstrated duration by 0.95 to 1.05 and scales its
+velocities consistently. Half of the windows receive a bounded start-state
+perturbation that smoothly vanishes at B, and half are mirrored left to right.
+The ranges are exposed as command-line options.
 
 ```sh
-uv run train Mjlab-G1-Diffusion-Universal-Tracker \
-  --env.scene.num-envs 4096
+uv run python -m mjlab.tasks.bridging.bridges.diffusion.planner.train
 ```
 
-There is one training run with all mechanisms enabled. The actor receives four
-physical state frames, three actions, the first five future reference frames
-densely, five longer sparse frames, exact B error, phase, and time remaining.
-At a reset the state history is the recorded physical continuation ending at A;
-after that it rolls forward with the simulated robot. Future references continue
-past B rather than freezing there, which makes a nonzero target velocity
-consistent with the commanded motion. The actor outputs a residual around the
-next reference joint pose. Rewards combine route tracking, a phase-ramped
-endpoint objective, and exact deadline scoring.
+Checkpoints are written to
+`logs/rsl_rl/g1_kinematic_diffusion_planner/<run>/`.
 
-This task uses the same BABEL window loader and tracker implementation as
-co-training. It remains useful for tracker-only experiments.
-
-Watch held-out windows with the moving blue reference and orange endpoint:
+Evaluate a checkpoint on held-out contiguous BABEL windows:
 
 ```sh
-uv run play Mjlab-G1-Diffusion-Universal-Tracker \
-  --checkpoint-file \
-  logs/rsl_rl/g1_diffusion_universal_tracker/<run>/model_30000.pt \
-  --viewer viser
+uv run python -m mjlab.tasks.bridging.bridges.diffusion.evaluation.kinematic --checkpoint logs/rsl_rl/g1_kinematic_diffusion_planner/<run>/model_30000.pt
 ```
 
-Quantify exact arrival on held-out BABEL windows:
+Resume a tracker checkpoint with:
+
+```powershell
+uv run train Mjlab-G1-Diffusion-Universal-Tracker --agent.resume True --agent.load-run '^2026-09-28_22-50-18_overnight$' --agent.load-checkpoint '^model_2999\.pt$' --agent.max-iterations 3000 --agent.run-name post-b
+```
+
+## Improve the planner with a frozen tracker
+
+Run planner improvement with:
 
 ```sh
-uv run python -m \
-  mjlab.tasks.bridging.bridges.diffusion.tracker.evaluate \
-  --checkpoint \
-  logs/rsl_rl/g1_diffusion_universal_tracker/<run>/model_30000.pt \
-  --sources "('dance1_subject1',)"
+uv run train Mjlab-G1-Diffusion-Planner-Improvement --agent.max-iterations 12 --agent.tracker-checkpoint logs/rsl_rl/g1_diffusion_universal_tracker/<run>/model_5999.pt --agent.planner-checkpoint logs/rsl_rl/g1_kinematic_diffusion_planner/<run>/model_30000.pt
 ```
 
-The report includes survival, strict arrival at the downstream handoff
-tolerances, 2x/4x/8x pass rates, and per-channel p50/p90/p95/max errors.
+The tracker checkpoint is required and remains frozen. The planner checkpoint is
+optional; without it, the task first pretrains the planner for 30,000 updates.
 
-### 3. Compare the off-the-shelf trackers
+No rollout dataset is needed. Each condition contains pre-A and post-B sequences
+sampled from different contiguous BABEL clips. B is placed relative to A and the
+duration is sampled using velocity and acceleration limits measured from BABEL.
+The planner generates candidates, hard kinematic gates reject invalid paths, and
+the frozen tracker executes every survivor.
 
-Download the released ONNX checkpoint if it is missing:
+Successful executions and stable misses relabelled to their achieved endpoint are
+added to a bounded replay and used to continue planner training. Failed paths are
+kept only as diagnostics. The tracker is never updated by this task.
+
+Output is written to
+`logs/rsl_rl/g1_diffusion_planner_improvement/<run>/`. `model_N.pt` means that N
+planner-improvement cycles completed. One cycle evaluates a candidate batch and
+runs 1,000 planner optimizer updates.
+
+## Run walk to kick
+
+Use a unified planner-improvement checkpoint:
 
 ```sh
-uv run python -m mjlab.tasks.unitracker.scripts.download_checkpoint
+uv run python -m mjlab.tasks.bridging.config.g1.tests.transitions.walk2kick --bridge diffusion --bridge-checkpoint logs/rsl_rl/g1_diffusion_planner_improvement/<run>/model_30.pt
 ```
 
-Inspect tracking on the same motion domain used by the planner:
+The unified checkpoint contains the improved planner and its frozen tracker. To
+test independently pretrained stages instead, pass both checkpoints:
 
 ```sh
-uv run python -m \
-  mjlab.tasks.bridging.tests.experiments.unitracker_viewer
+uv run python -m mjlab.tasks.bridging.config.g1.tests.transitions.walk2kick --bridge diffusion --bridge-checkpoint logs/rsl_rl/g1_kinematic_diffusion_planner/<run>/model_30000.pt --tracker-checkpoint logs/rsl_rl/g1_diffusion_universal_tracker/<run>/model_2999.pt
 ```
-
-The solid robot should remain close to the reference ghost. The live error line
-uses the same channels as bridge handoff. If this fails badly, fix or fine-tune
-the tracker before spending compute on the diffusion model.
-
-The released checkpoint uses the pelvis as its motion anchor. This differs from
-the `torso_link` value in TextOp's public training configuration but agrees with
-its deployment code and is required for stable tracking. The previous-action
-observation must also start at zero after reset.
-
-The orange curve is the complete pelvis path for the clip, not an error marker.
-It is hidden by default because long clips wind over the same area. Pass
-`--show-path` to display it.
-
-Measure every tracking channel over a complete clip and save the time series:
-
-```sh
-uv run python -m \
-  mjlab.tasks.bridging.tests.experiments.unitracker_evaluate \
-  --motion data/babel_retargeted/unitree_g1/val/<category>/<clip>.npz
-```
-
-The table reports mean, percentiles, maximum, tolerance pass rate, and the worst
-frame for each handoff channel. The NPZ is written to
-`data/unitracker/evaluation/` for later tracker comparisons.
-
-Evaluate the official ProtoMotions G1 BONES deployment tracker on the same
-clip:
-
-```sh
-uv run python -m \
-  mjlab.tasks.bridging.bridges.diffusion.execution.protomotions
-
-uv run python -m \
-  mjlab.tasks.bridging.tests.experiments.protomotions_evaluate \
-  --motion data/babel_retargeted/unitree_g1/val/<category>/<clip>.npz
-```
-
-The adapter follows the checkpoint's published contract: torso orientation,
-pelvis-local angular velocity, `xyzw` quaternions, future offsets 1, 2, 4, and
-8, previous absolute PD-target feedback, 50 Hz control, and 1 kHz physics. Its
-NPZ is written to `data/protomotions/evaluation/`.
-
-### 4. Train the diffusion planner separately
-
-```sh
-uv run python -m \
-  mjlab.tasks.bridging.bridges.diffusion.planner.train
-```
-
-Checkpoints are written under
-`logs/rsl_rl/g1_kinematic_diffusion_bridge/<run>/`.
-
-### 5. Test held-out kinematic generation
-
-```sh
-uv run python -m \
-  mjlab.tasks.bridging.bridges.diffusion.evaluation.kinematic \
-  --checkpoint logs/rsl_rl/g1_kinematic_diffusion_bridge/<run>/model_30000.pt
-```
-
-`exact_boundary_rate` must be `1.0`. The remaining values measure the generated
-interior against the held-out demonstrated solution. They are useful regression
-metrics, not a requirement that diffusion reproduce the only demonstrated path.
-
-### 6. Inspect generated trajectories
-
-```sh
-uv run python -m \
-  mjlab.tasks.bridging.config.g1.tests.experiments.diffusion_plan_viewer \
-  --checkpoint logs/rsl_rl/g1_kinematic_diffusion_bridge/<run>/model_30000.pt
-```
-
-Use the Viser controls to change B, bridge duration, and the walk trigger, then
-regenerate. Look for foot sliding, penetration, discontinuities, and implausible
-root or joint motion.
-
-### 7. Measure physical execution
-
-```sh
-uv run python -m \
-  mjlab.tasks.bridging.bridges.diffusion.evaluation.physics \
-  --checkpoint logs/rsl_rl/g1_kinematic_diffusion_bridge/<run>/model_30000.pt
-```
-
-The first table is UniTracker on untouched held-out BABEL paths. This is the
-tracker ceiling. The second table is UniTracker on diffusion plans. Do not blame
-the planner when the first table already fails the terminal tolerances.
-
-### 8. Run the complete transition
-
-```sh
-uv run python -m \
-  mjlab.tasks.bridging.config.g1.tests.transitions.walk2kick \
-  --bridge diffusion \
-  --bridge-checkpoint logs/rsl_rl/g1_diffusion_cotrain/<run>/model_30.pt
-```
-
-A unified cotrain checkpoint supplies both planner and tracker. For separately
-trained stages, pass the planner with ``--bridge-checkpoint`` and the tracker
-with ``--tracker-checkpoint``.
-
-The planner is an inbetweener, not a reachability oracle. An arbitrary A and B
-can still be incompatible with the requested duration. Exact equality of the
-constructed endpoint does not imply that the simulated robot reached it; the
-physics evaluation and runtime capture gate keep those claims separate.

@@ -19,10 +19,10 @@ in this package has an entry point for.
             Cut from climb_24 at scale 1.0, the middle of the height band the parkour
             demo asks a climb to cover
 
-The approach walk is not in the clip. The controller drives the robot up to the box with
-the walk and hands over facing it, so the reference opens standing a quarter of a metre from
-the near face. What that hand-over cannot promise exactly is the angle, and
-``climb_env_cfg.APPROACH_YAW_RANGE`` is where that tolerance is set.
+No walking in. The reference opens standing upright with the box within arm's reach, leans
+onto the box edge with the feet planted, then climbs. The standing start and the lean are
+synthesized by the converter, because the source already has the hands on the box at its
+first frame. The start angle tolerance is climb_env_cfg.APPROACH_YAW_RANGE.
 
 Add a motion by adding a line to MOTIONS in dataset.py. It gets a task named after it and
 nothing here has to change.

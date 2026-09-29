@@ -44,7 +44,7 @@ class Window:
 WINDOWS = {
   "jump": Window(55, 110, 6),
   "kick": Window(95, 145, 6),
-  "climb": Window(30, 55, 1),
+  "climb": Window(27, 30, 1),
   "front_kick": Window(27, 60, 4),
   "punch_combo": Window(27, 55, 4),
   "pass": Window(27, 50, 1),

@@ -131,6 +131,10 @@ def deadline(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
   return tracker(env, command_name).deadline
 
 
+def route_done(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+  return tracker(env, command_name).route_done
+
+
 def fell_over(
   env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg, threshold: float = 0.7
 ) -> torch.Tensor:

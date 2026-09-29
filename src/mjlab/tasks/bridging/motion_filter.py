@@ -11,6 +11,70 @@ _G1_FOOT_BODY_IDS = (6, 12)
 _G1_FOOT_SITE = (0.04, 0.0, -0.037)
 
 
+def g1_foot_positions(body_pos: np.ndarray, body_quat: np.ndarray) -> np.ndarray:
+  """Return the two G1 sole sites in world coordinates."""
+  if body_pos.shape[1:] != (30, 3) or body_quat.shape[1:] != (30, 4):
+    raise ValueError("G1 foot positions require all 30 body poses in model order")
+  ankle_pos = body_pos[:, _G1_FOOT_BODY_IDS]
+  ankle_quat = body_quat[:, _G1_FOOT_BODY_IDS]
+  site = np.asarray(_G1_FOOT_SITE, dtype=np.float32)
+  vector = ankle_quat[..., 1:]
+  feet = (
+    ankle_pos
+    + site
+    + 2 * np.cross(vector, np.cross(vector, site) + ankle_quat[..., :1] * site)
+  )
+  if not np.isfinite(feet).all():
+    raise ValueError("Foot body poses contain nonfinite values")
+  return feet
+
+
+def align_g1_floor(
+  body_pos: np.ndarray,
+  body_quat: np.ndarray,
+  floor_quantile: float = 0.1,
+  max_offset: float = 0.05,
+  max_penetration: float = 0.03,
+  contact_height: float = 0.05,
+  min_contact_fraction: float = 0.2,
+) -> tuple[np.ndarray, dict[str, float | str]]:
+  """Align a consistent floor bias and report clips that need rejection."""
+  if not 0.0 < floor_quantile < 0.5:
+    raise ValueError("floor_quantile must lie between zero and 0.5")
+  if min(max_offset, max_penetration, contact_height, min_contact_fraction) < 0:
+    raise ValueError("floor QA limits must be nonnegative")
+
+  lower_sole = g1_foot_positions(body_pos, body_quat)[..., 2].min(axis=1)
+  if not len(lower_sole):
+    raise ValueError("floor alignment requires at least one frame")
+  floor = float(np.quantile(lower_sole, floor_quantile))
+  offset = max(0.0, -floor)
+  aligned = lower_sole + offset
+  minimum = float(aligned.min())
+  contact_fraction = float(np.mean(aligned <= contact_height))
+  reason = ""
+  if offset > max_offset:
+    reason = "floor_offset_too_large"
+  elif minimum < -max_penetration:
+    reason = "isolated_foot_penetration"
+  elif contact_fraction < min_contact_fraction:
+    reason = "insufficient_ground_contact"
+
+  metrics: dict[str, float | str] = {
+    "status": "rejected" if reason else "accepted",
+    "reason": reason,
+    "floor_z": floor,
+    "offset": offset,
+    "minimum_sole_z": minimum,
+    "contact_fraction": contact_fraction,
+  }
+  if reason or offset == 0.0:
+    return body_pos, metrics
+  corrected = body_pos.copy()
+  corrected[..., 2] += offset
+  return corrected, metrics
+
+
 @dataclass(frozen=True)
 class MotionFilterCfg:
   """Optional limits applied to retargeted G1 kinematics."""
@@ -71,17 +135,7 @@ def filter_window_starts(
   if len(state) < columns:
     return np.empty(0, dtype=np.int64), {}
 
-  ankle_pos = body_pos[:, _G1_FOOT_BODY_IDS]
-  ankle_quat = body_quat[:, _G1_FOOT_BODY_IDS]
-  site = np.asarray(_G1_FOOT_SITE, dtype=np.float32)
-  vector = ankle_quat[..., 1:]
-  feet = (
-    ankle_pos
-    + site
-    + 2 * np.cross(vector, np.cross(vector, site) + ankle_quat[..., :1] * site)
-  )
-  if not np.isfinite(feet).all():
-    raise ValueError("Foot body poses contain nonfinite values")
+  feet = g1_foot_positions(body_pos, body_quat)
   floor = float(np.quantile(feet[..., 2].min(axis=1), 0.02))
   foot_height = feet[..., 2] - floor
   bad_frames = {

@@ -8,6 +8,7 @@ Run:
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections import defaultdict
@@ -22,6 +23,7 @@ from mjlab.datasets.babel.build_manifest import read_manifest
 from mjlab.datasets.babel.materialize import source_path
 from mjlab.retargeting.gmr import retarget
 from mjlab.scripts import csv_to_npz
+from mjlab.tasks.bridging.motion_filter import align_g1_floor
 
 
 def _token(value: Any) -> str:
@@ -50,9 +52,41 @@ def _line_range(entry: dict[str, Any], fps: float, frames: int) -> tuple[int, in
   return first + 1, stop
 
 
-def _add_metadata(path: Path, entry: dict[str, Any]) -> None:
-  with np.load(path) as motion:
+def _add_metadata(path: Path, entry: dict[str, Any]) -> dict[str, Any]:
+  with np.load(path, allow_pickle=False) as motion:
     values = {name: motion[name] for name in motion.files}
+  qa: dict[str, Any] = {
+    "path": path.as_posix(),
+    "source": entry["source"],
+    "split": entry["split"],
+    "start_s": float(entry["start_s"]),
+    "end_s": float(entry["end_s"]),
+    "status": "accepted",
+    "reason": "",
+  }
+  if (
+    str(values.get("robot", "")) == "unitree_g1"
+    and {
+      "body_pos_w",
+      "body_quat_w",
+    }
+    <= values.keys()
+  ):
+    values["body_pos_w"], floor = align_g1_floor(
+      values["body_pos_w"], values["body_quat_w"]
+    )
+    qa.update(floor)
+    if floor["status"] == "rejected":
+      path.unlink(missing_ok=True)
+      return qa
+    values["ground_z_offset"] = np.asarray(floor["offset"], dtype=np.float32)
+    values["ground_floor_z"] = np.asarray(floor["floor_z"], dtype=np.float32)
+    values["ground_minimum_sole_z"] = np.asarray(
+      floor["minimum_sole_z"], dtype=np.float32
+    )
+    values["ground_contact_fraction"] = np.asarray(
+      floor["contact_fraction"], dtype=np.float32
+    )
   values.update(
     babel_sid=np.asarray(entry["babel_sid"]),
     babel_segment_id=np.asarray(entry.get("segment_id") or ""),
@@ -68,6 +102,7 @@ def _add_metadata(path: Path, entry: dict[str, Any]) -> None:
   temporary = path.with_suffix(".tmp.npz")
   np.savez(temporary, **values)
   temporary.replace(path)
+  return qa
 
 
 def retarget_entries(
@@ -84,8 +119,9 @@ def retarget_entries(
   overwrite: bool = False,
   limit: int | None = None,
   verbose: bool = False,
-) -> tuple[int, int]:
-  """Retarget manifest entries. Returns converted and skipped counts."""
+  qa_report: Path | None = None,
+) -> tuple[int, int, int]:
+  """Retarget manifest entries. Returns accepted, skipped, and rejected counts."""
   if limit is not None and limit < 1:
     raise ValueError("limit must be positive")
   entries = read_manifest(manifest_path)
@@ -106,7 +142,8 @@ def retarget_entries(
     by_source[str(entry["source"])].append(entry)
 
   joint_names = csv_to_npz.robot_joint_names(robot)
-  converted = 0
+  converted = rejected = 0
+  qa_rows: list[dict[str, Any]] = []
   for source, source_entries in sorted(by_source.items()):
     smplx_file = input_dir / source_path(source)
     if not smplx_file.is_file():
@@ -148,14 +185,24 @@ def retarget_entries(
         upload_to_wandb=False,
         line_range=_line_range(entry, fps, frames),
       )
-      _add_metadata(destination, entry)
-      converted += 1
+      qa = _add_metadata(destination, entry)
+      qa_rows.append(qa)
+      if qa["status"] == "accepted":
+        converted += 1
+      else:
+        rejected += 1
 
     if not keep_csv:
       csv_path.unlink(missing_ok=True)
       fps_path.unlink(missing_ok=True)
 
-  return converted, skipped
+  if qa_report is not None:
+    qa_report.parent.mkdir(parents=True, exist_ok=True)
+    qa_report.write_text(
+      "".join(json.dumps(row, sort_keys=True) + "\n" for row in qa_rows),
+      encoding="utf-8",
+    )
+  return converted, skipped, rejected
 
 
 def main(
@@ -172,10 +219,12 @@ def main(
   overwrite: bool = False,
   limit: int | None = None,
   verbose: bool = False,
+  qa_report: Path | None = None,
 ) -> None:
   """Retarget all selected BABEL regions, reusing one GMR solve per source."""
   output_dir = output_dir or Path("data/babel_retargeted") / robot
-  converted, skipped = retarget_entries(
+  qa_report = qa_report or output_dir / "qa.jsonl"
+  converted, skipped, rejected = retarget_entries(
     manifest_path,
     input_dir,
     output_dir,
@@ -189,8 +238,12 @@ def main(
     overwrite,
     limit,
     verbose,
+    qa_report,
   )
-  print(f"Retargeted {converted} BABEL segments to {robot}; skipped {skipped}")
+  print(
+    f"Retargeted {converted} BABEL segments to {robot}; "
+    f"rejected {rejected}; skipped {skipped}; QA: {qa_report}"
+  )
 
 
 if __name__ == "__main__":
