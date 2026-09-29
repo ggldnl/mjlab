@@ -28,12 +28,23 @@ Changed
 - Universal tracker training now follows the recorded post-B continuation used by planner
   evaluation, and keeps a uniformly weighted route objective through that continuation.
 
+- Planner and universal-tracker kinematic windows now share one validated clip loader and
+  contiguous-window index. Frames rejected for falls, flight, penetration, invalid values,
+  or implausible root motion split the source clip for both consumers, so neither can draw a
+  window across the same rejected interval.
+
 - Moved the climb selector window to frames 45 through 50, selecting the more upright,
   two-foot-loaded frame 48 instead of the dynamic single-support frame 42. The entry
   tolerance tool now uses the current lower/upper-body channel names again.
 
 Added
 ^^^^^
+
+- Added the original LAFAN BVH dataset as a parallel bridge-data source, with
+  locomotion-theme selection, the official subject-5 validation split, GMR
+  retargeting, and shared floor QA. Diffusion planner, tracker, and planner-improvement
+  training now select G1 or T1 explicitly and reject data or checkpoints for the
+  wrong robot. Dataset retargeting uses the same ``g1`` and ``t1`` CLI names.
 
 - Added a BABEL trajectory viewer that overlays stored and pre-correction heights,
   draws sample-preserving root and sole paths, and reports per-clip ground-height

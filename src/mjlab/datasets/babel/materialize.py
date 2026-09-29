@@ -39,19 +39,26 @@ def _member_candidates(source: str, subset: str) -> tuple[str, ...]:
   return tuple(sorted(variants))
 
 
+def _member_index(
+  members: list[tarfile.TarInfo],
+) -> dict[str, set[tarfile.TarInfo]]:
+  """Index every path suffix once for fast manifest lookup."""
+  index: defaultdict[str, set[tarfile.TarInfo]] = defaultdict(set)
+  for member in members:
+    if not member.isfile():
+      continue
+    parts = PurePosixPath(member.name.replace("\\", "/").lstrip("./")).parts
+    for start in range(len(parts)):
+      index[PurePosixPath(*parts[start:]).as_posix()].add(member)
+  return dict(index)
+
+
 def _find_member(
-  members: list[tarfile.TarInfo], source: str, subset: str
+  members: dict[str, set[tarfile.TarInfo]], source: str, subset: str
 ) -> tarfile.TarInfo:
   candidates = _member_candidates(source, subset)
   matches = {
-    member
-    for member in members
-    if member.isfile()
-    and any(
-      member.name.replace("\\", "/").lstrip("./") == candidate
-      or member.name.replace("\\", "/").lstrip("./").endswith("/" + candidate)
-      for candidate in candidates
-    )
+    member for candidate in candidates for member in members.get(candidate, ())
   }
   if len(matches) != 1:
     detail = "not found" if not matches else f"matched {len(matches)} archive members"
@@ -94,13 +101,16 @@ def materialize(
   for subset, sources in sorted(sources_by_subset.items()):
     archive_path = archive_paths[subset]
     with tarfile.open(archive_path, "r:bz2") as archive:
-      members = archive.getmembers()
+      members = _member_index(archive.getmembers())
+      pending: list[tuple[tarfile.TarInfo, Path]] = []
       for source in sorted(sources):
         destination = output_dir / source_path(source)
         if destination.is_file() and not overwrite:
           skipped += 1
           continue
         member = _find_member(members, source, subset)
+        pending.append((member, destination))
+      for member, destination in sorted(pending, key=lambda item: item[0].offset_data):
         stream = archive.extractfile(member)
         if stream is None:
           raise FileNotFoundError(f"Cannot read {member.name} from {archive_path}")

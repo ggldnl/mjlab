@@ -2,8 +2,8 @@
 
 Run:
 
-  uv run python -m mjlab.retargeting.gmr.retarget_manifest --robot unitree_g1
-  uv run python -m mjlab.retargeting.gmr.retarget_manifest --robot booster_t1
+  uv run python -m mjlab.retargeting.gmr.retarget_manifest --robot g1
+  uv run python -m mjlab.retargeting.gmr.retarget_manifest --robot t1
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from mjlab.datasets.babel.build_manifest import read_manifest
 from mjlab.datasets.babel.materialize import source_path
 from mjlab.retargeting.gmr import retarget
 from mjlab.scripts import csv_to_npz
-from mjlab.tasks.bridging.motion_filter import align_g1_floor
+from mjlab.tasks.bridging.config import RobotAlias, get_robot
 
 
 def _token(value: Any) -> str:
@@ -53,8 +53,6 @@ def _line_range(entry: dict[str, Any], fps: float, frames: int) -> tuple[int, in
 
 
 def _add_metadata(path: Path, entry: dict[str, Any]) -> dict[str, Any]:
-  with np.load(path, allow_pickle=False) as motion:
-    values = {name: motion[name] for name in motion.files}
   qa: dict[str, Any] = {
     "path": path.as_posix(),
     "source": entry["source"],
@@ -64,30 +62,7 @@ def _add_metadata(path: Path, entry: dict[str, Any]) -> dict[str, Any]:
     "status": "accepted",
     "reason": "",
   }
-  if (
-    str(values.get("robot", "")) == "unitree_g1"
-    and {
-      "body_pos_w",
-      "body_quat_w",
-    }
-    <= values.keys()
-  ):
-    values["body_pos_w"], floor = align_g1_floor(
-      values["body_pos_w"], values["body_quat_w"]
-    )
-    qa.update(floor)
-    if floor["status"] == "rejected":
-      path.unlink(missing_ok=True)
-      return qa
-    values["ground_z_offset"] = np.asarray(floor["offset"], dtype=np.float32)
-    values["ground_floor_z"] = np.asarray(floor["floor_z"], dtype=np.float32)
-    values["ground_minimum_sole_z"] = np.asarray(
-      floor["minimum_sole_z"], dtype=np.float32
-    )
-    values["ground_contact_fraction"] = np.asarray(
-      floor["contact_fraction"], dtype=np.float32
-    )
-  values.update(
+  metadata = dict(
     babel_sid=np.asarray(entry["babel_sid"]),
     babel_segment_id=np.asarray(entry.get("segment_id") or ""),
     babel_segment_ids=np.asarray(entry.get("segment_ids", [])),
@@ -99,9 +74,7 @@ def _add_metadata(path: Path, entry: dict[str, Any]) -> dict[str, Any]:
     babel_label=np.asarray(entry.get("label") or ""),
     babel_labels=np.asarray(entry.get("labels", [])),
   )
-  temporary = path.with_suffix(".tmp.npz")
-  np.savez(temporary, **values)
-  temporary.replace(path)
+  qa.update(retarget.finalize_motion(path, metadata))
   return qa
 
 
@@ -110,7 +83,7 @@ def retarget_entries(
   input_dir: Path,
   output_dir: Path,
   smplx_dir: Path,
-  robot: csv_to_npz.RobotName,
+  robot: RobotAlias,
   retarget_fps: float = retarget.RETARGET_FPS,
   output_fps: float = 50.0,
   device: str = "cuda:0",
@@ -141,7 +114,8 @@ def retarget_entries(
   for entry in pending:
     by_source[str(entry["source"])].append(entry)
 
-  joint_names = csv_to_npz.robot_joint_names(robot)
+  target_robot = get_robot(robot).robot_name
+  joint_names = csv_to_npz.robot_joint_names(target_robot)
   converted = rejected = 0
   qa_rows: list[dict[str, Any]] = []
   for source, source_entries in sorted(by_source.items()):
@@ -161,7 +135,7 @@ def retarget_entries(
         smplx_file,
         csv_path,
         smplx_dir,
-        robot,
+        target_robot,
         joint_names,
         retarget_fps,
         verbose,
@@ -176,7 +150,7 @@ def retarget_entries(
       csv_to_npz.main(
         input_file=str(csv_path),
         output_name=destination.stem,
-        robot=robot,
+        robot=target_robot,
         output_dir=destination.parent,
         input_fps=fps,
         output_fps=output_fps,
@@ -210,7 +184,7 @@ def main(
   input_dir: Path = Path("data/amass_babel"),
   output_dir: Path | None = None,
   smplx_dir: Path = retarget.SMPLX_DIR,
-  robot: csv_to_npz.RobotName = "unitree_g1",
+  robot: RobotAlias = "g1",
   retarget_fps: float = retarget.RETARGET_FPS,
   output_fps: float = 50.0,
   device: str = "cuda:0",
@@ -222,7 +196,9 @@ def main(
   qa_report: Path | None = None,
 ) -> None:
   """Retarget all selected BABEL regions, reusing one GMR solve per source."""
-  output_dir = output_dir or Path("data/babel_retargeted") / robot
+  selected = get_robot(robot)
+  target_robot = selected.robot_name
+  output_dir = output_dir or Path("data/babel_retargeted") / selected.babel_dataset
   qa_report = qa_report or output_dir / "qa.jsonl"
   converted, skipped, rejected = retarget_entries(
     manifest_path,
@@ -241,7 +217,7 @@ def main(
     qa_report,
   )
   print(
-    f"Retargeted {converted} BABEL segments to {robot}; "
+    f"Retargeted {converted} BABEL segments to {robot} ({target_robot}); "
     f"rejected {rejected}; skipped {skipped}; QA: {qa_report}"
   )
 

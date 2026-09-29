@@ -67,6 +67,7 @@ from tqdm import tqdm
 
 import mjlab
 from mjlab.scripts import csv_to_npz
+from mjlab.tasks.bridging.motion_filter import align_robot_floor
 
 SMPLX_DIR = Path("data") / "body_models"
 """Holds the SMPL-X models. smplx.create looks for <smplx-dir>/smplx/SMPLX_<GENDER>.npz"""
@@ -95,6 +96,16 @@ def _import_gmr() -> tuple[Any, Any, Any]:
     smpl.load_smplx_file,
     smpl.get_smplx_data_offline_fast,
   )
+
+
+def _import_bvh_gmr() -> tuple[Any, Any]:
+  """Import GMR's LAFAN reader only when BVH retargeting is requested."""
+  try:
+    gmr = import_module("general_motion_retargeting")
+    lafan = import_module("general_motion_retargeting.utils.lafan1")
+  except ImportError as exc:
+    raise SystemExit(f"{INSTALL_HINT}\n\nImport failed with: {exc}") from exc
+  return gmr.GeneralMotionRetargeting, lafan.load_bvh_file
 
 
 def _qpos_addresses(model: Any, joint_names: tuple[str, ...]) -> list[int]:
@@ -169,6 +180,65 @@ def retarget_clip(
   np.savetxt(output_csv, rows, delimiter=",")
   print(f"  {len(frames)} frames @ {fps:g} fps -> {output_csv}")
   return float(fps)
+
+
+def retarget_bvh_clip(
+  bvh_file: Path,
+  output_csv: Path,
+  robot: csv_to_npz.RobotName,
+  joint_names: tuple[str, ...],
+  verbose: bool = False,
+) -> float:
+  """Retarget one original LAFAN BVH clip to a robot CSV."""
+  gmr_cls, load_bvh_file = _import_bvh_gmr()
+  frames, human_height = load_bvh_file(str(bvh_file), format="lafan1")
+  retargeter = gmr_cls(
+    actual_human_height=human_height,
+    src_human="bvh_lafan1",
+    tgt_robot=robot,
+    verbose=verbose,
+  )
+  addresses = _qpos_addresses(retargeter.model, joint_names)
+  rows = np.zeros((len(frames), 7 + len(joint_names)), dtype=np.float32)
+  for index, frame in enumerate(tqdm(frames, desc=bvh_file.stem, ncols=100)):
+    qpos = retargeter.retarget(frame)
+    rows[index, :3] = qpos[:3]
+    rows[index, 3:7] = qpos[3:7][[1, 2, 3, 0]]
+    rows[index, 7:] = qpos[addresses]
+  output_csv.parent.mkdir(parents=True, exist_ok=True)
+  np.savetxt(output_csv, rows, delimiter=",")
+  print(f"  {len(frames)} frames @ 30 fps -> {output_csv}")
+  return 30.0
+
+
+def finalize_motion(
+  path: Path, metadata: dict[str, np.ndarray] | None = None
+) -> dict[str, float | str]:
+  """Apply robot floor correction, attach metadata, and atomically rewrite an NPZ."""
+  with np.load(path, allow_pickle=False) as motion:
+    values = {name: motion[name] for name in motion.files}
+  robot = str(values.get("robot", ""))
+  if not robot:
+    raise ValueError(f"Retargeted motion has no robot metadata: {path}")
+  values["body_pos_w"], floor = align_robot_floor(
+    values["body_pos_w"], values["body_quat_w"], robot
+  )
+  if floor["status"] == "rejected":
+    path.unlink(missing_ok=True)
+    return floor
+  values["ground_z_offset"] = np.asarray(floor["offset"], dtype=np.float32)
+  values["ground_floor_z"] = np.asarray(floor["floor_z"], dtype=np.float32)
+  values["ground_minimum_sole_z"] = np.asarray(
+    floor["minimum_sole_z"], dtype=np.float32
+  )
+  values["ground_contact_fraction"] = np.asarray(
+    floor["contact_fraction"], dtype=np.float32
+  )
+  values.update(metadata or {})
+  temporary = path.with_suffix(".tmp.npz")
+  np.savez(temporary, **values)
+  temporary.replace(path)
+  return floor
 
 
 def main(
