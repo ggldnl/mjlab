@@ -12,11 +12,15 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-from mjlab.tasks.bridging.bridges.dataset.dataset import Dataset
+from mjlab.tasks.bridging.bridges.dataset.dataset import Dataset, Segments
+from mjlab.tasks.bridging.bridges.diffusion.config import (
+  motion_patterns as configured_motion_patterns,
+)
+from mjlab.tasks.bridging.bridges.diffusion.config import robot_name
 from mjlab.tasks.bridging.motion_filter import (
   DEFAULT_MOTION_FILTER,
   MotionFilterCfg,
-  filter_window_starts,
+  motion_bad_frames,
 )
 from mjlab.utils.lab_api.math import (
   matrix_from_quat,
@@ -29,8 +33,8 @@ from mjlab.utils.lab_api.math import (
 )
 
 BABEL_ROOT = Path("data") / "babel_retargeted" / "unitree_g1_locomotion_v1"
-BABEL_TRAIN_MOTIONS = (str(BABEL_ROOT / "train" / "**" / "*.npz"),)
-BABEL_EVAL_MOTIONS = (str(BABEL_ROOT / "val" / "**" / "*.npz"),)
+BABEL_TRAIN_MOTIONS = configured_motion_patterns("g1", "train")
+BABEL_EVAL_MOTIONS = configured_motion_patterns("g1", "val")
 DEFAULT_MOTIONS = BABEL_TRAIN_MOTIONS
 
 _G1_MIRROR_JOINTS = (
@@ -264,6 +268,44 @@ def mirror_g1_features(features: torch.Tensor) -> torch.Tensor:
   return out
 
 
+def _mirrored_joint(name: str) -> str:
+  for left, right in (("left", "right"), ("Left", "Right")):
+    if left in name:
+      return name.replace(left, right, 1)
+    if right in name:
+      return name.replace(right, left, 1)
+  return name
+
+
+def mirror_features(
+  features: torch.Tensor, joint_names: tuple[str, ...]
+) -> torch.Tensor:
+  """Reflect local robot features across the sagittal plane."""
+  layout = Layout(len(joint_names))
+  if features.shape[-1] != layout.width:
+    raise ValueError("Feature width and robot joint names differ")
+  by_name = {name: index for index, name in enumerate(joint_names)}
+  try:
+    indexes = [by_name[_mirrored_joint(name)] for name in joint_names]
+  except KeyError as error:
+    raise ValueError(f"No mirrored joint for {error.args[0]!r}") from None
+  signs = [
+    -1.0 if any(axis in name.lower() for axis in ("roll", "yaw")) else 1.0
+    for name in joint_names
+  ]
+  out = features.clone()
+  out[..., (1, 4, 6, 8, 10, 12, 14)] *= -1
+  index = torch.as_tensor(indexes, device=features.device)
+  sign = features.new_tensor(signs)
+  out[..., layout.joint_positions] = (
+    features[..., layout.joint_positions][..., index] * sign
+  )
+  out[..., layout.joint_velocities] = (
+    features[..., layout.joint_velocities][..., index] * sign
+  )
+  return out
+
+
 @dataclass
 class Normalizer:
   mean: torch.Tensor
@@ -292,6 +334,8 @@ class MotionCorpus:
   names: tuple[str, ...]
   fps: float
   num_joints: int
+  joint_names: tuple[str, ...] = ()
+  robot: str = ""
   candidate_windows: int = 0
   rejected_windows: tuple[tuple[str, int], ...] = ()
 
@@ -320,19 +364,49 @@ def motion_files(patterns: tuple[str, ...]) -> tuple[Path, ...]:
   return tuple(found)
 
 
-def load_motions(
+@dataclass(frozen=True)
+class _KinematicClips:
+  states: torch.Tensor
+  trajectory: torch.Tensor
+  frame: torch.Tensor
+  category: torch.Tensor
+  categories: tuple[str, ...]
+  names: tuple[str, ...]
+  fps: float
+  num_joints: int
+  joint_names: tuple[str, ...]
+  robot: str
+  total_frames: int
+  candidate_windows: int
+  rejected_windows: tuple[tuple[str, int], ...]
+
+  def dataset(self, categories: bool) -> Dataset:
+    return Dataset(
+      states=self.states,
+      skill=self.category if categories else self.trajectory,
+      trajectory=self.trajectory,
+      frame=self.frame,
+      names=self.categories if categories else self.names,
+      fps=self.fps,
+    )
+
+
+def _load_kinematic_clips(
   patterns: tuple[str, ...],
-  columns: int,
   device: str,
-  split: str = "train",
-  holdout: int = 8,
-  filter_cfg: MotionFilterCfg | None = DEFAULT_MOTION_FILTER,
-) -> MotionCorpus:
-  """Load G1 NPZ clips and split by whole motion files."""
+  split: str,
+  holdout: int,
+  filter_cfg: MotionFilterCfg | None,
+  columns: int | None = None,
+  robot: str | None = None,
+) -> _KinematicClips:
+  """Load and validate kinematic clips before either consumer cuts windows."""
   if split not in ("train", "eval", "all"):
     raise ValueError("split must be train, eval, or all")
-  if columns < 2 or holdout < 2:
-    raise ValueError("columns must exceed one and holdout must exceed one")
+  if holdout < 2:
+    raise ValueError("holdout must exceed one")
+  if columns is not None and columns < 2:
+    raise ValueError("columns must exceed one")
   files = motion_files(patterns)
   selected = (
     list(files)
@@ -346,17 +420,20 @@ def load_motions(
   if not selected:
     raise ValueError(f"No {split} clips remain after the file split")
 
-  clips: list[torch.Tensor] = []
-  starts: list[torch.Tensor] = []
+  categories = tuple(sorted({path.parent.name for path in selected}))
+  states: list[torch.Tensor] = []
+  skills: list[torch.Tensor] = []
   trajectories: list[torch.Tensor] = []
   frames: list[torch.Tensor] = []
   names: list[str] = []
   fps: float | None = None
   joints: int | None = None
-  offset = 0
-  candidate_windows = 0
+  clip_robot: str | None = None
+  joint_names: tuple[str, ...] | None = None
+  expected_robot = robot_name(robot) if robot is not None else None
+  total_frames = candidate_windows = 0
   rejected_windows: dict[str, int] = {}
-  for path in selected:
+  for trajectory, path in enumerate(selected):
     with np.load(path, allow_pickle=False) as raw:
       clip_fps = float(np.asarray(raw["fps"]).reshape(-1)[0])
       joint_pos = np.asarray(raw["joint_pos"], dtype=np.float32)
@@ -365,14 +442,28 @@ def load_motions(
       body_quat = np.asarray(raw["body_quat_w"], dtype=np.float32)
       body_lin_vel = np.asarray(raw["body_lin_vel_w"], dtype=np.float32)
       body_ang_vel = np.asarray(raw["body_ang_vel_w"], dtype=np.float32)
-    if len(joint_pos) < columns:
-      continue
+      current_robot = str(raw["robot"]) if "robot" in raw else ""
+      current_joint_names = (
+        tuple(str(name) for name in raw["joint_names"])
+        if "joint_names" in raw
+        else tuple(f"joint_{index}" for index in range(joint_pos.shape[1]))
+      )
+    if expected_robot is not None and current_robot != expected_robot:
+      raise ValueError(
+        f"{path} contains {current_robot or 'no robot metadata'}, expected {expected_robot}"
+      )
+    if clip_robot is not None and current_robot != clip_robot:
+      raise ValueError("All motion clips must use the same robot")
+    if joint_names is not None and current_joint_names != joint_names:
+      raise ValueError("All motion clips must use the same joint order")
     if fps is not None and abs(clip_fps - fps) > 1e-6:
       raise ValueError("All motion clips must have the same frame rate")
     if joints is not None and joint_pos.shape[1] != joints:
       raise ValueError("All motion clips must use the same robot")
     fps = clip_fps
     joints = joint_pos.shape[1]
+    clip_robot = current_robot
+    joint_names = current_joint_names
     state = np.concatenate(
       (
         body_pos[:, 0],
@@ -384,93 +475,124 @@ def load_motions(
       ),
       axis=-1,
     )
-    candidate_windows += len(state) - columns + 1
-    if filter_cfg is None:
-      kept = np.arange(len(state) - columns + 1)
-    else:
-      kept, rejected = filter_window_starts(
-        state, body_pos, body_quat, columns, clip_fps, filter_cfg
+    total_frames += len(state)
+    if columns is not None:
+      candidate_windows += max(0, len(state) - columns + 1)
+
+    valid = np.ones(len(state), dtype=bool)
+    if filter_cfg is not None and len(state):
+      bad_frames = motion_bad_frames(
+        state,
+        body_pos,
+        body_quat,
+        clip_fps,
+        filter_cfg,
+        current_robot or expected_robot or "unitree_g1",
       )
-      for reason, count in rejected.items():
-        rejected_windows[reason] = rejected_windows.get(reason, 0) + count
-    trajectory = len(names)
-    clips.append(torch.from_numpy(state))
-    starts.append(torch.from_numpy(kept + offset))
-    trajectories.append(torch.full((len(state),), trajectory))
-    frames.append(torch.arange(len(state)))
+      valid &= ~np.logical_or.reduce(tuple(bad_frames.values()))
+      if columns is not None and len(state) >= columns:
+        for reason, bad in bad_frames.items():
+          counts = np.concatenate(([0], np.cumsum(bad, dtype=np.int64)))
+          rejected = int(((counts[columns:] - counts[:-columns]) > 0).sum())
+          rejected_windows[reason] = rejected_windows.get(reason, 0) + rejected
+
+    kept = np.flatnonzero(valid)
+    count = len(kept)
+    states.append(torch.from_numpy(state[kept]))
+    skills.append(torch.full((count,), categories.index(path.parent.name)))
+    trajectories.append(torch.full((count,), trajectory))
+    frames.append(torch.from_numpy(kept))
     names.append(path.stem)
-    offset += len(state)
-  if not clips or fps is None or joints is None:
-    raise ValueError(f"No {split} clip is at least {columns} frames long")
-  if not any(len(start) for start in starts):
-    raise ValueError(f"No {split} windows remain after motion filtering")
-  return MotionCorpus(
-    states=torch.cat(clips).to(device),
-    starts=torch.cat(starts).to(device),
+
+  if (
+    fps is None
+    or joints is None
+    or joint_names is None
+    or clip_robot is None
+    or not states
+    or not any(len(item) for item in states)
+  ):
+    raise ValueError(f"No valid {split} kinematic frames remain after motion filtering")
+  return _KinematicClips(
+    states=torch.cat(states).to(device),
     trajectory=torch.cat(trajectories).to(device),
     frame=torch.cat(frames).to(device),
+    category=torch.cat(skills).to(device),
+    categories=categories,
     names=tuple(names),
     fps=fps,
     num_joints=joints,
+    joint_names=joint_names,
+    robot=clip_robot,
+    total_frames=total_frames,
     candidate_windows=candidate_windows,
     rejected_windows=tuple(sorted(rejected_windows.items())),
   )
 
 
-def load_kinematic_dataset(patterns: tuple[str, ...], device: str) -> Dataset:
-  """Load retargeted clips as trajectories for the universal tracker."""
-  files = motion_files(patterns)
-  states: list[torch.Tensor] = []
-  skills: list[torch.Tensor] = []
-  trajectories: list[torch.Tensor] = []
-  frames: list[torch.Tensor] = []
-  categories = tuple(sorted({path.parent.name for path in files}))
-  fps: float | None = None
-  joints: int | None = None
-  for trajectory, path in enumerate(files):
-    with np.load(path, allow_pickle=False) as raw:
-      clip_fps = float(np.asarray(raw["fps"]).reshape(-1)[0])
-      joint_pos = np.asarray(raw["joint_pos"], dtype=np.float32)
-      joint_vel = np.asarray(raw["joint_vel"], dtype=np.float32)
-      body_pos = np.asarray(raw["body_pos_w"], dtype=np.float32)
-      body_quat = np.asarray(raw["body_quat_w"], dtype=np.float32)
-      body_lin_vel = np.asarray(raw["body_lin_vel_w"], dtype=np.float32)
-      body_ang_vel = np.asarray(raw["body_ang_vel_w"], dtype=np.float32)
-    if fps is not None and abs(clip_fps - fps) > 1e-6:
-      raise ValueError("All motion clips must have the same frame rate")
-    if joints is not None and joint_pos.shape[1] != joints:
-      raise ValueError("All motion clips must use the same robot")
-    fps = clip_fps
-    joints = joint_pos.shape[1]
-    state = np.concatenate(
-      (
-        body_pos[:, 0],
-        body_quat[:, 0],
-        body_lin_vel[:, 0],
-        body_ang_vel[:, 0],
-        joint_pos,
-        joint_vel,
-      ),
-      axis=-1,
-    )
-    count = len(state)
-    states.append(torch.from_numpy(state))
-    skills.append(torch.full((count,), categories.index(path.parent.name)))
-    trajectories.append(torch.full((count,), trajectory))
-    frames.append(torch.arange(count))
-  if not states or fps is None or joints is None:
-    raise ValueError(f"No motion clips match {patterns}")
-  dataset = Dataset(
-    states=torch.cat(states).to(device),
-    skill=torch.cat(skills).to(device),
-    trajectory=torch.cat(trajectories).to(device),
-    frame=torch.cat(frames).to(device),
-    names=categories,
-    fps=fps,
+def kinematic_segments(
+  data: Dataset,
+  min_steps: int,
+  max_steps: int,
+  sources: tuple[str, ...] | None = None,
+  before: int = 0,
+  after: int = 0,
+) -> Segments:
+  """Index valid contiguous kinematic windows for the planner or tracker."""
+  return data.segments(
+    min_steps,
+    max_steps,
+    data.of(sources),
+    before=before,
+    after=after,
   )
+
+
+def load_motions(
+  patterns: tuple[str, ...],
+  columns: int,
+  device: str,
+  split: str = "train",
+  holdout: int = 8,
+  filter_cfg: MotionFilterCfg | None = DEFAULT_MOTION_FILTER,
+  robot: str | None = None,
+) -> MotionCorpus:
+  """Load G1 NPZ clips and split by whole motion files."""
+  loaded = _load_kinematic_clips(
+    patterns, device, split, holdout, filter_cfg, columns, robot
+  )
+  data = loaded.dataset(categories=False)
+  try:
+    segments = kinematic_segments(data, columns - 1, columns - 1)
+  except ValueError as error:
+    raise ValueError(f"No {split} windows remain after motion filtering") from error
+  return MotionCorpus(
+    states=loaded.states,
+    starts=segments.order[segments.starts],
+    trajectory=loaded.trajectory,
+    frame=loaded.frame,
+    names=loaded.names,
+    fps=loaded.fps,
+    num_joints=loaded.num_joints,
+    joint_names=loaded.joint_names,
+    robot=loaded.robot,
+    candidate_windows=loaded.candidate_windows,
+    rejected_windows=loaded.rejected_windows,
+  )
+
+
+def load_kinematic_dataset(
+  patterns: tuple[str, ...],
+  device: str,
+  filter_cfg: MotionFilterCfg | None = DEFAULT_MOTION_FILTER,
+  robot: str | None = None,
+) -> Dataset:
+  """Load retargeted clips as trajectories for the universal tracker."""
+  loaded = _load_kinematic_clips(patterns, device, "all", 8, filter_cfg, robot=robot)
+  dataset = loaded.dataset(categories=True)
   print(
-    f"[dataset] {dataset.states.shape[0]} kinematic states from "
-    f"{len(files)} BABEL clips"
+    f"[dataset] {dataset.states.shape[0]}/{loaded.total_frames} valid kinematic "
+    f"states from {len(loaded.names)} clips"
   )
   return dataset
 
@@ -506,7 +628,8 @@ class Windows:
     if start_perturb_probability > 1 or not 0 <= mirror_probability <= 1:
       raise ValueError("augmentation probabilities must lie in [0, 1]")
     if mirror_probability and data.num_joints != 29:
-      raise ValueError("mirroring requires G1's 29-joint layout")
+      if not data.joint_names:
+        raise ValueError("mirroring requires robot joint names")
     self.time_scale_range = time_scale_range
     self.start_xy_range = start_xy_range
     self.start_joint_range = start_joint_range
@@ -556,7 +679,12 @@ class Windows:
       )
     if self.mirror_probability:
       mirrored = torch.rand(count, 1, 1, device=device) < self.mirror_probability
-      features = torch.where(mirrored, mirror_g1_features(features), features)
+      reflected = (
+        mirror_g1_features(features)
+        if self.data.joint_names == () and self.data.num_joints == 29
+        else mirror_features(features, self.data.joint_names)
+      )
+      features = torch.where(mirrored, reflected, features)
     target_last = self.history - 1 + duration + self.future - 1
     time = torch.arange(self.columns, device=device)[None]
     last = features[torch.arange(count, device=device), target_last]

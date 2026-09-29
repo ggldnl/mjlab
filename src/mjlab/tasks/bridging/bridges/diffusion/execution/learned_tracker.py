@@ -18,9 +18,9 @@ from mjlab.tasks.bridging.bridges.dataset.dataset import (
   ROOT_STATE_DIM,
   find_checkpoint,
 )
-from mjlab.tasks.bridging.bridges.diffusion.tracker import (
-  TRACKER_EXPERIMENT,
-  TRACKER_TASK_ID,
+from mjlab.tasks.bridging.bridges.diffusion.config import (
+  tracker_experiment,
+  tracker_task_id,
 )
 from mjlab.tasks.bridging.bridges.diffusion.tracker.command import (
   FUTURE_OFFSETS,
@@ -76,14 +76,15 @@ class LearnedTrackerExecutor:
     cls,
     env: ManagerBasedRlEnv,
     checkpoint: Path | None = None,
+    robot: str = "g1",
   ) -> LearnedTrackerExecutor:
     """Load the actor and its observation normalizer from an RSL-RL checkpoint."""
     path = find_checkpoint(
-      (TRACKER_EXPERIMENT,),
+      (tracker_experiment(robot),),
       str(checkpoint) if checkpoint is not None else None,
-      hint=f" Train one with `uv run train {TRACKER_TASK_ID}`.",
+      hint=f" Train one with `uv run train {tracker_task_id(robot)}`.",
     )
-    cfg = tracker_env_cfg(play=True)
+    cfg = tracker_env_cfg(play=True, robot=robot)
     cfg.scene.num_envs = 1
     command = cast(TrackerCommandCfg, cfg.commands[COMMAND])
     command.dataset_path = None
@@ -91,7 +92,7 @@ class LearnedTrackerExecutor:
     helper = ManagerBasedRlEnv(cfg, device=env.device)
     wrapped = RslRlVecEnvWrapper(helper, clip_actions=None)
     try:
-      agent_cfg = load_rl_cfg(TRACKER_TASK_ID)
+      agent_cfg = load_rl_cfg(tracker_task_id(robot))
       runner = MjlabOnPolicyRunner(wrapped, asdict(agent_cfg), device=env.device)
       runner.load(
         str(path), load_cfg={"actor": True}, strict=True, map_location=env.device

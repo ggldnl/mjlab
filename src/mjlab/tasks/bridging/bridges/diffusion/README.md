@@ -5,10 +5,11 @@ The bridge has two stages:
 1. The planner generates a kinematic trajectory from A to B.
 2. The universal tracker executes that trajectory in MuJoCo.
 
-Both stages use the G1 retargeted BABEL data under
-`data/babel_retargeted/unitree_g1_locomotion_v1`. The planner uses contiguous kinematic
-windows. The tracker learns to follow those windows and their recorded post-B
-continuation with physics randomization and perturbations.
+Both stages use the selected robot's retargeted BABEL and original LAFAN data.
+The planner uses contiguous kinematic windows. The tracker learns to follow those
+windows and their recorded post-B continuation with physics randomization and
+perturbations. Training selects `g1` or `t1`; motion metadata is checked against
+that selection before use.
 
 Inspect the held-out trajectories exactly as the tracker reads them:
 
@@ -35,6 +36,7 @@ diffusion/
 
 ```sh
 uv run train Mjlab-G1-Diffusion-Universal-Tracker
+uv run train Mjlab-T1-Diffusion-Universal-Tracker
 ```
 
 Checkpoints are written to
@@ -54,7 +56,8 @@ perturbation that smoothly vanishes at B, and half are mirrored left to right.
 The ranges are exposed as command-line options.
 
 ```sh
-uv run python -m mjlab.tasks.bridging.bridges.diffusion.planner.train
+uv run python -m mjlab.tasks.bridging.bridges.diffusion.planner.train --robot g1
+uv run python -m mjlab.tasks.bridging.bridges.diffusion.planner.train --robot t1
 ```
 
 Checkpoints are written to
@@ -79,6 +82,9 @@ Run planner improvement with:
 ```sh
 uv run train Mjlab-G1-Diffusion-Planner-Improvement --agent.max-iterations 12 --agent.tracker-checkpoint logs/rsl_rl/g1_diffusion_universal_tracker/<run>/model_5999.pt --agent.planner-checkpoint logs/rsl_rl/g1_kinematic_diffusion_planner/<run>/model_30000.pt
 ```
+
+Use `Mjlab-T1-Diffusion-Planner-Improvement` with T1 tracker and planner
+checkpoints for the T1 pipeline.
 
 The tracker checkpoint is required and remains frozen. The planner checkpoint is
 optional; without it, the task first pretrains the planner for 30,000 updates.

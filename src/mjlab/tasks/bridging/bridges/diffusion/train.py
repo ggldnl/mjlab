@@ -23,9 +23,12 @@ from mjlab.tasks.bridging.bridges.dataset.dataset import (
   ROOT_STATE_DIM,
   Dataset,
 )
+from mjlab.tasks.bridging.bridges.diffusion.config import (
+  improvement_experiment,
+  improvement_task_id,
+  motion_patterns,
+)
 from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import (
-  BABEL_EVAL_MOTIONS,
-  BABEL_TRAIN_MOTIONS,
   Normalizer,
   Windows,
   bridge_mask,
@@ -49,6 +52,7 @@ from mjlab.tasks.bridging.bridges.diffusion.tracker.env_cfg import (
   tracker_env_cfg,
 )
 from mjlab.tasks.bridging.bridges.imitation.command import channel_errors, score
+from mjlab.tasks.bridging.config import ROBOTS
 from mjlab.tasks.registry import register_mjlab_task
 from mjlab.utils.lab_api.math import (
   quat_apply,
@@ -59,8 +63,8 @@ from mjlab.utils.lab_api.math import (
   yaw_quat,
 )
 
-TRAIN_TASK_ID = "Mjlab-G1-Diffusion-Planner-Improvement"
-TRAIN_EXPERIMENT = "g1_diffusion_planner_improvement"
+TRAIN_TASK_ID = improvement_task_id("g1")
+TRAIN_EXPERIMENT = improvement_experiment("g1")
 
 
 def _yaw(quaternion: torch.Tensor) -> torch.Tensor:
@@ -110,7 +114,7 @@ class PairBatch:
 
 
 class CrossTrajectoryPairs:
-  """Draw endpoints from different BABEL clips and place B feasibly."""
+  """Draw endpoints from different motion clips and place B feasibly."""
 
   def __init__(
     self,
@@ -133,7 +137,7 @@ class CrossTrajectoryPairs:
       start_trajectories = data.trajectory[self.order[self.starts]]
       self.starts = self.starts[start_trajectories != target_trajectories[0]]
     if self.starts.numel() == 0 or target_trajectories.numel() == 0:
-      raise ValueError("Planner improvement needs at least two BABEL clips")
+      raise ValueError("Planner improvement needs at least two motion clips")
 
     left = self.order[segments.starts]
     right = self.order[segments.starts + 1]
@@ -185,7 +189,7 @@ class CrossTrajectoryPairs:
       b_trajectory = self.data.trajectory[self.order[b]]
       same = a_trajectory == b_trajectory
     if bool(same.any()):
-      raise RuntimeError("Could not draw endpoints from different BABEL clips")
+      raise RuntimeError("Could not draw endpoints from different motion clips")
     return a, b
 
   def _place(
@@ -464,18 +468,20 @@ class KinematicPlanGate:
     self.foot_geoms: dict[int, int] = {}
     for geom in self.robot_geoms:
       name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom) or ""
-      if "left_foot" in name and name.endswith("_collision"):
+      if "left_foot" in name:
         self.foot_geoms[geom] = 0
-      elif "right_foot" in name and name.endswith("_collision"):
+      elif "right_foot" in name:
         self.foot_geoms[geom] = 1
     if not self.foot_geoms:
-      raise ValueError("No G1 foot collision geoms found for plan gating")
+      raise ValueError("No foot collision geoms found for plan gating")
     body_ids = command.robot.indexing.body_ids.cpu().tolist()
-    self.pelvis = body_ids[command.robot.body_names.index("pelvis")]
-    self.feet = (
-      body_ids[command.robot.body_names.index("left_ankle_roll_link")],
-      body_ids[command.robot.body_names.index("right_ankle_roll_link")],
+    self.pelvis = body_ids[0]
+    self.feet = tuple(
+      mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, f"{side}_foot")
+      for side in ("left", "right")
     )
+    if any(site < 0 for site in self.feet):
+      raise ValueError("Robot must expose left_foot and right_foot sites")
     self.joint_limits = command.robot.data.soft_joint_pos_limits[0].detach().cpu()
 
   @torch.no_grad()
@@ -510,7 +516,7 @@ class KinematicPlanGate:
           ROOT_STATE_DIM : ROOT_STATE_DIM + joints
         ]
         mujoco.mj_forward(self.model, self.data)
-        foot_position[frame] = self.data.xpos[list(self.feet)]
+        foot_position[frame] = self.data.site_xpos[list(self.feet)]
         pelvis_position[frame] = self.data.xpos[self.pelvis]
         for index in range(self.data.ncon):
           hit = self.data.contact[index]
@@ -717,13 +723,17 @@ class PlannerCfg:
 
 
 class PlannerTrainer:
-  """Train the existing planner on BABEL and quality-gated physical paths."""
+  """Train the existing planner on demonstrations and gated physical paths."""
 
-  def __init__(self, cfg: PlannerCfg, checkpoint: Path | None, device: str) -> None:
+  def __init__(
+    self, cfg: PlannerCfg, checkpoint: Path | None, device: str, robot: str = "g1"
+  ) -> None:
     self.cfg = cfg
     self.device = device
     columns = cfg.history + cfg.max_steps + cfg.future - 1
-    corpus = load_motions(BABEL_TRAIN_MOTIONS, columns, device, "all")
+    corpus = load_motions(
+      motion_patterns(robot, "train"), columns, device, "all", robot=robot
+    )
     self.windows = Windows(
       corpus,
       cfg.history,
@@ -739,6 +749,8 @@ class PlannerTrainer:
     self.warm_started = checkpoint is not None
     if checkpoint is not None:
       self.bridge = DiffusionBridge.load(checkpoint, device)
+      if self.bridge.robot != robot:
+        raise ValueError(f"Planner checkpoint is for {self.bridge.robot}, not {robot}")
       raw = torch.load(checkpoint, map_location="cpu", weights_only=False)
       self.metadata = dict(raw.get("planner", raw))
     else:
@@ -759,6 +771,7 @@ class PlannerTrainer:
         cfg.future,
         corpus.fps,
         cfg.min_steps,
+        robot,
       )
       self.metadata = checkpoint_metadata(
         cfg.model,
@@ -772,11 +785,14 @@ class PlannerTrainer:
         corpus.fps,
         dict(model.state_dict()),
         0,
+        robot,
       )
     if self.bridge.layout != self.windows.layout or not math.isclose(
       self.bridge.fps, corpus.fps
     ):
-      raise ValueError("Planner checkpoint and BABEL use different layouts or rates")
+      raise ValueError(
+        "Planner checkpoint and motion data use different layouts or rates"
+      )
     self.optimizer = torch.optim.AdamW(
       self.bridge.process.denoiser.parameters(), lr=cfg.learning_rate
     )
@@ -866,6 +882,7 @@ class PlannerTrainer:
 
 @dataclass
 class PlannerImprovementRunnerCfg(RslRlOnPolicyRunnerCfg):
+  robot: str = "g1"
   tracker_checkpoint: str = ""
   planner_checkpoint: str = ""
   planner: PlannerCfg = field(default_factory=PlannerCfg)
@@ -888,6 +905,7 @@ class PlannerImprovementRunner(MjlabOnPolicyRunner):
   ) -> None:
     tracker_checkpoint = str(train_cfg.pop("tracker_checkpoint", ""))
     planner_checkpoint = str(train_cfg.pop("planner_checkpoint", ""))
+    robot = str(train_cfg.pop("robot", "g1"))
     planner_values = train_cfg.pop("planner")
     planner_values["model"] = ModelCfg(**planner_values["model"])
     planner_values["process"] = ProcessCfg(**planner_values["process"])
@@ -909,16 +927,16 @@ class PlannerImprovementRunner(MjlabOnPolicyRunner):
     planner_path = Path(planner_checkpoint) if planner_checkpoint else None
     if planner_path is not None and not planner_path.is_file():
       raise FileNotFoundError(f"Planner checkpoint not found: {planner_path}")
-    self.planner = PlannerTrainer(self.planner_cfg, planner_path, device)
+    self.planner = PlannerTrainer(self.planner_cfg, planner_path, device, robot)
     if self.planner.bridge.history < STATE_HISTORY:
       raise ValueError("Planner history is shorter than tracker state history")
     if self.planner.bridge.max_steps != command.max_steps:
       raise ValueError("Planner and evaluator maximum durations differ")
     transitions = self.planner.windows.data.dataset()
     if transitions.num_joints != self.planner.bridge.layout.joints:
-      raise ValueError("BABEL data and planner use different robots")
+      raise ValueError("Motion data and planner use different robots")
     if not math.isclose(transitions.fps, self.planner.bridge.fps):
-      raise ValueError("BABEL data and planner use different rates")
+      raise ValueError("Motion data and planner use different rates")
     self.pairs = CrossTrajectoryPairs(
       transitions,
       self.planner.bridge.history,
@@ -1077,7 +1095,7 @@ class PlannerImprovementRunner(MjlabOnPolicyRunner):
 
   def _real_routes(self, count: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if self.command.dataset is None or self.command.windows is None:
-      raise RuntimeError("Evaluator has no held-out BABEL data")
+      raise RuntimeError("Evaluator has no held-out motion data")
     _, _, duration, position = self.command.windows.draw(count)
     history_rows = self.command.windows.history(position, STATE_HISTORY - 1)
     route_rows = self.command.windows.path(
@@ -1100,7 +1118,7 @@ class PlannerImprovementRunner(MjlabOnPolicyRunner):
       or survival < self.evaluation_cfg.minimum_evaluator_survival
     ):
       raise RuntimeError(
-        "Frozen tracker is not a fair evaluator on held-out BABEL: "
+        "Frozen tracker is not a fair evaluator on held-out motion data: "
         f"route score {route_score:.3f}, survival {survival:.3f}"
       )
     return {
@@ -1257,7 +1275,7 @@ class PlannerImprovementRunner(MjlabOnPolicyRunner):
     start = self.current_learning_iteration
     if start == 0 and not self.planner.warm_started:
       print(
-        f"[diffusion] BABEL planner pretrain: {self.planner_cfg.bootstrap_updates} updates"
+        f"[diffusion] planner pretrain: {self.planner_cfg.bootstrap_updates} updates"
       )
       self.planner.train(self.planner_cfg.bootstrap_updates, self.replay)
     for cycle in range(start, num_learning_iterations):
@@ -1333,11 +1351,12 @@ class PlannerImprovementRunner(MjlabOnPolicyRunner):
     return infos
 
 
-def training_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+def training_env_cfg(play: bool = False, robot: str = "g1") -> ManagerBasedRlEnvCfg:
   cfg = tracker_env_cfg(
     play=True,
     split="eval",
-    motion_patterns=BABEL_EVAL_MOTIONS,
+    motion_patterns=motion_patterns(robot, "val"),
+    robot=robot,
   )
   cfg.scene.num_envs = 1 if play else 512
   original = cfg.commands[COMMAND]
@@ -1354,27 +1373,29 @@ def training_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   return cfg
 
 
-def training_runner_cfg() -> PlannerImprovementRunnerCfg:
-  base = tracker_ppo_runner_cfg()
+def training_runner_cfg(robot: str = "g1") -> PlannerImprovementRunnerCfg:
+  base = tracker_ppo_runner_cfg(robot)
   return PlannerImprovementRunnerCfg(
+    robot=robot,
     seed=base.seed,
     num_steps_per_env=base.num_steps_per_env,
     max_iterations=30,
     obs_groups=base.obs_groups,
     save_interval=1,
-    experiment_name=TRAIN_EXPERIMENT,
+    experiment_name=improvement_experiment(robot),
     actor=base.actor,
     critic=base.critic,
     algorithm=base.algorithm,
   )
 
 
-register_mjlab_task(
-  task_id=TRAIN_TASK_ID,
-  env_cfg=training_env_cfg(),
-  play_env_cfg=training_env_cfg(play=True),
-  rl_cfg=training_runner_cfg(),
-  runner_cls=PlannerImprovementRunner,
-)
+for _robot in ROBOTS:
+  register_mjlab_task(
+    task_id=improvement_task_id(_robot),
+    env_cfg=training_env_cfg(robot=_robot),
+    play_env_cfg=training_env_cfg(play=True, robot=_robot),
+    rl_cfg=training_runner_cfg(_robot),
+    runner_cls=PlannerImprovementRunner,
+  )
 
 __all__ = ["TRAIN_EXPERIMENT", "TRAIN_TASK_ID"]

@@ -1,4 +1,4 @@
-"""Evaluate exact endpoint precision on held-out BABEL windows.
+"""Evaluate exact endpoint precision on held-out motion windows.
 
 Run
 
@@ -23,10 +23,10 @@ import mjlab
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.tasks.bridging.bridges.dataset.dataset import find_checkpoint
-from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import BABEL_EVAL_MOTIONS
-from mjlab.tasks.bridging.bridges.diffusion.tracker import (
-  TRACKER_EXPERIMENT,
-  TRACKER_TASK_ID,
+from mjlab.tasks.bridging.bridges.diffusion.config import (
+  motion_patterns,
+  tracker_experiment,
+  tracker_task_id,
 )
 from mjlab.tasks.bridging.bridges.diffusion.tracker.command import (
   TrackerCommand,
@@ -49,7 +49,8 @@ DEFAULT_OUTPUT = Path("logs/benchmarks/diffusion_tracker/evaluation.json")
 @dataclass(frozen=True)
 class EvaluateCfg:
   checkpoint: Path | None = None
-  motions: tuple[str, ...] = BABEL_EVAL_MOTIONS
+  robot: str = "g1"
+  motions: tuple[str, ...] = ()
   output: Path = DEFAULT_OUTPUT
   sources: tuple[str, ...] | None = None
   batch: int = 256
@@ -93,15 +94,16 @@ def evaluate(cfg: EvaluateCfg) -> dict[str, Any]:
   configure_torch_backends()
   torch.manual_seed(cfg.seed)
   checkpoint = find_checkpoint(
-    (TRACKER_EXPERIMENT,),
+    (tracker_experiment(cfg.robot),),
     str(cfg.checkpoint) if cfg.checkpoint is not None else None,
-    hint=f" Train one with `uv run train {TRACKER_TASK_ID}`.",
+    hint=f" Train one with `uv run train {tracker_task_id(cfg.robot)}`.",
   )
   env_cfg = tracker_env_cfg(
     play=True,
     split="eval",
-    motion_patterns=cfg.motions,
+    motion_patterns=cfg.motions or motion_patterns(cfg.robot, "val"),
     sources=cfg.sources,
+    robot=cfg.robot,
   )
   env_cfg.scene.num_envs = cfg.batch
   env_cfg.auto_reset = False
@@ -111,7 +113,7 @@ def evaluate(cfg: EvaluateCfg) -> dict[str, Any]:
   command_cfg.duration_s_range = (cfg.duration_s, cfg.duration_s)
   command_cfg.debug_vis = False
 
-  agent_cfg = load_rl_cfg(TRACKER_TASK_ID)
+  agent_cfg = load_rl_cfg(tracker_task_id(cfg.robot))
   env = ManagerBasedRlEnv(env_cfg, device=cfg.device)
   wrapped = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
   try:
@@ -158,7 +160,7 @@ def evaluate(cfg: EvaluateCfg) -> dict[str, Any]:
         "checkpoint": str(checkpoint.resolve()),
         "motions": cfg.motions,
         "output": str(cfg.output.resolve()),
-        "task": TRACKER_TASK_ID,
+        "task": tracker_task_id(cfg.robot),
         "fps": 1.0 / env.step_dt,
         "tolerances": asdict(Tolerances()),
       },

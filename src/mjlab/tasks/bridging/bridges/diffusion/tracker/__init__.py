@@ -1,16 +1,21 @@
-"""Universal trajectory tracker trained on retargeted BABEL clips."""
+"""Universal trajectory tracker trained on retargeted motion clips."""
 
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
+from mjlab.tasks.bridging.bridges.diffusion.config import (
+  tracker_experiment,
+  tracker_task_id,
+)
 from mjlab.tasks.bridging.bridges.diffusion.tracker.env_cfg import (
   tracker_env_cfg,
 )
+from mjlab.tasks.bridging.config import ROBOTS
 from mjlab.tasks.registry import register_mjlab_task
 
-TRACKER_TASK_ID = "Mjlab-G1-Diffusion-Universal-Tracker"
-TRACKER_EXPERIMENT = "g1_diffusion_universal_tracker"
+TRACKER_TASK_ID = tracker_task_id("g1")
+TRACKER_EXPERIMENT = tracker_experiment("g1")
 
 
-def tracker_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+def tracker_ppo_runner_cfg(robot: str = "g1") -> RslRlOnPolicyRunnerCfg:
   return RslRlOnPolicyRunnerCfg(
     actor=RslRlModelCfg(
       hidden_dims=(1024, 512, 256),
@@ -39,18 +44,19 @@ def tracker_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       desired_kl=0.01,
       max_grad_norm=1.0,
     ),
-    experiment_name=TRACKER_EXPERIMENT,
+    experiment_name=tracker_experiment(robot),
     save_interval=500,
     num_steps_per_env=24,
     max_iterations=30_000,
   )
 
 
-register_mjlab_task(
-  task_id=TRACKER_TASK_ID,
-  env_cfg=tracker_env_cfg(),
-  play_env_cfg=tracker_env_cfg(play=True, split="eval"),
-  rl_cfg=tracker_ppo_runner_cfg(),
-)
+for _robot in ROBOTS:
+  register_mjlab_task(
+    task_id=tracker_task_id(_robot),
+    env_cfg=tracker_env_cfg(robot=_robot),
+    play_env_cfg=tracker_env_cfg(play=True, split="eval", robot=_robot),
+    rl_cfg=tracker_ppo_runner_cfg(_robot),
+  )
 
 __all__ = ["TRACKER_EXPERIMENT", "TRACKER_TASK_ID", "tracker_env_cfg"]

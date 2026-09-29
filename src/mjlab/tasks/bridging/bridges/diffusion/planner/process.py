@@ -11,7 +11,6 @@ import mujoco
 import torch
 from torch import nn
 
-from mjlab.asset_zoo.robots.unitree_g1.g1_constants import get_spec
 from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import (
   Layout,
   Normalizer,
@@ -20,6 +19,7 @@ from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import (
 from mjlab.tasks.bridging.bridges.diffusion.planner.model import (
   Denoiser,
 )
+from mjlab.tasks.bridging.config import get_robot
 from mjlab.utils.lab_api.math import quat_apply, quat_from_angle_axis, quat_mul
 
 
@@ -30,8 +30,8 @@ class ProcessCfg:
   continuity_weight: float = 0.5
 
 
-class G1FootKinematics(nn.Module):
-  """Differentiable G1 forward kinematics for the two sole sites."""
+class RobotFootKinematics(nn.Module):
+  """Differentiable forward kinematics for a robot's two sole sites."""
 
   body_pos: torch.Tensor
   body_quat: torch.Tensor
@@ -41,10 +41,11 @@ class G1FootKinematics(nn.Module):
   joint_ref: torch.Tensor
   site_pos: torch.Tensor
 
-  def __init__(self) -> None:
+  def __init__(self, robot: str = "g1") -> None:
     super().__init__()
-    model = get_spec().compile()
-    pelvis = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+    selected = get_robot(robot)
+    model = selected.get_spec().compile()
+    pelvis = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, selected.base_body_name)
     chains: list[list[int]] = []
     sites: list[list[float]] = []
     for side in ("left", "right"):
@@ -56,8 +57,8 @@ class G1FootKinematics(nn.Module):
         body = int(model.body_parentid[body])
       chains.append(chain[::-1])
       sites.append(model.site_pos[site].tolist())
-    if any(len(chain) != 6 for chain in chains):
-      raise ValueError("G1 feet must have six-joint kinematic chains")
+    if not chains[0] or len(chains[0]) != len(chains[1]):
+      raise ValueError("Robot feet must have equal nonempty kinematic chains")
 
     body_pos = []
     body_quat = []
@@ -74,7 +75,7 @@ class G1FootKinematics(nn.Module):
       references = []
       for body in chain:
         if model.body_jntnum[body] != 1:
-          raise ValueError("G1 leg links must each have one joint")
+          raise ValueError("Robot leg links must each have one joint")
         joint = int(model.body_jntadr[body])
         address = int(model.jnt_qposadr[joint])
         positions.append(model.body_pos[body].tolist())
@@ -96,6 +97,8 @@ class G1FootKinematics(nn.Module):
     self.register_buffer("joint_index", torch.tensor(joint_index, dtype=torch.long))
     self.register_buffer("joint_ref", torch.tensor(joint_ref, dtype=torch.float32))
     self.register_buffer("site_pos", torch.tensor(sites, dtype=torch.float32))
+    self.joints = model.nq - 7
+    self.steps = len(chains[0])
 
   @staticmethod
   def _expand(value: torch.Tensor, states: torch.Tensor) -> torch.Tensor:
@@ -104,11 +107,11 @@ class G1FootKinematics(nn.Module):
     )
 
   def forward(self, states: torch.Tensor) -> torch.Tensor:
-    if states.shape[-1] != 71:
-      raise ValueError("G1 states must contain 29 joint positions and velocities")
+    if states.shape[-1] != 13 + 2 * self.joints:
+      raise ValueError("State width does not match the selected robot")
     position = states[..., None, :3].expand(*states.shape[:-1], 2, 3)
     orientation = states[..., None, 3:7].expand(*states.shape[:-1], 2, 4)
-    for step in range(6):
+    for step in range(self.steps):
       offset = self._expand(self.body_pos[:, step], states)
       position = position + quat_apply(orientation, offset)
       link_quat = self._expand(self.body_quat[:, step], states)
@@ -127,7 +130,7 @@ class G1FootKinematics(nn.Module):
     return position + quat_apply(orientation, self._expand(self.site_pos, states))
 
 
-class G1FootSlipLoss(nn.Module):
+class RobotFootSlipLoss(nn.Module):
   """Penalize horizontal sole velocity on demonstrated contact edges."""
 
   mean: torch.Tensor
@@ -135,6 +138,7 @@ class G1FootSlipLoss(nn.Module):
 
   def __init__(
     self,
+    robot: str,
     normalizer: Normalizer,
     layout: Layout,
     fps: float,
@@ -143,10 +147,8 @@ class G1FootSlipLoss(nn.Module):
     contact_speed: float,
   ) -> None:
     super().__init__()
-    if (
-      layout.joints != 29 or min(fps, contact_height, contact_speed) <= 0 or weight < 0
-    ):
-      raise ValueError("invalid G1 foot slip loss configuration")
+    if min(fps, contact_height, contact_speed) <= 0 or weight < 0:
+      raise ValueError("invalid foot slip loss configuration")
     self.layout = layout
     self.fps = fps
     self.weight = weight
@@ -154,7 +156,9 @@ class G1FootSlipLoss(nn.Module):
     self.contact_speed = contact_speed
     self.register_buffer("mean", normalizer.mean)
     self.register_buffer("std", normalizer.std)
-    self.feet = G1FootKinematics()
+    self.feet = RobotFootKinematics(robot)
+    if layout.joints != self.feet.joints:
+      raise ValueError("Layout and robot joint counts differ")
 
   def _states(self, normalized: torch.Tensor) -> torch.Tensor:
     features = normalized * self.std + self.mean
@@ -220,7 +224,7 @@ class Diffusion(nn.Module):
     clean: torch.Tensor,
     known: torch.Tensor,
     valid: torch.Tensor | None = None,
-    foot_slip: G1FootSlipLoss | None = None,
+    foot_slip: RobotFootSlipLoss | None = None,
   ) -> torch.Tensor:
     if clean.shape != known.shape:
       raise ValueError("clean window and known mask must match")
@@ -284,3 +288,33 @@ class Diffusion(nn.Module):
       noisy = next_alpha.sqrt() * clean + (1 - next_alpha).sqrt() * noise
       noisy = torch.where(known, known_values, noisy)
     raise RuntimeError("empty denoising schedule")
+
+
+class G1FootKinematics(RobotFootKinematics):
+  """Backward-compatible G1 foot kinematics."""
+
+  def __init__(self) -> None:
+    super().__init__("g1")
+
+
+class G1FootSlipLoss(RobotFootSlipLoss):
+  """Backward-compatible G1 foot slip loss."""
+
+  def __init__(
+    self,
+    normalizer: Normalizer,
+    layout: Layout,
+    fps: float,
+    weight: float,
+    contact_height: float,
+    contact_speed: float,
+  ) -> None:
+    super().__init__(
+      "g1",
+      normalizer,
+      layout,
+      fps,
+      weight,
+      contact_height,
+      contact_speed,
+    )

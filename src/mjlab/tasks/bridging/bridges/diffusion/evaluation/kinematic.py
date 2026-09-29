@@ -9,11 +9,8 @@ import torch
 import tyro
 
 import mjlab
-from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import (
-  BABEL_EVAL_MOTIONS,
-  Windows,
-  load_motions,
-)
+from mjlab.tasks.bridging.bridges.diffusion.config import motion_patterns
+from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import Windows, load_motions
 from mjlab.tasks.bridging.bridges.diffusion.planner.bridge import (
   DiffusionBridge,
 )
@@ -23,7 +20,8 @@ from mjlab.utils.lab_api.math import quat_error_magnitude
 @dataclass
 class EvaluateCfg:
   checkpoint: Path
-  motions: tuple[str, ...] = BABEL_EVAL_MOTIONS
+  robot: str = "g1"
+  motions: tuple[str, ...] = ()
   count: int = 128
   holdout: int = 8
   sample_steps: int | None = None
@@ -36,12 +34,15 @@ def evaluate(cfg: EvaluateCfg) -> dict[str, float]:
   if cfg.count < 1:
     raise ValueError("count must be positive")
   bridge = DiffusionBridge.load(cfg.checkpoint, cfg.device, cfg.sample_steps)
+  if bridge.robot != cfg.robot:
+    raise ValueError(f"Checkpoint is for {bridge.robot}, not {cfg.robot}")
   corpus = load_motions(
-    cfg.motions,
+    cfg.motions or motion_patterns(cfg.robot, "val"),
     bridge.process.denoiser.columns,
     cfg.device,
     "all",
     cfg.holdout,
+    robot=cfg.robot,
   )
   if corpus.num_joints != bridge.layout.joints or corpus.fps != bridge.fps:
     raise ValueError("Motion data and checkpoint use different robot layouts or rates")

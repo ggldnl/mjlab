@@ -24,6 +24,7 @@ from mjlab.tasks.bridging.bridges.dataset.dataset import (
   load_dataset,
 )
 from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import (
+  kinematic_segments,
   load_kinematic_dataset,
 )
 from mjlab.tasks.bridging.bridges.imitation.command import (
@@ -114,7 +115,9 @@ class TrackerCommand(CommandTerm):
     if cfg.dataset_path is not None and cfg.motion_patterns:
       raise ValueError("Set dataset_path or motion_patterns, not both")
     if cfg.motion_patterns:
-      self.dataset = load_kinematic_dataset(cfg.motion_patterns, str(self.device))
+      self.dataset = load_kinematic_dataset(
+        cfg.motion_patterns, str(self.device), robot=cfg.robot
+      )
     elif cfg.dataset_path is not None:
       self.dataset = load_dataset(cfg.dataset_path, str(self.device), cfg.split)
     if self.dataset is not None:
@@ -122,10 +125,11 @@ class TrackerCommand(CommandTerm):
         raise ValueError("Dataset and robot joint counts differ")
       if not math.isclose(self.dataset.fps, self.fps):
         raise ValueError("Dataset and environment control rates differ")
-      self.windows = self.dataset.segments(
+      self.windows = kinematic_segments(
+        self.dataset,
         minimum,
         self.max_steps,
-        self.dataset.of(cfg.sources),
+        cfg.sources,
         before=STATE_HISTORY - 1,
         after=self.post_steps,
       )
@@ -447,6 +451,7 @@ class TrackerCommand(CommandTerm):
 @dataclass(kw_only=True)
 class TrackerCommandCfg(CommandTermCfg):
   entity_name: str = "robot"
+  robot: str = "g1"
   dataset_path: Path | None = DEFAULT_DATASET
   motion_patterns: tuple[str, ...] = ()
   split: str = "train"

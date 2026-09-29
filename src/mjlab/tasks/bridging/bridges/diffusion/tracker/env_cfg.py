@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from mjlab.asset_zoo.robots import G1_ACTION_SCALE
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as base_mdp
 from mjlab.managers.metrics_manager import MetricsTermCfg
@@ -13,9 +12,9 @@ from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationT
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
-from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import (
-  BABEL_EVAL_MOTIONS,
-  BABEL_TRAIN_MOTIONS,
+from mjlab.sensor import ContactMatch, ContactSensorCfg
+from mjlab.tasks.bridging.bridges.diffusion.config import (
+  motion_patterns as robot_motions,
 )
 from mjlab.tasks.bridging.bridges.diffusion.tracker import mdp
 from mjlab.tasks.bridging.bridges.diffusion.tracker.actions import (
@@ -25,7 +24,8 @@ from mjlab.tasks.bridging.bridges.diffusion.tracker.command import (
   TrackerCommandCfg,
 )
 from mjlab.tasks.bridging.bridges.imitation.command import CHANNELS
-from mjlab.tasks.tracking.config.g1.env_cfgs import unitree_g1_flat_tracking_env_cfg
+from mjlab.tasks.bridging.config import get_robot
+from mjlab.tasks.tracking.tracking_env_cfg import make_tracking_env_cfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 COMMAND = "path"
@@ -37,15 +37,36 @@ def tracker_env_cfg(
   dataset_path: Path | None = None,
   motion_patterns: tuple[str, ...] | None = None,
   sources: tuple[str, ...] | None = None,
+  robot: str = "g1",
 ) -> ManagerBasedRlEnvCfg:
   """Build a short-window path tracker with uniform route tracking."""
+  selected = get_robot(robot)
   if motion_patterns is None and dataset_path is None:
-    motion_patterns = BABEL_EVAL_MOTIONS if split == "eval" else BABEL_TRAIN_MOTIONS
-  cfg = unitree_g1_flat_tracking_env_cfg(play=play)
+    motion_patterns = robot_motions(robot, "val" if split == "eval" else "train")
+  cfg = make_tracking_env_cfg()
+  cfg.scene.entities = {"robot": selected.get_entity_cfg()}
+  cfg.scene.sensors = (
+    ContactSensorCfg(
+      name="self_collision",
+      primary=ContactMatch(
+        mode="subtree", pattern=selected.base_body_name, entity="robot"
+      ),
+      secondary=ContactMatch(
+        mode="subtree", pattern=selected.base_body_name, entity="robot"
+      ),
+      fields=("found", "force"),
+      reduce="none",
+      num_slots=1,
+      history_length=4,
+    ),
+  )
+  cfg.events["foot_friction"].params["asset_cfg"].geom_names = selected.foot_geom_names
+  cfg.events["base_com"].params["asset_cfg"].body_names = (selected.base_body_name,)
   cfg.scene.num_envs = 1 if play else 4096
   cfg.commands = {
     COMMAND: TrackerCommandCfg(
       entity_name="robot",
+      robot=robot,
       dataset_path=dataset_path,
       motion_patterns=motion_patterns or (),
       split=split,
@@ -122,7 +143,7 @@ def tracker_env_cfg(
     "joint_pos": ReferenceJointPositionActionCfg(
       entity_name="robot",
       actuator_names=(".*",),
-      scale=G1_ACTION_SCALE,
+      scale=selected.action_scale,
       use_default_offset=False,
       command_name=COMMAND,
       lookahead=1,
@@ -171,5 +192,5 @@ def tracker_env_cfg(
     cfg.events = {}
   cfg.episode_length_s = 1.0e9
   cfg.is_finite_horizon = True
-  cfg.viewer.body_name = "pelvis"
+  cfg.viewer.body_name = selected.base_body_name
   return cfg

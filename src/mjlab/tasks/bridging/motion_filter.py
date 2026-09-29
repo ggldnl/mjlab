@@ -3,35 +3,64 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cache
 from typing import Literal
 
+import mujoco
 import numpy as np
 
-_G1_FOOT_BODY_IDS = (6, 12)
-_G1_FOOT_SITE = (0.04, 0.0, -0.037)
+from mjlab.asset_zoo.robots.booster_t1.t1_constants import get_spec as get_t1_spec
+from mjlab.asset_zoo.robots.unitree_g1.g1_constants import get_spec as get_g1_spec
+
+_ROBOT_SPECS = {"unitree_g1": get_g1_spec, "booster_t1": get_t1_spec}
 
 
-def g1_foot_positions(body_pos: np.ndarray, body_quat: np.ndarray) -> np.ndarray:
-  """Return the two G1 sole sites in world coordinates."""
-  if body_pos.shape[1:] != (30, 3) or body_quat.shape[1:] != (30, 4):
-    raise ValueError("G1 foot positions require all 30 body poses in model order")
-  ankle_pos = body_pos[:, _G1_FOOT_BODY_IDS]
-  ankle_quat = body_quat[:, _G1_FOOT_BODY_IDS]
-  site = np.asarray(_G1_FOOT_SITE, dtype=np.float32)
+@cache
+def _foot_sites(robot: str) -> tuple[tuple[int, int], np.ndarray, int]:
+  try:
+    model = _ROBOT_SPECS[robot]().compile()
+  except KeyError:
+    raise ValueError(f"Unsupported robot {robot!r}") from None
+  sites = []
+  for name in ("left_foot", "right_foot"):
+    site = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, name)
+    if site < 0:
+      raise ValueError(f"{robot} has no {name} site")
+    sites.append(site)
+  bodies = tuple(int(model.site_bodyid[site]) - 1 for site in sites)
+  offsets = np.asarray([model.site_pos[site] for site in sites], dtype=np.float32)
+  return (bodies[0], bodies[1]), offsets, model.nbody - 1
+
+
+def robot_foot_positions(
+  body_pos: np.ndarray, body_quat: np.ndarray, robot: str
+) -> np.ndarray:
+  """Return the selected robot's two sole sites in world coordinates."""
+  body_ids, sites, bodies = _foot_sites(robot)
+  if body_pos.shape[1:] != (bodies, 3) or body_quat.shape[1:] != (bodies, 4):
+    raise ValueError(f"{robot} foot positions require all {bodies} body poses")
+  ankle_pos = body_pos[:, body_ids]
+  ankle_quat = body_quat[:, body_ids]
   vector = ankle_quat[..., 1:]
   feet = (
     ankle_pos
-    + site
-    + 2 * np.cross(vector, np.cross(vector, site) + ankle_quat[..., :1] * site)
+    + sites
+    + 2 * np.cross(vector, np.cross(vector, sites) + ankle_quat[..., :1] * sites)
   )
   if not np.isfinite(feet).all():
     raise ValueError("Foot body poses contain nonfinite values")
   return feet
 
 
-def align_g1_floor(
+def g1_foot_positions(body_pos: np.ndarray, body_quat: np.ndarray) -> np.ndarray:
+  """Return the two G1 sole sites in world coordinates."""
+  return robot_foot_positions(body_pos, body_quat, "unitree_g1")
+
+
+def align_robot_floor(
   body_pos: np.ndarray,
   body_quat: np.ndarray,
+  robot: str,
   floor_quantile: float = 0.1,
   max_offset: float = 0.05,
   max_penetration: float = 0.03,
@@ -44,7 +73,7 @@ def align_g1_floor(
   if min(max_offset, max_penetration, contact_height, min_contact_fraction) < 0:
     raise ValueError("floor QA limits must be nonnegative")
 
-  lower_sole = g1_foot_positions(body_pos, body_quat)[..., 2].min(axis=1)
+  lower_sole = robot_foot_positions(body_pos, body_quat, robot)[..., 2].min(axis=1)
   if not len(lower_sole):
     raise ValueError("floor alignment requires at least one frame")
   floor = float(np.quantile(lower_sole, floor_quantile))
@@ -73,6 +102,28 @@ def align_g1_floor(
   corrected = body_pos.copy()
   corrected[..., 2] += offset
   return corrected, metrics
+
+
+def align_g1_floor(
+  body_pos: np.ndarray,
+  body_quat: np.ndarray,
+  floor_quantile: float = 0.1,
+  max_offset: float = 0.05,
+  max_penetration: float = 0.03,
+  contact_height: float = 0.05,
+  min_contact_fraction: float = 0.2,
+) -> tuple[np.ndarray, dict[str, float | str]]:
+  """Align a consistent floor bias and report clips that need rejection."""
+  return align_robot_floor(
+    body_pos,
+    body_quat,
+    "unitree_g1",
+    floor_quantile,
+    max_offset,
+    max_penetration,
+    contact_height,
+    min_contact_fraction,
+  )
 
 
 @dataclass(frozen=True)
@@ -117,29 +168,25 @@ def motion_filter(profile: FilterProfile) -> MotionFilterCfg | None:
   raise ValueError(f"Unknown motion filter profile: {profile}")
 
 
-def filter_window_starts(
+def motion_bad_frames(
   state: np.ndarray,
   body_pos: np.ndarray,
   body_quat: np.ndarray,
-  columns: int,
   fps: float,
   cfg: MotionFilterCfg = DEFAULT_MOTION_FILTER,
-) -> tuple[np.ndarray, dict[str, int]]:
-  """Return window starts accepted by the selected kinematic limits."""
-  if fps <= 0 or columns < 2 or cfg.min_airborne_time_s <= 0:
-    raise ValueError("fps, window length, and airborne time must be positive")
-  if body_pos.shape[1:] != (30, 3) or body_quat.shape[1:] != (30, 4):
-    raise ValueError("G1 filtering requires all 30 body poses in model order")
+  robot: str = "unitree_g1",
+) -> dict[str, np.ndarray]:
+  """Mark bad frames once so every kinematic consumer uses the same cuts."""
+  if fps <= 0 or cfg.min_airborne_time_s <= 0:
+    raise ValueError("fps and airborne time must be positive")
   if len(state) != len(body_pos) or len(state) != len(body_quat):
     raise ValueError("state and body poses must have the same frame count")
-  if len(state) < columns:
-    return np.empty(0, dtype=np.int64), {}
 
-  feet = g1_foot_positions(body_pos, body_quat)
+  feet = robot_foot_positions(body_pos, body_quat, robot)
   floor = float(np.quantile(feet[..., 2].min(axis=1), 0.02))
   foot_height = feet[..., 2] - floor
-  bad_frames = {
-    "nonfinite": ~np.isfinite(state).all(axis=1),
+  bad_frames: dict[str, np.ndarray] = {
+    "nonfinite": np.asarray(~np.isfinite(state).all(axis=1), dtype=bool),
   }
   if cfg.min_root_up is not None:
     root_quat = state[:, 3:7]
@@ -175,6 +222,25 @@ def filter_window_starts(
     bad_frames["airborne"] = airborne
   if cfg.max_foot_penetration is not None:
     bad_frames["penetration"] = foot_height.min(axis=1) < -cfg.max_foot_penetration
+  return bad_frames
+
+
+def filter_window_starts(
+  state: np.ndarray,
+  body_pos: np.ndarray,
+  body_quat: np.ndarray,
+  columns: int,
+  fps: float,
+  cfg: MotionFilterCfg = DEFAULT_MOTION_FILTER,
+  robot: str = "unitree_g1",
+) -> tuple[np.ndarray, dict[str, int]]:
+  """Return window starts accepted by the selected kinematic limits."""
+  if columns < 2:
+    raise ValueError("window length must exceed one")
+  if len(state) < columns:
+    return np.empty(0, dtype=np.int64), {}
+
+  bad_frames = motion_bad_frames(state, body_pos, body_quat, fps, cfg, robot)
   rejected = {}
   for name, bad in bad_frames.items():
     counts = np.concatenate(([0], np.cumsum(bad, dtype=np.int64)))

@@ -1,4 +1,4 @@
-"""Train the kinematic diffusion planner on retargeted BABEL clips.
+"""Train the kinematic diffusion planner on retargeted motion clips.
 
 Run:
 
@@ -18,14 +18,16 @@ import torch
 import tyro
 
 import mjlab
+from mjlab.tasks.bridging.bridges.diffusion.config import (
+  motion_patterns,
+  planner_experiment,
+)
 from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import (
-  DEFAULT_MOTIONS,
   Normalizer,
   Windows,
   load_motions,
 )
 from mjlab.tasks.bridging.bridges.diffusion.planner.bridge import (
-  EXPERIMENT,
   checkpoint_metadata,
 )
 from mjlab.tasks.bridging.bridges.diffusion.planner.model import (
@@ -34,17 +36,19 @@ from mjlab.tasks.bridging.bridges.diffusion.planner.model import (
 )
 from mjlab.tasks.bridging.bridges.diffusion.planner.process import (
   Diffusion,
-  G1FootSlipLoss,
   ProcessCfg,
+  RobotFootSlipLoss,
 )
+from mjlab.tasks.bridging.config import RobotAlias
 
 LOG_ROOT = Path("logs") / "rsl_rl"
 
 
 @dataclass
 class TrainCfg:
-  motions: tuple[str, ...] = DEFAULT_MOTIONS
-  output: Path = LOG_ROOT / EXPERIMENT / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+  robot: RobotAlias = "g1"
+  motions: tuple[str, ...] = ()
+  output: Path | None = None
   history: int = 4
   future: int = 1
   min_steps: int = 15
@@ -77,8 +81,16 @@ def train(cfg: TrainCfg) -> Path:
   if not 0 <= cfg.ema_decay < 1:
     raise ValueError("ema_decay must be in [0, 1)")
   torch.manual_seed(cfg.seed)
+  motions = cfg.motions or motion_patterns(cfg.robot, "train")
+  output = cfg.output or (
+    LOG_ROOT
+    / planner_experiment(cfg.robot)
+    / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+  )
   columns = cfg.history + cfg.max_steps + cfg.future - 1
-  corpus = load_motions(cfg.motions, columns, cfg.device, "all", cfg.holdout)
+  corpus = load_motions(
+    motions, columns, cfg.device, "all", cfg.holdout, robot=cfg.robot
+  )
   windows = Windows(
     corpus,
     cfg.history,
@@ -102,7 +114,8 @@ def train(cfg: TrainCfg) -> Path:
 
   model = Denoiser(windows.layout.width, windows.columns, cfg.model).to(cfg.device)
   process = Diffusion(model, cfg.process).to(cfg.device)
-  foot_slip = G1FootSlipLoss(
+  foot_slip = RobotFootSlipLoss(
+    cfg.robot,
     normalizer,
     windows.layout,
     corpus.fps,
@@ -112,10 +125,10 @@ def train(cfg: TrainCfg) -> Path:
   ).to(cfg.device)
   optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate)
   ema = {name: value.detach().clone() for name, value in model.state_dict().items()}
-  cfg.output.mkdir(parents=True, exist_ok=True)
+  output.mkdir(parents=True, exist_ok=True)
 
   def save(iteration: int) -> Path:
-    checkpoint = cfg.output / f"model_{iteration}.pt"
+    checkpoint = output / f"model_{iteration}.pt"
     torch.save(
       checkpoint_metadata(
         cfg.model,
@@ -129,6 +142,7 @@ def train(cfg: TrainCfg) -> Path:
         corpus.fps,
         ema,
         iteration,
+        cfg.robot,
       ),
       checkpoint,
     )

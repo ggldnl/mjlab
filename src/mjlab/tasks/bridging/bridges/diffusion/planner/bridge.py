@@ -9,6 +9,7 @@ from pathlib import Path
 
 import torch
 
+from mjlab.tasks.bridging.bridges.diffusion.config import planner_experiment
 from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import (
   Layout,
   Normalizer,
@@ -25,7 +26,7 @@ from mjlab.tasks.bridging.bridges.diffusion.planner.process import (
   ProcessCfg,
 )
 
-EXPERIMENT = "g1_kinematic_diffusion_planner"
+EXPERIMENT = planner_experiment("g1")
 CHECKPOINT_FORMAT = "mjlab-kinematic-diffusion-v5"
 
 
@@ -50,6 +51,7 @@ class DiffusionBridge:
     future: int,
     fps: float,
     min_steps: int = 3,
+    robot: str = "g1",
   ):
     self.process = process.eval()
     self.normalizer = normalizer
@@ -58,6 +60,7 @@ class DiffusionBridge:
     self.future = future
     self.fps = fps
     self.min_steps = min_steps
+    self.robot = robot
 
   @property
   def max_steps(self) -> int:
@@ -98,6 +101,7 @@ class DiffusionBridge:
       future,
       float(saved["fps"]),
       int(saved["min_steps"]),
+      str(saved.get("robot", "g1")),
     )
 
   @torch.no_grad()
@@ -180,6 +184,7 @@ def checkpoint_metadata(
   fps: float,
   ema: dict[str, torch.Tensor],
   iteration: int,
+  robot: str = "g1",
 ) -> dict:
   return {
     "format": CHECKPOINT_FORMAT,
@@ -194,4 +199,5 @@ def checkpoint_metadata(
     "fps": fps,
     "ema": {name: value.cpu() for name, value in ema.items()},
     "iteration": iteration,
+    "robot": robot,
   }
