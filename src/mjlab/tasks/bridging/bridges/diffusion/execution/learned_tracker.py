@@ -135,7 +135,9 @@ class LearnedTrackerExecutor:
     states = self._history(history)
     current = states[:, -1]
     batch = torch.arange(current.shape[0], device=current.device)[:, None]
-    rows = (self.index[:, None] + self.offsets[None]).clamp(max=self.path.shape[1] - 1)
+    rows = torch.minimum(
+      self.index[:, None] + self.offsets[None], self.duration[:, None]
+    )
     future = self.path[batch, rows]
     endpoint = self.path[
       torch.arange(current.shape[0], device=current.device), self.duration
@@ -193,7 +195,7 @@ class LearnedTrackerExecutor:
     assert (
       self.path is not None and self.duration is not None and self.index is not None
     )
-    next_row = (self.index + 1).clamp(max=self.path.shape[1] - 1)
+    next_row = torch.minimum(self.index + 1, self.duration)
     reference_q = self.path[
       torch.arange(history.shape[0], device=history.device),
       next_row,

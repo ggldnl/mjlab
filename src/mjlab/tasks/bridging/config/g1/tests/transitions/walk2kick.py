@@ -466,10 +466,8 @@ class Run:
       runtime = self.runtime_bridges.get(self.active_bridge)
       planned = None
       if runtime is not None:
-        remaining = (
-          self.command.window_steps - self.command.step
-        ).float() / self.command.fps
-        output = runtime(self.history, self.command.target[:, None], remaining)
+        duration = self.command.window_steps.float() / self.command.fps
+        output = runtime(self.history, self.command.target[:, None], duration)
         if isinstance(runtime, DiffusionRuntime) and runtime.path is not None:
           assert runtime._index is not None
           index = min(int(runtime._index[0]) - 1, int(runtime.path.duration[0]))

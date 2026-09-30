@@ -1,4 +1,4 @@
-"""Show selected states at their recorded positions along the medoid rollout.
+"""Show selected states side by side while reporting recorded displacement.
 
 Run:
 
@@ -36,6 +36,7 @@ from mjlab.tasks.bridging.selector.table import (
 
 COLOR = (0.35, 0.6, 1.0, 0.9)
 PARKED = np.array([0.0, 0.0, -50.0])
+ENTRY_SPACING = 1.5
 
 
 @dataclass
@@ -81,6 +82,15 @@ def markdown(entries: tuple[Entry, ...]) -> str:
   )
 
 
+def horizontal_shifts(positions: np.ndarray) -> np.ndarray:
+  """Move recorded XY positions into evenly spaced display slots."""
+  destinations = np.zeros_like(positions)
+  destinations[:, 0] = (
+    np.arange(len(positions)) - 0.5 * (len(positions) - 1)
+  ) * ENTRY_SPACING
+  return np.pad(destinations - positions, ((0, 0), (0, 1)))
+
+
 def serve(cfg: ViewCfg) -> None:
   table = EntryTable.load(cfg.path or paths(cfg.robot)[1])
   opening = cfg.skill or table.skills[0]
@@ -112,8 +122,7 @@ def serve(cfg: ViewCfg) -> None:
   def draw() -> None:
     entries = table.of(picker.value)
     positions = np.stack([entry.state[:2] for entry in entries])
-    center = 0.5 * (positions.min(axis=0) + positions.max(axis=0))
-    shift = np.array([-center[0], -center[1], 0.0])
+    shifts = horizontal_shifts(positions)
     for label in labels:
       label.remove()
     labels.clear()
@@ -122,6 +131,7 @@ def serve(cfg: ViewCfg) -> None:
         show(data.qpos, where, parked, PARKED)
         continue
       entry = entries[index]
+      shift = shifts[index]
       show(data.qpos, where, entry.state.astype(np.float64), shift)
       labels.append(
         server.scene.add_label(

@@ -6,6 +6,12 @@ Run the two steps:
     uv run python -m mjlab.tasks.bridging.selector.build
     uv run python -m mjlab.tasks.bridging.selector.view
 
+Keep and select the first climb state with:
+
+    uv run python -m mjlab.tasks.bridging.selector.record
+    uv run python -m mjlab.tasks.bridging.selector.build --window climb 0 1 1
+    uv run python -m mjlab.tasks.bridging.selector.view --skill climb
+
 For each skill, build.py keeps complete rollouts through the configured window, picks
 the medoid rollout, and samples states from it. The selected states and their original
 rollout context are written to data/selector/states.npz.
@@ -44,7 +50,7 @@ class Window:
 WINDOWS = {
   "jump": Window(55, 110, 6),
   "kick": Window(95, 145, 6),
-  "climb": Window(27, 30, 1),
+  "climb": Window(1, 10, 1),
   "front_kick": Window(27, 60, 4),
   "punch_combo": Window(27, 55, 4),
   "pass": Window(27, 50, 1),

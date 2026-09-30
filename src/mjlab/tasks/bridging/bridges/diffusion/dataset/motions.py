@@ -17,12 +17,8 @@ from mjlab.tasks.bridging.bridges.diffusion.config import (
   motion_patterns as configured_motion_patterns,
 )
 from mjlab.tasks.bridging.bridges.diffusion.config import robot_name
-from mjlab.tasks.bridging.motion_filter import (
-  DEFAULT_MOTION_FILTER,
-  MotionFilterCfg,
-  motion_bad_frames,
-)
 from mjlab.utils.lab_api.math import (
+  axis_angle_from_quat,
   matrix_from_quat,
   quat_apply,
   quat_apply_inverse,
@@ -32,7 +28,7 @@ from mjlab.utils.lab_api.math import (
   yaw_quat,
 )
 
-BABEL_ROOT = Path("data") / "babel_retargeted" / "unitree_g1_locomotion_v1"
+BABEL_ROOT = Path("data") / "babel_retargeted" / "unitree_g1"
 BABEL_TRAIN_MOTIONS = configured_motion_patterns("g1", "train")
 BABEL_EVAL_MOTIONS = configured_motion_patterns("g1", "val")
 DEFAULT_MOTIONS = BABEL_TRAIN_MOTIONS
@@ -103,27 +99,53 @@ _G1_MIRROR_SIGNS = (
 
 @dataclass(frozen=True)
 class Layout:
+  """Planner features per frame, in A's heading frame.
+
+  Predicted channels:
+    root_step        root position change since the previous frame
+    rotation         root orientation as 6D
+    joint_steps      joint position change since the previous frame
+
+  Condition channels, zero on frames that are not known:
+    root_position    root position
+    joint_positions  joint positions
+
+  Velocities are not features. They are computed from positions when decoding.
+  """
+
   joints: int
 
   @property
   def width(self) -> int:
-    return 15 + 2 * self.joints
+    return 12 + 2 * self.joints
 
   @property
-  def root_linear_velocity(self) -> slice:
-    return slice(9, 12)
+  def root_step(self) -> slice:
+    return slice(0, 3)
 
   @property
-  def root_angular_velocity(self) -> slice:
-    return slice(12, 15)
+  def rotation(self) -> slice:
+    return slice(3, 9)
+
+  @property
+  def joint_steps(self) -> slice:
+    return slice(9, 9 + self.joints)
+
+  @property
+  def predicted(self) -> slice:
+    return slice(0, 9 + self.joints)
+
+  @property
+  def root_position(self) -> slice:
+    return slice(9 + self.joints, 12 + self.joints)
 
   @property
   def joint_positions(self) -> slice:
-    return slice(15, 15 + self.joints)
+    return slice(12 + self.joints, self.width)
 
   @property
-  def joint_velocities(self) -> slice:
-    return slice(15 + self.joints, self.width)
+  def conditions(self) -> slice:
+    return slice(9 + self.joints, self.width)
 
 
 def rot6d(quat: torch.Tensor) -> torch.Tensor:
@@ -154,8 +176,11 @@ def quat_from_rot6d(features: torch.Tensor) -> torch.Tensor:
   )
 
 
-def encode(states: torch.Tensor, anchor: torch.Tensor) -> torch.Tensor:
-  """Encode dynamic states in A's heading frame."""
+def encode_pose(states: torch.Tensor, anchor: torch.Tensor) -> torch.Tensor:
+  """Poses in A's heading frame: root position, 6D root orientation, joints.
+
+  Velocities in the states are dropped.
+  """
   if states.ndim != 3 or (states.shape[-1] - 13) % 2:
     raise ValueError("states must have shape (batch, time, 13 + 2 * joints)")
   if anchor.shape != states.shape[:1] + states.shape[2:]:
@@ -169,34 +194,113 @@ def encode(states: torch.Tensor, anchor: torch.Tensor) -> torch.Tensor:
     (
       quat_apply_inverse(heading, states[..., :3] - origin),
       rot6d(orientation),
-      quat_apply_inverse(heading, states[..., 7:10]),
-      quat_apply_inverse(heading, states[..., 10:13]),
       states[..., 13 : 13 + joints],
-      states[..., 13 + joints :],
     ),
     dim=-1,
   )
 
 
-def decode(
-  features: torch.Tensor, anchor: torch.Tensor, layout: Layout
-) -> torch.Tensor:
-  """Decode features to world dynamic states."""
-  if features.ndim != 3 or features.shape[-1] != layout.width:
-    raise ValueError("features have the wrong shape")
-  if anchor.shape != (features.shape[0], 13 + 2 * layout.joints):
-    raise ValueError("anchor has the wrong shape")
-  heading = yaw_quat(anchor[:, 3:7])[:, None].expand(-1, features.shape[1], -1)
-  origin = anchor[:, None, :3].clone()
-  origin[..., 2] = 0.0
+def pose_features(pose: torch.Tensor) -> torch.Tensor:
+  """Turn poses into planner features. The first frame has zero steps."""
+  steps = torch.cat((torch.zeros_like(pose[:, :1]), pose[:, 1:] - pose[:, :-1]), dim=1)
   return torch.cat(
     (
-      origin + quat_apply(heading, features[..., :3]),
-      quat_mul(heading, quat_from_rot6d(features[..., 3:9])),
-      quat_apply(heading, features[..., layout.root_linear_velocity]),
-      quat_apply(heading, features[..., layout.root_angular_velocity]),
-      features[..., layout.joint_positions],
-      features[..., layout.joint_velocities],
+      steps[..., :3],
+      pose[..., 3:9],
+      steps[..., 9:],
+      pose[..., :3],
+      pose[..., 9:],
+    ),
+    dim=-1,
+  )
+
+
+def encode(states: torch.Tensor, anchor: torch.Tensor) -> torch.Tensor:
+  """Encode dynamic states as planner features in A's heading frame."""
+  return pose_features(encode_pose(states, anchor))
+
+
+def integrate(
+  features: torch.Tensor,
+  layout: Layout,
+  history: int,
+  duration: torch.Tensor,
+) -> torch.Tensor:
+  """Rebuild poses by adding up steps from A.
+
+  Frames before A copy the known positions. The gap between the summed steps and
+  the known B position is spread linearly from A to B, so B is hit exactly.
+  Frames after B keep that correction.
+  """
+  if features.ndim != 3 or features.shape[-1] != layout.width:
+    raise ValueError("features have the wrong shape")
+  if duration.shape != features.shape[:1]:
+    raise ValueError("duration must hold one tick count per window")
+  anchor = history - 1
+  batch = torch.arange(features.shape[0], device=features.device)
+  target = anchor + duration
+  steps = torch.cat(
+    (features[..., layout.root_step], features[..., layout.joint_steps]), dim=-1
+  )
+  known = torch.cat(
+    (features[..., layout.root_position], features[..., layout.joint_positions]),
+    dim=-1,
+  )
+  total = steps.cumsum(dim=1)
+  raw = known[:, anchor, None] + total - total[:, anchor, None]
+  residual = known[batch, target] - raw[batch, target]
+  time = torch.arange(features.shape[1], device=features.device)
+  phase = ((time[None] - anchor) / duration[:, None]).clamp(0.0, 1.0)
+  position = raw + phase[..., None] * residual[:, None]
+  position = torch.where((time < anchor)[None, :, None], known, position)
+  return torch.cat(
+    (
+      position[..., :3],
+      features[..., layout.rotation],
+      position[..., 3:],
+    ),
+    dim=-1,
+  )
+
+
+def _neighbors(values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+  """Next and previous frame, and the number of ticks between them."""
+  ahead = torch.cat((values[:, 1:], values[:, -1:]), dim=1)
+  behind = torch.cat((values[:, :1], values[:, :-1]), dim=1)
+  span = torch.full((values.shape[1],), 2.0, device=values.device)
+  span[0] = span[-1] = 1.0
+  return ahead, behind, span[None, :, None]
+
+
+def decode(pose: torch.Tensor, anchor: torch.Tensor, fps: float) -> torch.Tensor:
+  """Decode poses to world dynamic states.
+
+  Velocities are central differences of the positions, one sided at the ends.
+  """
+  if pose.ndim != 3 or pose.shape[-1] < 9 or pose.shape[1] < 2:
+    raise ValueError("pose must have shape (batch, time >= 2, 9 + joints)")
+  joints = pose.shape[-1] - 9
+  if anchor.shape != (pose.shape[0], 13 + 2 * joints):
+    raise ValueError("anchor has the wrong shape")
+  heading = yaw_quat(anchor[:, 3:7])[:, None].expand(-1, pose.shape[1], -1)
+  origin = anchor[:, None, :3].clone()
+  origin[..., 2] = 0.0
+  position = origin + quat_apply(heading, pose[..., :3])
+  orientation = quat_mul(heading, quat_from_rot6d(pose[..., 3:9]))
+  joint_position = pose[..., 9:]
+
+  ahead, behind, span = _neighbors(torch.cat((position, joint_position), dim=-1))
+  rates = (ahead - behind) * fps / span
+  turn_ahead, turn_behind, _ = _neighbors(orientation)
+  turn = axis_angle_from_quat(quat_mul(turn_ahead, quat_conjugate(turn_behind)))
+  return torch.cat(
+    (
+      position,
+      orientation,
+      rates[..., :3],
+      turn * fps / span,
+      joint_position,
+      rates[..., 3:],
     ),
     dim=-1,
   )
@@ -208,10 +312,12 @@ def perturb_start_states(
   history: int,
   fps: float,
   xy_range: float,
-  joint_range: float,
   probability: float,
 ) -> torch.Tensor:
-  """Perturb A and blend exactly back to the demonstrated B state."""
+  """Shift history and A in xy and blend exactly back to the demonstrated B state.
+
+  The window is later encoded in A's frame, so this displaces B relative to A.
+  """
   if states.ndim != 3 or (states.shape[-1] - 13) % 2:
     raise ValueError("states must have shape (batch, time, 13 + 2 * joints)")
   if duration.shape != states.shape[:1] or history < 1 or fps <= 0:
@@ -220,22 +326,17 @@ def perturb_start_states(
     ((duration < 1) | (duration > states.shape[1] - history)).any()
   ):
     raise ValueError("duration must place B inside the state window")
-  if min(xy_range, joint_range, probability) < 0 or probability > 1:
-    raise ValueError("perturbation ranges and probability must be valid")
-  if probability == 0 or (xy_range == 0 and joint_range == 0):
+  if min(xy_range, probability) < 0 or probability > 1:
+    raise ValueError("perturbation range and probability must be valid")
+  if probability == 0 or xy_range == 0:
     return states
 
-  batch, columns, width = states.shape
-  joints = (width - 13) // 2
+  batch, columns, _ = states.shape
   active = (torch.rand(batch, 1, device=states.device) < probability).to(states.dtype)
   delta_xy = torch.empty(batch, 2, device=states.device, dtype=states.dtype).uniform_(
     -xy_range, xy_range
   )
-  delta_joint = torch.empty(
-    batch, joints, device=states.device, dtype=states.dtype
-  ).uniform_(-joint_range, joint_range)
   delta_xy *= active
-  delta_joint *= active
 
   frame = torch.arange(columns, device=states.device) - (history - 1)
   phase = (frame[None] / duration[:, None]).clamp(0.0, 1.0)
@@ -245,27 +346,27 @@ def perturb_start_states(
   out = states.clone()
   out[..., :2] += weight[..., None] * delta_xy[:, None]
   out[..., 7:9] += rate[..., None] * delta_xy[:, None]
-  out[..., 13 : 13 + joints] += weight[..., None] * delta_joint[:, None]
-  out[..., 13 + joints :] += rate[..., None] * delta_joint[:, None]
   return out
 
 
-def mirror_g1_features(features: torch.Tensor) -> torch.Tensor:
-  """Reflect local G1 features across the sagittal plane."""
-  layout = Layout(29)
-  if features.shape[-1] != layout.width:
+def _mirror_pose(
+  pose: torch.Tensor, indexes: torch.Tensor, signs: torch.Tensor
+) -> torch.Tensor:
+  out = pose.clone()
+  out[..., (1, 4, 6, 8)] *= -1  # root y and the 6D entries that flip with it
+  out[..., 9:] = pose[..., 9:][..., indexes] * signs
+  return out
+
+
+def mirror_g1_pose(pose: torch.Tensor) -> torch.Tensor:
+  """Reflect G1 poses from encode_pose across the sagittal plane."""
+  if pose.shape[-1] != 9 + 29:
     raise ValueError("G1 mirroring requires 29 joints")
-  out = features.clone()
-  out[..., (1, 4, 6, 8, 10, 12, 14)] *= -1
-  indexes = torch.as_tensor(_G1_MIRROR_JOINTS, device=features.device)
-  signs = features.new_tensor(_G1_MIRROR_SIGNS)
-  out[..., layout.joint_positions] = (
-    features[..., layout.joint_positions][..., indexes] * signs
+  return _mirror_pose(
+    pose,
+    torch.as_tensor(_G1_MIRROR_JOINTS, device=pose.device),
+    pose.new_tensor(_G1_MIRROR_SIGNS),
   )
-  out[..., layout.joint_velocities] = (
-    features[..., layout.joint_velocities][..., indexes] * signs
-  )
-  return out
 
 
 def _mirrored_joint(name: str) -> str:
@@ -277,13 +378,10 @@ def _mirrored_joint(name: str) -> str:
   return name
 
 
-def mirror_features(
-  features: torch.Tensor, joint_names: tuple[str, ...]
-) -> torch.Tensor:
-  """Reflect local robot features across the sagittal plane."""
-  layout = Layout(len(joint_names))
-  if features.shape[-1] != layout.width:
-    raise ValueError("Feature width and robot joint names differ")
+def mirror_pose(pose: torch.Tensor, joint_names: tuple[str, ...]) -> torch.Tensor:
+  """Reflect robot poses from encode_pose across the sagittal plane."""
+  if pose.shape[-1] != 9 + len(joint_names):
+    raise ValueError("Pose width and robot joint names differ")
   by_name = {name: index for index, name in enumerate(joint_names)}
   try:
     indexes = [by_name[_mirrored_joint(name)] for name in joint_names]
@@ -293,17 +391,11 @@ def mirror_features(
     -1.0 if any(axis in name.lower() for axis in ("roll", "yaw")) else 1.0
     for name in joint_names
   ]
-  out = features.clone()
-  out[..., (1, 4, 6, 8, 10, 12, 14)] *= -1
-  index = torch.as_tensor(indexes, device=features.device)
-  sign = features.new_tensor(signs)
-  out[..., layout.joint_positions] = (
-    features[..., layout.joint_positions][..., index] * sign
+  return _mirror_pose(
+    pose,
+    torch.as_tensor(indexes, device=pose.device),
+    pose.new_tensor(signs),
   )
-  out[..., layout.joint_velocities] = (
-    features[..., layout.joint_velocities][..., index] * sign
-  )
-  return out
 
 
 @dataclass
@@ -336,8 +428,6 @@ class MotionCorpus:
   num_joints: int
   joint_names: tuple[str, ...] = ()
   robot: str = ""
-  candidate_windows: int = 0
-  rejected_windows: tuple[tuple[str, int], ...] = ()
 
   @property
   def num_windows(self) -> int:
@@ -356,12 +446,17 @@ class MotionCorpus:
 
 
 def motion_files(patterns: tuple[str, ...]) -> tuple[Path, ...]:
-  found = sorted(
-    {Path(name) for pattern in patterns for name in glob.glob(pattern, recursive=True)}
-  )
-  if not found:
-    raise FileNotFoundError(f"No motion files match {patterns}")
-  return tuple(found)
+  """Every file matched by the patterns. Each pattern must match at least one file."""
+  if not patterns:
+    raise ValueError("No motion patterns given")
+  found: set[Path] = set()
+  for pattern in patterns:
+    matched = glob.glob(pattern, recursive=True)
+    if not matched:
+      # A silent miss here once trained a "universal" tracker on 10 clips
+      raise FileNotFoundError(f"No motion files match {pattern}")
+    found.update(Path(name) for name in matched)
+  return tuple(sorted(found))
 
 
 @dataclass(frozen=True)
@@ -377,8 +472,6 @@ class _KinematicClips:
   joint_names: tuple[str, ...]
   robot: str
   total_frames: int
-  candidate_windows: int
-  rejected_windows: tuple[tuple[str, int], ...]
 
   def dataset(self, categories: bool) -> Dataset:
     return Dataset(
@@ -396,17 +489,16 @@ def _load_kinematic_clips(
   device: str,
   split: str,
   holdout: int,
-  filter_cfg: MotionFilterCfg | None,
-  columns: int | None = None,
   robot: str | None = None,
 ) -> _KinematicClips:
-  """Load and validate kinematic clips before either consumer cuts windows."""
+  """Load built clips, keeping only the frames their valid mask accepts.
+
+  A rejected frame splits its clip, so no window crosses it.
+  """
   if split not in ("train", "eval", "all"):
     raise ValueError("split must be train, eval, or all")
   if holdout < 2:
     raise ValueError("holdout must exceed one")
-  if columns is not None and columns < 2:
-    raise ValueError("columns must exceed one")
   files = motion_files(patterns)
   selected = (
     list(files)
@@ -431,8 +523,7 @@ def _load_kinematic_clips(
   clip_robot: str | None = None
   joint_names: tuple[str, ...] | None = None
   expected_robot = robot_name(robot) if robot is not None else None
-  total_frames = candidate_windows = 0
-  rejected_windows: dict[str, int] = {}
+  total_frames = 0
   for trajectory, path in enumerate(selected):
     with np.load(path, allow_pickle=False) as raw:
       clip_fps = float(np.asarray(raw["fps"]).reshape(-1)[0])
@@ -442,6 +533,12 @@ def _load_kinematic_clips(
       body_quat = np.asarray(raw["body_quat_w"], dtype=np.float32)
       body_lin_vel = np.asarray(raw["body_lin_vel_w"], dtype=np.float32)
       body_ang_vel = np.asarray(raw["body_ang_vel_w"], dtype=np.float32)
+      if "valid" not in raw:
+        raise ValueError(
+          f"{path} has no valid mask, build it with "
+          "mjlab.tasks.bridging.bridges.dataset.motion_capture.build"
+        )
+      valid = np.asarray(raw["valid"], dtype=bool)
       current_robot = str(raw["robot"]) if "robot" in raw else ""
       current_joint_names = (
         tuple(str(name) for name in raw["joint_names"])
@@ -476,26 +573,6 @@ def _load_kinematic_clips(
       axis=-1,
     )
     total_frames += len(state)
-    if columns is not None:
-      candidate_windows += max(0, len(state) - columns + 1)
-
-    valid = np.ones(len(state), dtype=bool)
-    if filter_cfg is not None and len(state):
-      bad_frames = motion_bad_frames(
-        state,
-        body_pos,
-        body_quat,
-        clip_fps,
-        filter_cfg,
-        current_robot or expected_robot or "unitree_g1",
-      )
-      valid &= ~np.logical_or.reduce(tuple(bad_frames.values()))
-      if columns is not None and len(state) >= columns:
-        for reason, bad in bad_frames.items():
-          counts = np.concatenate(([0], np.cumsum(bad, dtype=np.int64)))
-          rejected = int(((counts[columns:] - counts[:-columns]) > 0).sum())
-          rejected_windows[reason] = rejected_windows.get(reason, 0) + rejected
-
     kept = np.flatnonzero(valid)
     count = len(kept)
     states.append(torch.from_numpy(state[kept]))
@@ -512,7 +589,7 @@ def _load_kinematic_clips(
     or not states
     or not any(len(item) for item in states)
   ):
-    raise ValueError(f"No valid {split} kinematic frames remain after motion filtering")
+    raise ValueError(f"No valid {split} kinematic frames in {patterns}")
   return _KinematicClips(
     states=torch.cat(states).to(device),
     trajectory=torch.cat(trajectories).to(device),
@@ -525,8 +602,6 @@ def _load_kinematic_clips(
     joint_names=joint_names,
     robot=clip_robot,
     total_frames=total_frames,
-    candidate_windows=candidate_windows,
-    rejected_windows=tuple(sorted(rejected_windows.items())),
   )
 
 
@@ -554,13 +629,10 @@ def load_motions(
   device: str,
   split: str = "train",
   holdout: int = 8,
-  filter_cfg: MotionFilterCfg | None = DEFAULT_MOTION_FILTER,
   robot: str | None = None,
 ) -> MotionCorpus:
   """Load G1 NPZ clips and split by whole motion files."""
-  loaded = _load_kinematic_clips(
-    patterns, device, split, holdout, filter_cfg, columns, robot
-  )
+  loaded = _load_kinematic_clips(patterns, device, split, holdout, robot)
   data = loaded.dataset(categories=False)
   try:
     segments = kinematic_segments(data, columns - 1, columns - 1)
@@ -576,24 +648,31 @@ def load_motions(
     num_joints=loaded.num_joints,
     joint_names=loaded.joint_names,
     robot=loaded.robot,
-    candidate_windows=loaded.candidate_windows,
-    rejected_windows=loaded.rejected_windows,
   )
 
 
 def load_kinematic_dataset(
   patterns: tuple[str, ...],
   device: str,
-  filter_cfg: MotionFilterCfg | None = DEFAULT_MOTION_FILTER,
   robot: str | None = None,
 ) -> Dataset:
   """Load retargeted clips as trajectories for the universal tracker."""
-  loaded = _load_kinematic_clips(patterns, device, "all", 8, filter_cfg, robot=robot)
+  loaded = _load_kinematic_clips(patterns, device, "all", 8, robot)
   dataset = loaded.dataset(categories=True)
   print(
     f"[dataset] {dataset.states.shape[0]}/{loaded.total_frames} valid kinematic "
     f"states from {len(loaded.names)} clips"
   )
+  files = motion_files(patterns)
+  frames = torch.bincount(loaded.trajectory.cpu(), minlength=len(files))
+  for pattern in patterns:
+    matched = {Path(name) for name in glob.glob(pattern, recursive=True)}
+    ids = [index for index, path in enumerate(files) if path in matched]
+    count = int(frames[ids].sum())
+    print(
+      f"[dataset]   {pattern}: {len(ids)} clips, {count} states, "
+      f"{count / loaded.fps / 60:.1f} min"
+    )
   return dataset
 
 
@@ -609,7 +688,6 @@ class Windows:
     max_steps: int,
     time_scale_range: tuple[float, float] = (1.0, 1.0),
     start_xy_range: float = 0.0,
-    start_joint_range: float = 0.0,
     start_perturb_probability: float = 0.0,
     mirror_probability: float = 0.0,
   ) -> None:
@@ -623,7 +701,7 @@ class Windows:
     low, high = time_scale_range
     if low <= 0 or high < low:
       raise ValueError("time_scale_range must be positive and ordered")
-    if min(start_xy_range, start_joint_range, start_perturb_probability) < 0:
+    if min(start_xy_range, start_perturb_probability) < 0:
       raise ValueError("start perturbation values must be nonnegative")
     if start_perturb_probability > 1 or not 0 <= mirror_probability <= 1:
       raise ValueError("augmentation probabilities must lie in [0, 1]")
@@ -632,7 +710,6 @@ class Windows:
         raise ValueError("mirroring requires robot joint names")
     self.time_scale_range = time_scale_range
     self.start_xy_range = start_xy_range
-    self.start_joint_range = start_joint_range
     self.start_perturb_probability = start_perturb_probability
     self.mirror_probability = mirror_probability
     self.columns = history + max_steps + future - 1
@@ -640,7 +717,7 @@ class Windows:
     self.offsets = torch.arange(self.columns, device=data.states.device)
 
   def sample(self, count: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return local pose windows and A to B durations."""
+    """Return planner feature windows and A to B durations."""
     if count < 1:
       raise ValueError("count must be positive")
     device = self.data.states.device
@@ -656,10 +733,9 @@ class Windows:
       self.history,
       self.data.fps,
       self.start_xy_range,
-      self.start_joint_range,
       self.start_perturb_probability,
     )
-    features = encode(states, states[:, self.history - 1])
+    pose = encode_pose(states, states[:, self.history - 1])
     low, high = self.time_scale_range
     scale = torch.empty(count, device=device).uniform_(low, high)
     duration = (
@@ -669,29 +745,22 @@ class Windows:
       .clamp(self.min_steps, self.max_steps)
     )
     if bool((duration != source_duration).any()):
-      features = rescale_bridge_features(
-        features,
-        source_duration,
-        duration,
-        self.layout,
-        self.history,
-        self.future,
+      pose = rescale_bridge_pose(
+        pose, source_duration, duration, self.history, self.future
       )
     if self.mirror_probability:
       mirrored = torch.rand(count, 1, 1, device=device) < self.mirror_probability
       reflected = (
-        mirror_g1_features(features)
+        mirror_g1_pose(pose)
         if self.data.joint_names == () and self.data.num_joints == 29
-        else mirror_features(features, self.data.joint_names)
+        else mirror_pose(pose, self.data.joint_names)
       )
-      features = torch.where(mirrored, reflected, features)
+      pose = torch.where(mirrored, reflected, pose)
     target_last = self.history - 1 + duration + self.future - 1
     time = torch.arange(self.columns, device=device)[None]
-    last = features[torch.arange(count, device=device), target_last]
-    features = torch.where(
-      (time > target_last[:, None])[..., None], last[:, None], features
-    )
-    return features, duration
+    last = pose[torch.arange(count, device=device), target_last]
+    pose = torch.where((time > target_last[:, None])[..., None], last[:, None], pose)
+    return pose_features(pose), duration
 
   def states(self, count: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Return full state windows and durations for evaluation."""
@@ -707,26 +776,28 @@ class Windows:
     return states, duration
 
 
-def rescale_bridge_features(
-  features: torch.Tensor,
+def rescale_bridge_pose(
+  pose: torch.Tensor,
   source_duration: torch.Tensor,
   duration: torch.Tensor,
-  layout: Layout,
   history: int,
   future: int,
 ) -> torch.Tensor:
-  """Time-warp A to B while preserving both endpoint states exactly."""
-  if source_duration.shape != duration.shape or features.shape[0] != duration.numel():
-    raise ValueError("duration tensors must match the feature batch")
-  out = features.clone()
+  """Time-warp A to B poses while keeping both endpoints exact.
+
+  The warp keeps the original speed at A and B and changes it in between.
+  """
+  if source_duration.shape != duration.shape or pose.shape[0] != duration.numel():
+    raise ValueError("duration tensors must match the pose batch")
+  out = pose.clone()
   anchor = history - 1
-  for row in range(features.shape[0]):
+  for row in range(pose.shape[0]):
     old_steps = int(source_duration[row])
     new_steps = int(duration[row])
     old_end = anchor + old_steps
     new_end = anchor + new_steps
-    source = features[row, anchor : old_end + 1]
-    phase = torch.linspace(0.0, 1.0, new_steps + 1, device=features.device)
+    source = pose[row, anchor : old_end + 1]
+    phase = torch.linspace(0.0, 1.0, new_steps + 1, device=pose.device)
     stretch = new_steps / old_steps
     source_phase = stretch * phase + (1 - stretch) * (
       3 * phase.square() - 2 * phase.pow(3)
@@ -735,20 +806,12 @@ def rescale_bridge_features(
     lower = source_at.floor().long()
     upper = source_at.ceil().long()
     blend = source_at.frac()[:, None]
-    bridge = source[lower] * (1 - blend) + source[upper] * blend
-    speed = (old_steps / new_steps) * (
-      stretch + (1 - stretch) * (6 * phase - 6 * phase.square())
-    )
-    bridge[:, layout.root_linear_velocity] *= speed[:, None]
-    bridge[:, layout.root_angular_velocity] *= speed[:, None]
-    bridge[:, layout.joint_velocities] *= speed[:, None]
-    out[row, anchor : new_end + 1] = bridge
+    out[row, anchor : new_end + 1] = source[lower] * (1 - blend) + source[upper] * blend
     if future > 1:
-      out[row, new_end + 1 : new_end + future] = features[
+      out[row, new_end + 1 : new_end + future] = pose[
         row, old_end + 1 : old_end + future
       ]
-    final = out[row, new_end + future - 1]
-    out[row, new_end + future :] = final
+    out[row, new_end + future :] = out[row, new_end + future - 1]
   return out
 
 
@@ -760,7 +823,10 @@ def bridge_mask(
   future: int,
   duration: torch.Tensor,
 ) -> torch.Tensor:
-  """Condition on pre A history and B's short continuation."""
+  """Condition on pre A history and B's short continuation.
+
+  B's own steps stay free, since they depend on the unknown frame before B.
+  """
   if duration.shape != (batch,) or bool(
     ((duration < 2) | (duration > columns - history - future + 1)).any()
   ):
@@ -771,8 +837,10 @@ def bridge_mask(
   mask[:, :history] = True
   rows = history - 1 + duration
   offsets = torch.arange(future, device=duration.device)
-  indexes = torch.arange(batch, device=duration.device)[:, None]
-  mask[indexes, rows[:, None] + offsets] = True
+  indexes = torch.arange(batch, device=duration.device)
+  mask[indexes[:, None], rows[:, None] + offsets] = True
+  mask[indexes, rows, layout.root_step] = False
+  mask[indexes, rows, layout.joint_steps] = False
   return mask
 
 

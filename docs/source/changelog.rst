@@ -8,6 +8,77 @@ Upcoming version (not yet released)
 Changed
 ^^^^^^^
 
+- The kinematic diffusion planner predicts per-frame root and joint steps and adds
+  them up from A, instead of positions measured from A. It no longer predicts
+  velocities; they are computed from the positions. B's root and joint positions
+  enter as condition-only channels, the gap left by the summed steps is spread over
+  the path so B is still hit exactly, and a new endpoint loss keeps that gap small.
+  The old model was only centimetre accurate per frame, so the root snapped away from
+  A and into B and its positions disagreed with its velocities. Training now stretches
+  time by 0.8 to 1.25 (was 0.95 to 1.05) and shifts the start by at most 1 cm (was 2 cm),
+  since the shift moves only the root and so bakes foot sliding into the target. The
+  checkpoint format is now v6, so older planner checkpoints must be retrained.
+  ``evaluation.kinematic`` also reports seam steps at A and B, root and joint
+  acceleration, and foot slip, each next to the recorded motion's value.
+
+- One command builds the diffusion bridge's motion capture corpus:
+  ``python -m mjlab.tasks.bridging.bridges.dataset.motion_capture.build``. Every
+  selection and filtering criterion (BABEL labels, LAFAN themes, the kinematic filter)
+  now lives in ``bridges/dataset/motion_capture/filters.py``. Floor QA and per-frame
+  grounding moved into retargeting (``mjlab.retargeting.floor``), and the kinematic
+  filter runs at build time as a per-frame ``valid`` mask, so the loaders only read.
+  ``mjlab.retargeting.gmr.retarget.retarget_clips`` retargets any SMPL-X or BVH clip
+  list; ``mjlab.datasets.amass.download.extract`` pulls single takes from the AMASS
+  tarballs. Removed ``mjlab.datasets.babel``, ``mjlab.datasets.lafan.build_manifest``,
+  ``retarget_manifest``, ``retarget_lafan`` and ``mjlab.tasks.bridging.motion_filter``.
+  Clips built earlier have no ``valid`` mask and must be rebuilt.
+
+- The BABEL manifest defaults to CMU and KIT only, and drops a whole take when any
+  of its labels is denied, instead of cutting only the denied time. Object takes
+  labeled by action alone ("knock", "catch", "raise up" while lifting) leaked their
+  walk and squat intervals this way. New deny terms: lift, carry, catch, throw, knock,
+  wash, push, recovery, parkour, seesaw, slope, stair, beam, stone. The default
+  selection is 1.7 h (CMU 56 min, KIT 46 min). ``--whole-take False`` restores
+  interval cutting.
+
+- The diffusion planner and universal tracker now learn lowered and propulsive motion.
+  The BABEL manifest keeps crouch, squat, hop, jump and leap (no longer denied), and
+  the LAFAN manifest adds the jumps and multipleActions takes. The default kinematic
+  filter is the new ``BRIDGE_MOTION_FILTER``: it drops the 0.4 m root floor and the
+  root speed limits, and rejects only flights of 0.25 s or longer, in full, plus roots
+  tilted past 45 degrees. Running strides, hops and skips are kept; a jump's flight
+  still splits its clip but its crouch, push off and landing stay. On the existing
+  corpus this adds 27% LAFAN windows (run +150%, sprint +68%) and 9% BABEL windows
+  (squat +82%, jog +58%). The retargeting floor QA no longer rejects a whole clip for
+  one frame of foot penetration (5 of 18 LAFAN takes were lost this way), and the
+  planner-improvement evaluator counts a fall below 0.25 m root height instead of
+  0.45 m, which every squat reached. ``locomotion`` stays available as a named profile.
+
+- Retargeted kinematic clips are grounded frame by frame when loaded for the diffusion
+  planner and universal tracker. Supporting feet (slow and near the floor) are put at
+  z = 0, frames without support are interpolated, and no foot is left below the floor.
+  Retargeted clips hovered 3 cm on median, with both feet off the ground in half of the
+  BABEL frames; after grounding that drops to under 4%. Disable with
+  ``MotionFilterCfg(ground=False)``; ``filter_cfg=None`` keeps raw kinematics.
+
+- The universal tracker's route reward averages a bounded kernel per joint and per channel
+  instead of scoring the worst joint of the worst channel, so motions the robot cannot
+  follow (self-penetrating arm poses in the reference) no longer set the reward. Kernel
+  scales are ``TrackerCommandCfg.tracking_scales``. ``route_score`` values are not
+  comparable with earlier runs.
+
+- The universal tracker no longer penalizes self collisions. About a quarter of the
+  reference frames put an arm into the body, and the penalty made the policy bend its
+  whole body away from those poses. Physics still prevents penetration; the new
+  ``self_collision_hits`` metric counts contact substeps above 10 N.
+
+- Selector recording now keeps the beginning of policy rollouts. The selector
+  builder can override one skill's phase window from the CLI, and the parkour
+  demo can select a matching climb entry frame without editing its course file.
+  The selector viewer lays entries out side by side instead of overlapping them,
+  and the parkour Viser viewer can show or hide each generated diffusion path.
+  Bridge duration controls use the planner checkpoint's exact tick range.
+
 - BABEL bridge data now defaults to strictly labeled locomotion from BMLrub, CMU,
   KIT, and ACCAD. Object-supported, posed, athletic, ambiguous, and unknown overlaps
   are cut before retargeting. G1 retargeting applies only a robust constant floor
@@ -60,6 +131,9 @@ Added
   colors, spacing, yaw, goal and control defaults are configured in
   ``parkour/config/config.yml``; the Viser panel adjusts per-skill bridge distance and
   duration live. Fixed selector-entry ghosts show every planned landing pose across resets.
+  The parkour bridge hands off immediately after its final planned tick. Fixed skill-entry
+  ghosts remain visible while a separate purple ghost follows the generated plan, and
+  foot-height scan visualization starts disabled.
 
 - Diffusion bridges now hand off when their planned path ends instead of waiting for every
   endpoint channel to enter its tolerance box. The box result remains available as the
@@ -209,6 +283,18 @@ Added
 
 Fixed
 ^^^^^
+
+- The G1 diffusion planner and universal tracker read BABEL from
+  ``data/babel_retargeted/unitree_g1``. They pointed at ``unitree_g1_locomotion_v1``,
+  which does not exist, and the loader silently kept only the matching LAFAN clips.
+  Every motion pattern must now match at least one file, and the loader prints clips,
+  states and minutes per source.
+
+- Universal tracker endpoint metrics (``target_error_*``, ``within_endpoint_box``) are
+  measured on the tick that reaches B, not at the end of the post-B continuation, where
+  ``within_endpoint_box`` was always zero. New ``tracking_error_*`` metrics log the mean
+  error against the moving reference. ``Episode_Reward`` terms are no longer divided by
+  a 1e9 s episode length.
 
 - Removed retired UniTracker and ProtoMotions adapters that referenced the
   deleted ``mjlab.tasks.unitracker`` package. Diffusion execution now uses the

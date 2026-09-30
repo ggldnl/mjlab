@@ -3,6 +3,7 @@
     dataset.py             shared format, loader, and rollout driver
     trajectory_tracking/  rollouts of motion tracking policies
     skill_rollouts/       stitched rollouts of trained skills
+    motion_capture/       retargeted BABEL and LAFAN for the diffusion bridge
     view.py                per source counts, and a window replayed as a ghost
 
 One corpus, held here rather than inside an architecture, because what a bridge is asked

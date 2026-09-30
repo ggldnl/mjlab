@@ -25,6 +25,7 @@ from mjlab.tasks.bridging.bridges.diffusion.tracker.command import (
 )
 from mjlab.tasks.bridging.bridges.imitation.command import CHANNELS
 from mjlab.tasks.bridging.config import get_robot
+from mjlab.tasks.tracking.mdp.rewards import self_collision_cost
 from mjlab.tasks.tracking.tracking_env_cfg import make_tracking_env_cfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
@@ -149,6 +150,9 @@ def tracker_env_cfg(
       lookahead=1,
     )
   }
+  # No self collision penalty: about a quarter of the reference frames put an arm
+  # into the body. Physics still stops the penetration, so the robot follows as
+  # closely as contact allows instead of steering its whole body away
   cfg.rewards = {
     "trajectory_tracking": RewardTermCfg(
       func=mdp.trajectory_tracking, weight=10.0, params={"command_name": COMMAND}
@@ -160,7 +164,6 @@ def tracker_env_cfg(
       weight=-10.0,
       params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
     ),
-    "self_collisions": cfg.rewards["self_collisions"],
     "failed": RewardTermCfg(func=base_mdp.is_terminated, weight=-20.0),
   }
   cfg.terminations = {
@@ -177,12 +180,23 @@ def tracker_env_cfg(
       f"target_error_{name}": MetricsTermCfg(
         func=mdp.target_error,
         params={"command_name": COMMAND, "channel": index},
-        reduce="last",
+        reduce="max",
+      )
+      for index, name in enumerate(CHANNELS)
+    },
+    **{
+      f"tracking_error_{name}": MetricsTermCfg(
+        func=mdp.tracking_error,
+        params={"command_name": COMMAND, "channel": index},
       )
       for index, name in enumerate(CHANNELS)
     },
     "within_endpoint_box": MetricsTermCfg(
-      func=mdp.within_endpoint_box, params={"command_name": COMMAND}, reduce="last"
+      func=mdp.within_endpoint_box, params={"command_name": COMMAND}, reduce="max"
+    ),
+    "self_collision_hits": MetricsTermCfg(
+      func=self_collision_cost,
+      params={"sensor_name": "self_collision", "force_threshold": 10.0},
     ),
     "route_score": MetricsTermCfg(
       func=mdp.route_score, params={"command_name": COMMAND}
@@ -190,7 +204,9 @@ def tracker_env_cfg(
   }
   if play:
     cfg.events = {}
-  cfg.episode_length_s = 1.0e9
+  # route_done always ends the episode first (at most 2 s plus the 32 tick tail).
+  # The value only normalizes the logged Episode_Reward terms.
+  cfg.episode_length_s = 3.0
   cfg.is_finite_horizon = True
   cfg.viewer.body_name = selected.base_body_name
   return cfg

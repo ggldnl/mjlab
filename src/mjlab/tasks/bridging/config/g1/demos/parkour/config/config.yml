@@ -1,11 +1,11 @@
 seed: 0
 
 obstacles:
-  count: 6
+  count: 10
   pattern: [tall, short]
-  first_run_up: 3.0
-  spacing: [3.0, 4.5]
-  lateral_offset: [-0.8, 0.8]
+  first_run_up: 2.0
+  spacing: [1.5, 2.0]
+  lateral_offset: [-0.8, 0.1]
   yaw_degrees: [-20.0, 20.0]
   goal_clearance: 2.0
   colors:
@@ -24,8 +24,8 @@ obstacles:
 
 # Scenery only: the controller never plans against these boxes.
 side_obstacles:
-  count: 18
-  side_offset: [2.5, 6.0]
+  count: 50
+  side_offset: [1.8, 6.0]
   yaw_degrees: [-180.0, 180.0]
 
 goal:
@@ -43,9 +43,8 @@ controller:
     jump: 0.50
   hurdle_takeoff: 0.44
   bridge_duration_s:
-    climb: 1.20
+    climb: 1.00
     jump: 0.80
-  capture_grace_s: 0.50
   capture_tolerance_scale: 2.0
   lift_height: 0.12
   land_height: 0.08
@@ -57,5 +56,5 @@ controller:
 
 skills:
   # Exact EntryTable rows, not arbitrary motion frames.
-  jump_entry_frame: 87
-  climb_entry_frame: 28
+  jump_entry_frame: 96
+  climb_entry_frame: 5

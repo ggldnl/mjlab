@@ -196,6 +196,66 @@ def _curate(tarball: Path, output_dir: Path, skills: tuple[str, ...]) -> dict[st
   return counts
 
 
+def _normalized(path: str) -> str:
+  return path.replace("\\", "/").replace("_poses.npz", "_stageii.npz").replace(" ", "_")
+
+
+def _find(members: list[tarfile.TarInfo], source: str) -> tarfile.TarInfo | None:
+  """The archive member of a BABEL source path such as CMU/CMU/18_19_rory/18_01_poses.npz.
+
+  Match the longest path suffix first. Releases rename subject folders (CMU 18_19_rory is
+  18 in the SMPL-X archive), so fall back to a file name that is unique in the archive.
+  None when the archive does not have it.
+  """
+  parts = _normalized(source).split("/")
+  for start in range(1, len(parts)):
+    suffix = "/" + "/".join(parts[start:])
+    found = [m for m in members if ("/" + _normalized(m.name)).endswith(suffix)]
+    if len(found) == 1:
+      return found[0]
+    if found:
+      raise FileNotFoundError(f"{source} matches {len(found)} archive members")
+  return None
+
+
+def extract(sources: list[str], tarball_dir: Path, output_dir: Path) -> list[str]:
+  """Extract BABEL source paths from the subset tarballs into output_dir/<source>.
+
+  Files already extracted are skipped. Returns the sources the archives do not have,
+  such as CMU's two person takes, missing from its SMPL-X release.
+  """
+  missing = []
+  pending: dict[str, list[str]] = {}
+  for source in sorted(set(sources)):
+    if not (output_dir / source).is_file():
+      pending.setdefault(source.split("/")[0], []).append(source)
+  for subset, subset_sources in pending.items():
+    tarball = tar_path = tarball_dir / f"{ARCHIVE_NAMES.get(subset, subset)}.tar.bz2"
+    if not tarball.is_file():
+      tarball = tarball_dir / f"{subset}.tar.bz2"
+    if not tarball.is_file():
+      raise FileNotFoundError(f"Missing AMASS archive {tar_path}, download it first")
+    print(f"Extracting {len(subset_sources)} {subset} files from {tarball}")
+    with tarfile.open(tarball, "r:bz2") as tar:
+      members = [m for m in tar.getmembers() if m.isfile()]
+      found = []
+      for source in subset_sources:
+        member = _find(members, source)
+        if member is None:
+          missing.append(source)
+        else:
+          found.append((member, source))
+      # In archive order: seeking back in a bz2 stream decompresses it again
+      for member, source in sorted(found, key=lambda item: item[0].offset_data):
+        stream = tar.extractfile(member)
+        assert stream is not None
+        destination = output_dir / source
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with stream, destination.open("wb") as out:
+          shutil.copyfileobj(stream, out)
+  return missing
+
+
 def main(
   output_dir: Path = Path("data/amass_atomic"),
   subsets: tuple[str, ...] = DEFAULT_SUBSETS,

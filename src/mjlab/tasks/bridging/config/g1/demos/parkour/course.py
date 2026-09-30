@@ -149,7 +149,6 @@ class ControllerCfg:
   bridge_distance: dict[str, float]
   hurdle_takeoff: float
   bridge_duration_s: dict[str, float]
-  capture_grace_s: float
   capture_tolerance_scale: float
   lift_height: float
   land_height: float
@@ -173,7 +172,6 @@ class ControllerCfg:
       bridge_duration_s={
         skill: float(value) for skill, value in raw["bridge_duration_s"].items()
       },
-      capture_grace_s=float(raw["capture_grace_s"]),
       capture_tolerance_scale=float(raw["capture_tolerance_scale"]),
       lift_height=float(raw["lift_height"]),
       land_height=float(raw["land_height"]),

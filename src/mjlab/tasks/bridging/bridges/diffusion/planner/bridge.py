@@ -16,6 +16,7 @@ from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import (
   bridge_mask,
   decode,
   encode,
+  integrate,
 )
 from mjlab.tasks.bridging.bridges.diffusion.planner.model import (
   Denoiser,
@@ -27,7 +28,7 @@ from mjlab.tasks.bridging.bridges.diffusion.planner.process import (
 )
 
 EXPERIMENT = planner_experiment("g1")
-CHECKPOINT_FORMAT = "mjlab-kinematic-diffusion-v5"
+CHECKPOINT_FORMAT = "mjlab-kinematic-diffusion-v6"
 
 
 @dataclass
@@ -88,7 +89,7 @@ class DiffusionBridge:
       )
     columns = history + int(saved["max_steps"]) + future - 1
     model = Denoiser(layout.width, columns, ModelCfg(**saved["model_cfg"]))
-    process = Diffusion(model, cfg).to(device)
+    process = Diffusion(model, cfg, layout).to(device)
     process.denoiser.load_state_dict(saved["ema"])
     process.requires_grad_(False)
     norm = saved["normalizer"]
@@ -159,8 +160,10 @@ class DiffusionBridge:
     target: torch.Tensor,
     duration: torch.Tensor,
   ) -> GeneratedPath:
-    """Decode states and copy A and B exactly."""
-    states = decode(self.normalizer.denormalize(denoised), anchor, self.layout)
+    """Add up the steps, decode states and copy A and B exactly."""
+    features = self.normalizer.denormalize(denoised)
+    pose = integrate(features, self.layout, self.history, duration)
+    states = decode(pose, anchor, self.fps)
     states = states[:, self.history - 1 :]
     states[:, 0] = anchor
     offsets = torch.arange(self.future, device=states.device)

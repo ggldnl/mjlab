@@ -40,7 +40,11 @@ from mjlab.tasks.bridging.bridges.diffusion.planner.bridge import (
   checkpoint_metadata,
 )
 from mjlab.tasks.bridging.bridges.diffusion.planner.model import Denoiser, ModelCfg
-from mjlab.tasks.bridging.bridges.diffusion.planner.process import Diffusion, ProcessCfg
+from mjlab.tasks.bridging.bridges.diffusion.planner.process import (
+  Diffusion,
+  PathLoss,
+  ProcessCfg,
+)
 from mjlab.tasks.bridging.bridges.diffusion.tracker import tracker_ppo_runner_cfg
 from mjlab.tasks.bridging.bridges.diffusion.tracker.command import (
   STATE_HISTORY,
@@ -585,7 +589,8 @@ class EvaluationCfg:
   endpoint_tolerance_scale: float = 2.0
   max_action_saturation_fraction: float = 0.20
   fallen_gravity: float = -0.70
-  minimum_root_height: float = 0.45
+  minimum_root_height: float = 0.25
+  """Below this the robot counts as fallen. Retargeted squats reach 0.33 m."""
 
   def __post_init__(self) -> None:
     probabilities = (
@@ -702,13 +707,16 @@ class PlannerCfg:
   future: int = 1
   min_steps: int = 15
   max_steps: int = 60
-  time_scale_range: tuple[float, float] = (0.95, 1.05)
-  start_xy_range: float = 0.02
-  start_joint_range: float = 0.03
+  time_scale_range: tuple[float, float] = (0.8, 1.25)
+  start_xy_range: float = 0.01
   start_perturb_probability: float = 0.5
   mirror_probability: float = 0.5
   model: ModelCfg = field(default_factory=ModelCfg)
   process: ProcessCfg = field(default_factory=ProcessCfg)
+  endpoint_weight: float = 1.0
+  foot_slip_weight: float = 1.0
+  foot_contact_height: float = 0.05
+  foot_contact_speed: float = 0.2
   batch: int = 256
   bootstrap_updates: int = 30_000
   updates_per_cycle: int = 1_000
@@ -742,7 +750,6 @@ class PlannerTrainer:
       cfg.max_steps,
       cfg.time_scale_range,
       cfg.start_xy_range,
-      cfg.start_joint_range,
       cfg.start_perturb_probability,
       cfg.mirror_probability,
     )
@@ -762,7 +769,7 @@ class PlannerTrainer:
       model = Denoiser(self.windows.layout.width, self.windows.columns, cfg.model).to(
         device
       )
-      process = Diffusion(model, cfg.process).to(device)
+      process = Diffusion(model, cfg.process, self.windows.layout).to(device)
       self.bridge = DiffusionBridge(
         process,
         normalizer,
@@ -793,6 +800,8 @@ class PlannerTrainer:
       raise ValueError(
         "Planner checkpoint and motion data use different layouts or rates"
       )
+    self.robot = robot
+    self.path_loss = self._path_loss()
     self.optimizer = torch.optim.AdamW(
       self.bridge.process.denoiser.parameters(), lr=cfg.learning_rate
     )
@@ -802,6 +811,19 @@ class PlannerTrainer:
         self.optimizer.load_state_dict(raw["planner_optimizer_state_dict"])
     self.updates = int(self.metadata.get("iteration", 0))
     self.bridge.process.eval().requires_grad_(False)
+
+  def _path_loss(self) -> PathLoss:
+    return PathLoss(
+      self.robot,
+      self.bridge.normalizer,
+      self.bridge.layout,
+      self.bridge.history,
+      self.bridge.fps,
+      self.cfg.endpoint_weight,
+      self.cfg.foot_slip_weight,
+      self.cfg.foot_contact_height,
+      self.cfg.foot_contact_speed,
+    ).to(self.device)
 
   def _loss(self, features: torch.Tensor, duration: torch.Tensor) -> torch.Tensor:
     clean = self.bridge.normalizer.normalize(features)
@@ -816,7 +838,7 @@ class PlannerTrainer:
     rows = self.bridge.history - 1 + duration
     time_index = torch.arange(clean.shape[1], device=clean.device)[None]
     valid = time_index <= rows[:, None] + self.bridge.future - 1
-    return self.bridge.process.loss(clean, known, valid)
+    return self.bridge.process.loss(clean, known, valid, self.path_loss, duration)
 
   def train(self, updates: int, replay: PhysicalReplay) -> dict[str, float]:
     if updates < 1:
@@ -873,6 +895,7 @@ class PlannerTrainer:
       raise ValueError("Resumed planner shape differs from this task")
     self.bridge.process.denoiser.load_state_dict(loaded.process.denoiser.state_dict())
     self.bridge.normalizer = loaded.normalizer
+    self.path_loss = self._path_loss()
     raw = torch.load(checkpoint, map_location=self.device, weights_only=False)
     self.metadata = dict(raw.get("planner", raw))
     if raw.get("planner_optimizer_state_dict") is not None:

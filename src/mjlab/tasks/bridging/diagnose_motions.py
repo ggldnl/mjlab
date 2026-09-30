@@ -3,8 +3,10 @@
 Run:
 
   uv run python -m mjlab.tasks.bridging.diagnose_motions \
-    --datasets "('LAFAN1=data/lafan1_g1/motions/*.npz', \
-    'BABEL=data/babel_retargeted/unitree_g1_locomotion_v1/**/*.npz')"
+    --datasets "('LAFAN=data/lafan_retargeted/unitree_g1/**/*.npz', \
+    'BABEL=data/babel_retargeted/unitree_g1/**/*.npz')"
+
+Every dataset uses the bridge filter unless --profiles names another one.
 """
 
 from __future__ import annotations
@@ -13,13 +15,13 @@ import glob
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import cast, get_args
 
 import numpy as np
 import tyro
 
 import mjlab
-from mjlab.tasks.bridging.motion_filter import (
+from mjlab.tasks.bridging.bridges.dataset.motion_capture.filters import (
   LOCOMOTION_MOTION_FILTER,
   FilterProfile,
   MotionFilterCfg,
@@ -189,14 +191,16 @@ def main(
   selected_profiles: dict[str, FilterProfile] = {}
   for spec in profiles:
     name, separator, profile = spec.partition("=")
-    if not separator or not name or profile not in ("quality", "locomotion", "none"):
-      raise ValueError(f"Profile must use NAME=quality|locomotion|none: {spec!r}")
+    if not separator or not name or profile not in get_args(FilterProfile):
+      raise ValueError(
+        f"Profile must use NAME={'|'.join(get_args(FilterProfile))}: {spec!r}"
+      )
     selected_profiles[name] = cast(FilterProfile, profile)
   for spec in datasets:
     name, separator, pattern = spec.partition("=")
     if not separator or not name or not pattern:
       raise ValueError(f"Dataset must use NAME=GLOB syntax: {spec!r}")
-    profile = selected_profiles.get(name, "locomotion")
+    profile = selected_profiles.get(name, "bridge")
     _print(
       diagnose(name, pattern, window_frames, motion_filter(profile), profile),
       window_frames,

@@ -419,6 +419,9 @@ class RayCastSensorCfg(SensorCfg):
   debug_vis: bool = False
   """Enable debug visualization."""
 
+  debug_vis_enabled: bool = True
+  """Show debug visualization initially."""
+
   viz: VizCfg = field(default_factory=VizCfg)
   """Visualization settings."""
 
@@ -470,7 +473,7 @@ class RayCastSensor(Sensor[RayCastData]):
     self._cached_frame_pos: torch.Tensor | None = None
     self._cached_frame_mat: torch.Tensor | None = None
 
-    self._debug_vis_enabled: bool = True
+    self._debug_vis_enabled = cfg.debug_vis_enabled
     self._ctx: SensorContext | None = None
 
   def edit_spec(

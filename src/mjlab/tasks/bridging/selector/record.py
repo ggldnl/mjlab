@@ -27,6 +27,7 @@ class RecordCfg(RolloutCfg):
   robot: str = "g1"
   num_envs: int = 256
   steps: int = 800
+  settle: int = 0
   skills: tuple[str, ...] = ()
   checkpoints: tuple[str, ...] = ()
   path: Path | None = None

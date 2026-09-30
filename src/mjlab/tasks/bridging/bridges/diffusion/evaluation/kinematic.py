@@ -1,5 +1,7 @@
 """Evaluate generated plans against held out BABEL windows."""
 
+# pyright: reportPrivateImportUsage=false
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,6 +16,9 @@ from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import Windows, load
 from mjlab.tasks.bridging.bridges.diffusion.planner.bridge import (
   DiffusionBridge,
 )
+from mjlab.tasks.bridging.bridges.diffusion.planner.process import (
+  RobotFootKinematics,
+)
 from mjlab.utils.lab_api.math import quat_error_magnitude
 
 
@@ -27,6 +32,62 @@ class EvaluateCfg:
   sample_steps: int | None = None
   device: str = "cuda:0"
   seed: int = 0
+  foot_contact_height: float = 0.05
+  foot_slip_speed: float = 0.2
+
+
+def motion_quality(
+  paths: torch.Tensor,
+  duration: torch.Tensor,
+  fps: float,
+  feet: RobotFootKinematics,
+  contact_height: float,
+  slip_speed: float,
+) -> dict[str, float]:
+  """Metrics that need no ground truth, computed over frames 0 to duration.
+
+  seam_a_step_m             root travel on the first tick after A
+  seam_b_step_m             root travel on the tick into B
+  root_step_m               mean root travel per tick
+  root_acceleration_mps2    mean root acceleration from second differences of position
+  joint_acceleration_radps2 mean joint acceleration, same way
+  foot_slip_mps             horizontal sole speed while the sole stays below contact_height
+  foot_slip_rate            share of those grounded ticks faster than slip_speed
+
+  Velocities are computed from positions, so jitter shows up as acceleration.
+  """
+  batch = torch.arange(paths.shape[0], device=paths.device)
+  edges = torch.arange(paths.shape[1] - 1, device=paths.device)[None]
+  inside = edges < duration[:, None]
+  step = paths[:, 1:, :3] - paths[:, :-1, :3]
+  length = torch.linalg.vector_norm(step, dim=-1)
+  joints = (paths.shape[-1] - 13) // 2
+  bends = inside[:, 1:] & inside[:, :-1]
+  root_acceleration = torch.linalg.vector_norm(step[:, 1:] - step[:, :-1], dim=-1)
+  joint_step = paths[:, 1:, 13 : 13 + joints] - paths[:, :-1, 13 : 13 + joints]
+  joint_acceleration = (joint_step[:, 1:] - joint_step[:, :-1]).abs().mean(-1)
+
+  soles = feet(paths)
+  sole_speed = (
+    torch.linalg.vector_norm(soles[:, 1:, :, :2] - soles[:, :-1, :, :2], dim=-1) * fps
+  )
+  grounded = (
+    (soles[:, 1:, :, 2] <= contact_height)
+    & (soles[:, :-1, :, 2] <= contact_height)
+    & inside[..., None]
+  )
+  slip = sole_speed[grounded]
+  return {
+    "seam_a_step_m": float(length[:, 0].mean()),
+    "seam_b_step_m": float(length[batch, duration - 1].mean()),
+    "root_step_m": float(length[inside].mean()),
+    "root_acceleration_mps2": float(root_acceleration[bends].mean()) * fps**2,
+    "joint_acceleration_radps2": float(joint_acceleration[bends].mean()) * fps**2,
+    "foot_slip_mps": float(slip.mean()) if slip.numel() else 0.0,
+    "foot_slip_rate": float((slip > slip_speed).float().mean())
+    if slip.numel()
+    else 0.0,
+  }
 
 
 @torch.no_grad()
@@ -104,6 +165,19 @@ def evaluate(cfg: EvaluateCfg) -> dict[str, float]:
     "joint_position_mae_rad": float(torch.cat(joint_position).mean()),
     "joint_velocity_mae_radps": float(torch.cat(joint_velocity).mean()),
   }
+  # The same quality metrics on the recorded motion give the level to aim for
+  feet = RobotFootKinematics(bridge.robot).to(cfg.device)
+  recorded = states[:, bridge.history - 1 :]
+  for source, paths in (("generated", path), ("recorded", recorded)):
+    quality = motion_quality(
+      paths,
+      duration,
+      bridge.fps,
+      feet,
+      cfg.foot_contact_height,
+      cfg.foot_slip_speed,
+    )
+    result.update({f"{source}_{name}": value for name, value in quality.items()})
   for name, value in result.items():
     print(f"{name}: {value:.6f}")
   return result

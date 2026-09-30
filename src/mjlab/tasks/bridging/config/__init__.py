@@ -47,7 +47,7 @@ ROBOTS = {
     G1_ACTION_SCALE,
     "pelvis",
     (r"^(left|right)_foot[1-7]_collision$",),
-    "unitree_g1_locomotion_v1",
+    "unitree_g1",
   ),
   "t1": RobotCfg(
     T1_SKILLS,

@@ -37,6 +37,8 @@ class BuildCfg:
   path: Path | None = None
   out: Path | None = None
   skills: tuple[str, ...] = ()
+  window: tuple[str, int, int, int] | None = None
+  """One optional override: skill, start phase, stop phase, sample count."""
   device: str = "cpu"
 
 
@@ -140,6 +142,12 @@ def build(cfg: BuildCfg) -> Path:
       raise ValueError(f"No window for: {', '.join(sorted(unknown))}")
     if absent:
       raise ValueError(f"Not recorded: {', '.join(sorted(absent))}")
+    windows = dict(WINDOWS)
+    if cfg.window is not None:
+      skill, start, stop, samples = cfg.window
+      if skill not in wanted:
+        raise ValueError(f"Window override skill '{skill}' is not being built")
+      windows[skill] = Window(start, stop, samples)
 
     states = raw["states"]
     skill_index = raw["skill"]
@@ -152,7 +160,7 @@ def build(cfg: BuildCfg) -> Path:
         states[skill_rows],
         trajectory[skill_rows],
         phase[skill_rows],
-        WINDOWS[skill],
+        windows[skill],
         cfg.device,
       )
       picks.append(skill_rows[rows])

@@ -62,6 +62,7 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     exclude_parent_body=True,
     include_geom_groups=(0,),  # Terrain only.
     debug_vis=True,
+    debug_vis_enabled=False,
     viz=TerrainHeightSensorCfg.VizCfg(
       show_rays=True,
       hit_color=(1.0, 0.0, 1.0, 0.8),  # Magenta rays.

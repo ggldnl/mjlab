@@ -145,14 +145,23 @@ def fell_over(
 def target_error(
   env: ManagerBasedRlEnv, command_name: str, channel: int
 ) -> torch.Tensor:
-  return tracker(env, command_name).target_errors()[:, channel]
+  """Error to B on the tick that reaches it, zero elsewhere. Use reduce="max"."""
+  command = tracker(env, command_name)
+  return command.target_errors()[:, channel] * command.at_deadline
+
+
+def tracking_error(
+  env: ManagerBasedRlEnv, command_name: str, channel: int
+) -> torch.Tensor:
+  """Error to the moving reference, joints averaged. Use reduce="mean"."""
+  return tracker(env, command_name).tracking_errors()[:, channel]
 
 
 def within_endpoint_box(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+  """Every channel within tolerance on the tick that reaches B. Use reduce="max"."""
   command = tracker(env, command_name)
-  return (
-    command.deadline & (command.target_errors() <= command.tolerances).all(dim=-1)
-  ).float()
+  inside = (command.target_errors() <= command.tolerances).all(dim=-1)
+  return (command.at_deadline & inside).float()
 
 
 def route_score(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:

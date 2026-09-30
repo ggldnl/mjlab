@@ -39,6 +39,7 @@ from mjlab.utils.lab_api.math import (
   quat_apply,
   quat_apply_inverse,
   quat_conjugate,
+  quat_error_magnitude,
   quat_from_angle_axis,
   quat_mul,
   yaw_quat,
@@ -90,6 +91,86 @@ def reference_features(current: torch.Tensor, reference: torch.Tensor) -> torch.
   )
 
 
+def _joint_errors(
+  actual: torch.Tensor, target: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+  """Root channel errors (N, 4), joint position and velocity errors (N, J) each."""
+  joints = (actual.shape[-1] - ROOT_STATE_DIM) // 2
+  q = slice(ROOT_STATE_DIM, ROOT_STATE_DIM + joints)
+  qd = slice(q.stop, q.stop + joints)
+  root = torch.stack(
+    (
+      torch.linalg.vector_norm(actual[:, :3] - target[:, :3], dim=-1),
+      quat_error_magnitude(actual[:, 3:7], target[:, 3:7]),
+      torch.linalg.vector_norm(actual[:, 7:10] - target[:, 7:10], dim=-1),
+      torch.linalg.vector_norm(actual[:, 10:13] - target[:, 10:13], dim=-1),
+    ),
+    dim=-1,
+  )
+  return (
+    root,
+    (actual[:, q] - target[:, q]).abs(),
+    (actual[:, qd] - target[:, qd]).abs(),
+  )
+
+
+def mean_channel_errors(
+  actual: torch.Tensor, target: torch.Tensor, upper_body: torch.Tensor
+) -> torch.Tensor:
+  """Errors ordered like CHANNELS, with the mean joint instead of the worst one."""
+  root, position, velocity = _joint_errors(actual, target)
+  lower = ~upper_body
+  return torch.cat(
+    (
+      root,
+      torch.stack(
+        (
+          position[:, lower].mean(-1),
+          velocity[:, lower].mean(-1),
+          position[:, upper_body].mean(-1),
+          velocity[:, upper_body].mean(-1),
+        ),
+        dim=-1,
+      ),
+    ),
+    dim=-1,
+  )
+
+
+def soft_score(
+  actual: torch.Tensor,
+  target: torch.Tensor,
+  upper_body: torch.Tensor,
+  scales: torch.Tensor,
+) -> torch.Tensor:
+  """Tracking score in [0, 1] that stays informative when part of a motion is impossible.
+
+  Each root channel and each joint gets a bounded kernel 1 / (1 + (e / s)^2), with s
+  the channel scale. Joint kernels are averaged within their group, then the eight
+  channels are averaged.
+
+  One unreachable joint costs at most its share of one channel, and past a few s its
+  gradient fades, so the policy stops chasing it and keeps improving the rest.
+  """
+  root, position, velocity = _joint_errors(actual, target)
+  lower = ~upper_body
+
+  def kernel(error: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    return 1.0 / (1.0 + (error / scale).square())
+
+  channels = [kernel(root, scales[:4])]
+  for index, (error, mask) in enumerate(
+    (
+      (position, lower),
+      (velocity, lower),
+      (position, upper_body),
+      (velocity, upper_body),
+    )
+  ):
+    channels.append(kernel(error[:, mask], scales[4 + index]).mean(-1, keepdim=True))
+  return torch.cat(channels, dim=-1).mean(-1)
+
+
 class TrackerCommand(CommandTerm):
   """Draw a kinematic clip window and expose its moving reference and endpoint."""
 
@@ -103,6 +184,7 @@ class TrackerCommand(CommandTerm):
     self.fps = 1.0 / env.step_dt
     self.upper_body = upper_body_mask(tuple(self.robot.joint_names), self.device)
     self.tolerances = cfg.tolerances.tensor(self.device)
+    self.tracking_scales = cfg.tracking_scales.tensor(self.device)
     self.offsets = torch.tensor(
       cfg.future_offsets, device=self.device, dtype=torch.long
     )
@@ -168,6 +250,11 @@ class TrackerCommand(CommandTerm):
   @property
   def deadline(self) -> torch.Tensor:
     return self.step >= self.window_steps
+
+  @property
+  def at_deadline(self) -> torch.Tensor:
+    """True only on the control tick that reaches B."""
+    return self.step == self.window_steps
 
   @property
   def route_done(self) -> torch.Tensor:
@@ -254,8 +341,16 @@ class TrackerCommand(CommandTerm):
     return channel_errors(self.state_now(), self.target, self.upper_body)
 
   def tracking_score(self) -> torch.Tensor:
-    errors = channel_errors(self.state_now(), self.reference_now(), self.upper_body)
-    return score(errors, self.tolerances * self.cfg.tracking_tolerance_scale)
+    return soft_score(
+      self.state_now(),
+      self.reference_now(),
+      self.upper_body,
+      self.tracking_scales,
+    )
+
+  def tracking_errors(self) -> torch.Tensor:
+    """Per-channel error against the moving reference, joints averaged."""
+    return mean_channel_errors(self.state_now(), self.reference_now(), self.upper_body)
 
   def endpoint_score(self) -> torch.Tensor:
     """Smooth endpoint objective whose influence grows near B."""
@@ -466,6 +561,24 @@ class TrackerCommandCfg(CommandTermCfg):
   initial_joint_position_noise: float = 0.02
   initial_joint_velocity_noise: float = 0.15
   tolerances: Tolerances = field(default_factory=Tolerances)
+  tracking_scales: Tolerances = field(
+    default_factory=lambda: Tolerances(
+      root_pos=0.15,
+      root_ori=0.15,
+      root_lin_vel=0.30,
+      root_ang_vel=0.90,
+      lower_joint_pos=0.24,
+      lower_joint_vel=1.0,
+      upper_joint_pos=0.15,
+      upper_joint_vel=1.0,
+    )
+  )
+  """Kernel scales of the tracking reward, per channel, joints averaged.
+
+  Set near the errors of a decent policy, where the kernel is steepest. Measured on a
+  BABEL tracker: root 8 cm, 0.13 rad, 0.16 m/s, 0.54 rad/s; mean joint 0.14 rad and
+  0.5 rad/s.
+  """
 
   def validate(self) -> None:
     low, high = self.duration_s_range

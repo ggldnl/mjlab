@@ -8,7 +8,7 @@ Run:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -61,6 +61,7 @@ class Config:
   walk_checkpoint: Path | None = None
   jump_checkpoint: Path | None = None
   climb_checkpoint: Path | None = None
+  climb_entry_frame: int | None = None
   diffusion_sample_steps: int | None = None
 
 
@@ -77,8 +78,8 @@ def _diffusion_checkpoints(cfg: Config) -> tuple[Path, Path | None]:
   return planner, tracker
 
 
-def panel(server, controller: Controller) -> None:
-  """The walk2kick handoff controls, applied to every parkour handoff."""
+def panel(server, controller: Controller):
+  """Add controls for every parkour handoff."""
   with server.gui.add_folder("Handoff"):
     button = server.gui.add_button("Start bridge")
     button.on_click(lambda _: setattr(controller, "fire", True))
@@ -87,8 +88,8 @@ def panel(server, controller: Controller) -> None:
     automatic.on_update(
       lambda _: setattr(controller, "automatic", bool(automatic.value))
     )
-
-    low, high = controller.command.cfg.duration_s_range
+    bridge = controller.runtime.load(controller.env.device)
+    low, high = bridge.min_steps / bridge.fps, bridge.max_steps / bridge.fps
     for skill in ("climb", "jump"):
       distance = server.gui.add_slider(
         f"{skill.capitalize()} distance, m",
@@ -106,7 +107,7 @@ def panel(server, controller: Controller) -> None:
         f"{skill.capitalize()} duration, s",
         min=low,
         max=high,
-        step=0.05,
+        step=1.0 / bridge.fps,
         initial_value=controller.duration_s[skill],
       )
       duration.on_update(
@@ -125,12 +126,28 @@ def panel(server, controller: Controller) -> None:
     )
     speed.on_update(lambda _: setattr(controller, "walk_speed", float(speed.value)))
 
+  def debug_viz_controls() -> None:
+    show_plan = server.gui.add_checkbox(
+      "Generated plan", initial_value=controller.generated_plan_visible
+    )
+
+    @show_plan.on_update
+    def _(_) -> None:
+      controller.set_generated_plan_visible(bool(show_plan.value))
+
+  return debug_viz_controls
+
 
 def main(cfg: Config) -> None:
   from mjlab import tasks as _tasks
 
   del _tasks
   settings = Settings.load(cfg.config)
+  if cfg.climb_entry_frame is not None:
+    settings = replace(
+      settings,
+      skills=replace(settings.skills, climb_entry_frame=cfg.climb_entry_frame),
+    )
   course = generate(settings, seed=cfg.seed, count=cfg.count)
   print("\n".join(plan_lines(course)))
   if cfg.dry:
@@ -183,13 +200,14 @@ def main(cfg: Config) -> None:
     from mjlab.viewer import ViserPlayViewer
 
     server = viser.ViserServer(label=f"parkour seed {course.seed}")
-    panel(server, controller)
+    debug_viz_controls = panel(server, controller)
     ViserPlayViewer(
       wrapped,
       controller,
       viser_server=server,
       info_provider=lambda _: controller.status,
       record_name=f"parkour-seed-{course.seed}",
+      debug_viz_extra_gui=debug_viz_controls,
     ).run()
   wrapped.close()
 

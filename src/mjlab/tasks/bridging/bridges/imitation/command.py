@@ -36,6 +36,7 @@ from mjlab.viewer.debug_visualizer import DebugVisualizer
 
 TARGET_COLOR = (1.0, 0.72, 0.2, 0.45)
 REFERENCE_COLOR = (0.35, 0.6, 1.0, 0.35)
+PLAN_COLOR = (0.65, 0.25, 1.0, 0.5)
 
 
 CHANNELS = (
@@ -172,7 +173,9 @@ class ImitationCommand(CommandTerm):
 
     self._target_ghost: mujoco.MjModel | None = None
     self._reference_ghost: mujoco.MjModel | None = None
+    self._plan_ghost: mujoco.MjModel | None = None
     self.preview_targets: torch.Tensor | None = None
+    self.plan_preview: torch.Tensor | None = None
 
     for name in CHANNELS:
       self.metrics[f"error_{name}"] = torch.zeros(self.num_envs, device=self.device)
@@ -364,6 +367,19 @@ class ImitationCommand(CommandTerm):
     if self.preview_targets is not None:
       for index, target in enumerate(self.preview_targets):
         self._draw_ghost(visualizer, target, index, "bridge_preview")
+    if self.plan_preview is not None:
+      if self._plan_ghost is None:
+        self._plan_ghost = self._make_target_ghost(PLAN_COLOR)
+      for index, target in enumerate(self.plan_preview):
+        self._draw_ghost(
+          visualizer,
+          target,
+          index,
+          "bridge_plan",
+          model=self._plan_ghost,
+          alpha=PLAN_COLOR[3],
+        )
+    if self.preview_targets is not None or self.plan_preview is not None:
       return
     if self._reference_ghost is None:
       self._reference_ghost = self._make_target_ghost(REFERENCE_COLOR)
@@ -386,6 +402,14 @@ class ImitationCommand(CommandTerm):
     ):
       raise ValueError(f"preview targets must have shape (count, {self.state_dim})")
     self.preview_targets = None if targets is None else targets.detach().clone()
+
+  def set_plan_preview(self, targets: torch.Tensor | None) -> None:
+    """Draw moving plan poses without replacing fixed target poses."""
+    if targets is not None and (
+      targets.ndim != 2 or targets.shape[1] != self.state_dim
+    ):
+      raise ValueError(f"plan preview must have shape (count, {self.state_dim})")
+    self.plan_preview = None if targets is None else targets.detach().clone()
 
   def _draw_ghost(
     self,

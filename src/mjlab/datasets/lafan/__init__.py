@@ -1,1 +1,1 @@
-"""Original LAFAN BVH download and locomotion selection."""
+"""Original LAFAN BVH download."""

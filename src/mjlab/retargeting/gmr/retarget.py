@@ -57,6 +57,8 @@ Run
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -66,8 +68,8 @@ import tyro
 from tqdm import tqdm
 
 import mjlab
+from mjlab.retargeting.floor import floor_qa, ground_motion
 from mjlab.scripts import csv_to_npz
-from mjlab.tasks.bridging.motion_filter import align_robot_floor
 
 SMPLX_DIR = Path("data") / "body_models"
 """Holds the SMPL-X models. smplx.create looks for <smplx-dir>/smplx/SMPLX_<GENDER>.npz"""
@@ -214,31 +216,114 @@ def retarget_bvh_clip(
 def finalize_motion(
   path: Path, metadata: dict[str, np.ndarray] | None = None
 ) -> dict[str, float | str]:
-  """Apply robot floor correction, attach metadata, and atomically rewrite an NPZ."""
+  """Reject a clip that fails floor QA, otherwise ground it and attach metadata."""
   with np.load(path, allow_pickle=False) as motion:
     values = {name: motion[name] for name in motion.files}
   robot = str(values.get("robot", ""))
   if not robot:
     raise ValueError(f"Retargeted motion has no robot metadata: {path}")
-  values["body_pos_w"], floor = align_robot_floor(
-    values["body_pos_w"], values["body_quat_w"], robot
-  )
-  if floor["status"] == "rejected":
+  qa = floor_qa(values["body_pos_w"], values["body_quat_w"], robot)
+  if qa["status"] == "rejected":
     path.unlink(missing_ok=True)
-    return floor
-  values["ground_z_offset"] = np.asarray(floor["offset"], dtype=np.float32)
-  values["ground_floor_z"] = np.asarray(floor["floor_z"], dtype=np.float32)
-  values["ground_minimum_sole_z"] = np.asarray(
-    floor["minimum_sole_z"], dtype=np.float32
+    return qa
+  values["body_pos_w"], values["body_lin_vel_w"], correction = ground_motion(
+    values["body_pos_w"],
+    values["body_quat_w"],
+    values["body_lin_vel_w"],
+    float(np.asarray(values["fps"]).reshape(-1)[0]),
+    robot,
   )
-  values["ground_contact_fraction"] = np.asarray(
-    floor["contact_fraction"], dtype=np.float32
-  )
+  values["ground_correction"] = correction.astype(np.float32)
+  values.update({f"ground_{k}": np.asarray(v) for k, v in qa.items() if k != "status"})
   values.update(metadata or {})
   temporary = path.with_suffix(".tmp.npz")
   np.savez(temporary, **values)
   temporary.replace(path)
-  return floor
+  return qa
+
+
+@dataclass(frozen=True)
+class Clip:
+  """One clip to retarget: a source file, optionally cut to [start_s, end_s)."""
+
+  source: Path
+  """SMPL-X .npz or LAFAN .bvh, relative to the source root."""
+  output: Path
+  """Motion .npz, relative to the output root."""
+  start_s: float | None = None
+  end_s: float | None = None
+  metadata: dict[str, Any] = field(default_factory=dict)
+  """Stored in the npz, one array per key."""
+
+
+def _line_range(clip: Clip, fps: float, frames: int) -> tuple[int, int] | None:
+  if clip.start_s is None or clip.end_s is None:
+    return None
+  first = max(0, math.ceil(clip.start_s * fps - 1e-9))
+  stop = min(frames, math.ceil(clip.end_s * fps - 1e-9))
+  if stop - first < 3:
+    raise ValueError(f"{clip.source} {clip.start_s:g} to {clip.end_s:g} s is too short")
+  return first + 1, stop
+
+
+def retarget_clips(
+  clips: list[Clip],
+  robot: csv_to_npz.RobotName,
+  source_root: Path,
+  output_root: Path,
+  smplx_dir: Path = SMPLX_DIR,
+  output_fps: float = 50.0,
+  device: str = "cuda:0",
+) -> tuple[list[dict[str, Any]], int]:
+  """Retarget, ground and QA every clip whose output does not exist yet.
+
+  GMR solves each source once. Its CSV is cached under output_root/csv, so cutting a
+  new interval out of a solved source costs only the npz conversion.
+
+  Returns a QA row per retargeted clip and the number of clips skipped.
+  """
+  joint_names = csv_to_npz.robot_joint_names(robot)
+  pending = [clip for clip in clips if not (output_root / clip.output).is_file()]
+  rows = []
+  for source in sorted({clip.source for clip in pending}):
+    csv_path = output_root / "csv" / source.with_suffix(".csv")
+    fps_path = csv_path.with_suffix(".fps")
+    if not (csv_path.is_file() and fps_path.is_file()):
+      if source.suffix == ".bvh":
+        fps = retarget_bvh_clip(source_root / source, csv_path, robot, joint_names)
+      else:
+        fps = retarget_clip(
+          source_root / source,
+          csv_path,
+          smplx_dir,
+          robot,
+          joint_names,
+          RETARGET_FPS,
+          False,
+        )
+      fps_path.write_text(f"{fps:g}\n", encoding="utf-8")
+    fps = float(fps_path.read_text(encoding="utf-8"))
+    with csv_path.open(encoding="utf-8") as csv_file:
+      frames = sum(1 for line in csv_file if line.strip())
+    for clip in (clip for clip in pending if clip.source == source):
+      output = output_root / clip.output
+      output.parent.mkdir(parents=True, exist_ok=True)
+      csv_to_npz.main(
+        input_file=str(csv_path),
+        output_name=output.stem,
+        robot=robot,
+        output_dir=output.parent,
+        input_fps=fps,
+        output_fps=output_fps,
+        device=device,
+        render=False,
+        upload_to_wandb=False,
+        line_range=_line_range(clip, fps, frames),
+      )
+      metadata = {key: np.asarray(value) for key, value in clip.metadata.items()}
+      qa = finalize_motion(output, metadata)
+      rows.append({"path": clip.output.as_posix(), "source": source.as_posix(), **qa})
+  return rows, len(clips) - len(pending)
 
 
 def main(

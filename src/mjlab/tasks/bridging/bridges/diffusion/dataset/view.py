@@ -19,6 +19,7 @@ import tyro
 import viser
 
 import mjlab
+from mjlab.retargeting.floor import g1_foot_positions
 from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import (
   BABEL_EVAL_MOTIONS,
   motion_files,
@@ -29,7 +30,6 @@ from mjlab.tasks.bridging.bridges.diffusion.evaluation.view import (
   build_scene,
   ghost_qpos,
 )
-from mjlab.tasks.bridging.motion_filter import g1_foot_positions
 from mjlab.viewer.viser.scene import MjlabViserScene
 
 
@@ -54,7 +54,7 @@ class Clip:
   path: Path
   states: np.ndarray
   feet: np.ndarray
-  offset: float
+  correction: np.ndarray
   fps: float
 
 
@@ -62,7 +62,7 @@ def clip_infos(patterns: tuple[str, ...], corrected_first: bool) -> list[ClipInf
   infos = []
   for path in motion_files(patterns):
     with np.load(path, allow_pickle=False) as raw:
-      offset = float(np.asarray(raw.get("ground_z_offset", 0.0)))
+      offset = float(np.abs(raw["ground_correction"]).max(initial=0.0))
     infos.append(ClipInfo(path, offset))
   if corrected_first:
     infos.sort(key=lambda info: (-info.offset, str(info.path)))
@@ -72,7 +72,7 @@ def clip_infos(patterns: tuple[str, ...], corrected_first: bool) -> list[ClipInf
 def load_clip(path: Path) -> Clip:
   with np.load(path, allow_pickle=False) as raw:
     fps = float(np.asarray(raw["fps"]).reshape(-1)[0])
-    offset = float(np.asarray(raw.get("ground_z_offset", 0.0)))
+    correction = np.asarray(raw["ground_correction"], dtype=np.float64)
     joint_pos = np.asarray(raw["joint_pos"], dtype=np.float64)
     joint_vel = np.asarray(raw["joint_vel"], dtype=np.float64)
     body_pos = np.asarray(raw["body_pos_w"], dtype=np.float64)
@@ -94,7 +94,7 @@ def load_clip(path: Path) -> Clip:
   origin = states[0, :2].copy()
   states[:, :2] -= origin
   feet[..., :2] -= origin
-  return Clip(path, states, feet, offset, fps)
+  return Clip(path, states, feet, correction, fps)
 
 
 def describe(clip: Clip, index: int, count: int) -> str:
@@ -104,7 +104,7 @@ def describe(clip: Clip, index: int, count: int) -> str:
     f"| index | {index + 1}/{count} |\n"
     f"| path | ``{clip.path.as_posix()}`` |\n"
     f"| frames | {len(clip.states)} at {clip.fps:g} Hz |\n"
-    f"| applied z offset | {clip.offset:.4f} m |\n"
+    f"| z correction | {clip.correction.min():.4f} to {clip.correction.max():.4f} m |\n"
     f"| lowest sole | {sole.min():.4f} m |\n"
     f"| 2% sole height | {np.quantile(sole, 0.02):.4f} m |\n"
     f"| median sole height | {np.median(sole):.4f} m |"
@@ -204,9 +204,9 @@ def serve(cfg: ViewCfg) -> None:
     frame = min(int(cursor.value), len(clip.states) - 1)
     corrected = clip.states[frame]
     scene.clear()
-    if bool(original.value) and clip.offset > 0:
+    if bool(original.value) and clip.correction[frame] != 0:
       before = corrected.copy()
-      before[2] -= clip.offset
+      before[2] -= clip.correction[frame]
       scene.add_ghost_mesh(
         ghost_qpos(model, where, before),
         original_model,

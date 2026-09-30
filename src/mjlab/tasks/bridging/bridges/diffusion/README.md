@@ -20,6 +20,19 @@ uv run python -m mjlab.tasks.bridging.bridges.diffusion.dataset.view
 Blue is the stored trajectory, red is its pre-correction height, and the two
 colored lines connect the recorded root and sole samples without interpolation.
 
+## Build the motion dataset
+
+Both stages read `data/babel_retargeted/<robot>/` and `data/lafan_retargeted/<robot>/`.
+One command selects the clips, retargets them, grounds them and marks the frames the
+kinematic filter rejects:
+
+```sh
+uv run python -m mjlab.tasks.bridging.bridges.dataset.motion_capture.build --robot g1
+```
+
+What is taken and why is in `bridges/dataset/motion_capture/filters.py`. Each output
+folder also holds `selection.jsonl`, the clips and intervals taken, and `qa.jsonl`.
+
 ## Package layout
 
 ```text
@@ -50,10 +63,16 @@ uv run python -m mjlab.tasks.bridging.bridges.diffusion.tracker.evaluate --check
 
 ## Pretrain the planner
 
-Training rescales each demonstrated duration by 0.95 to 1.05 and scales its
-velocities consistently. Half of the windows receive a bounded start-state
-perturbation that smoothly vanishes at B, and half are mirrored left to right.
-The ranges are exposed as command-line options.
+The planner predicts positions only: the root and joint step per frame, and the
+root orientation. The steps are summed from A, and the gap left at B is spread
+over the path, so B is hit exactly. Velocities are computed from the positions.
+
+Training stretches each demonstrated duration by 0.8 to 1.25. Every window is
+expressed in the heading frame of A, so a global rotation or translation of a
+window changes nothing. Half of the windows shift A and its history in xy by at
+most 1 cm, with the shift vanishing smoothly at B. The shift moves only the root,
+so it also slides the feet; keep it small. Half are mirrored left to right. The
+ranges are exposed as command-line options.
 
 ```sh
 uv run python -m mjlab.tasks.bridging.bridges.diffusion.planner.train --robot g1

@@ -216,6 +216,7 @@ class Controller:
     self.bridge_distance = dict(self.cfg.bridge_distance)
     self.duration_s = dict(self.cfg.bridge_duration_s)
     self.walk_speed = self.cfg.walk_speed
+    self.generated_plan_visible = True
     self.focus = focus
     self.robot: Entity = env.scene["robot"]
     twist = env.command_manager.get_term("twist")
@@ -272,9 +273,35 @@ class Controller:
     self.env.action_manager.action.zero_()
     self.focus.index = 0
     self.approaches = self._approaches()
+    self._entry_previews = torch.cat(
+      tuple(approach.target for approach in self.approaches)
+    )
     preview = getattr(self.command, "set_preview_targets", None)
     if callable(preview):
-      preview(torch.cat(tuple(approach.target for approach in self.approaches)))
+      preview(self._entry_previews)
+    self._update_plan_preview()
+
+  def set_generated_plan_visible(self, visible: bool) -> None:
+    self.generated_plan_visible = visible
+    self._update_plan_preview()
+
+  def _update_plan_preview(self) -> None:
+    preview = getattr(self.command, "set_plan_preview", None)
+    if not callable(preview):
+      return
+    targets = None
+    path = self.runtime.path
+    index = self.runtime._index
+    if (
+      self.phase == "bridge"
+      and self.generated_plan_visible
+      and path is not None
+      and index is not None
+    ):
+      rows = torch.minimum(index, path.duration)
+      batch = torch.arange(len(rows), device=rows.device)
+      targets = path.states[batch, rows]
+    preview(targets)
 
   def _approaches(self) -> tuple[Approach, ...]:
     names = obstacle_names(self.course)
@@ -380,12 +407,14 @@ class Controller:
       at_quat=_quat(approach.anchor_yaw),
     )
     self.target = approach.target
-    low, high = self.command.cfg.duration_s_range
+    bridge = self.runtime.load(self.env.device)
+    low, high = bridge.min_steps / bridge.fps, bridge.max_steps / bridge.fps
     duration_s = self.duration_s[skill]
     if not low <= duration_s <= high:
-      raise ValueError(f"Bridge duration must be between {low:g} and {high:g} seconds")
+      raise ValueError(f"Planner duration must be between {low:g} and {high:g} seconds")
     duration = torch.full((self.env.num_envs,), duration_s, device=self.env.device)
     self.command.open_window(ids, self.target, duration)
+    actual_duration_s = float(self.command.window_steps[0]) / self.command.fps
     start_errors = self.command.target_errors()[0]
     self.runtime.reset()
     self.phase = "bridge"
@@ -393,7 +422,7 @@ class Controller:
     self.fire = False
     print(
       f"bridge to {skill} f{entry.frame:03d} at obstacle {self.index} "
-      f"for {duration_s:.2f} s"
+      f"for {actual_duration_s:.2f} s ({int(self.command.window_steps[0])} ticks)"
       " (start actual/target: "
       + ", ".join(
         f"{name}={float(value):.3f}"
@@ -418,6 +447,7 @@ class Controller:
     )
     self.command.stop()
     self.phase = "traverse"
+    self._update_plan_preview()
     self.phase_steps = 0
     self.traverse_armed = False
     self.landed_steps = 0
@@ -441,18 +471,11 @@ class Controller:
     skill = RULES[self.course[self.index].kind]
     self._hold_motion(skill)
     assert self.history is not None
-    remaining = (
-      self.command.window_steps - self.command.step
-    ).float() / self.command.fps
-    output = self.runtime(self.history, self.command.target[:, None], remaining)
+    duration = self.command.window_steps.float() / self.command.fps
+    output = self.runtime(self.history, self.command.target[:, None], duration)
+    self._update_plan_preview()
     if bool(output.handoff.all()):
       return self._finish_bridge()
-    grace = round(self.cfg.capture_grace_s / self.env.step_dt)
-    overdue = self.command.step - self.command.window_steps
-    if bool(self.command.deadline.all()) and bool((overdue >= grace).all()):
-      self.phase = "failed"
-      print("bridge failed: generated path did not finish before capture timeout")
-      return torch.zeros_like(self.env.action_manager.action)
     return output.action
 
   def _foot_height(self) -> float:

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from pathlib import Path
 
@@ -48,7 +49,6 @@ class DiffusionRuntime(Bridge):
     self.executor_horizon = executor_horizon
     self._bridge: DiffusionBridge | None = None
     self.path: GeneratedPath | None = None
-    self._ticks: torch.Tensor | None = None
     self._index: torch.Tensor | None = None
     self._active: torch.Tensor | None = None
 
@@ -78,7 +78,6 @@ class DiffusionRuntime(Bridge):
       reset(done)
     if done is None:
       self.path = None
-      self._ticks = None
       self._index = None
       self._active = None
     elif self._active is not None:
@@ -90,12 +89,13 @@ class DiffusionRuntime(Bridge):
     assert self.path is not None and self._index is not None
     batch = self.path.states.shape[0]
     offsets = torch.arange(self.executor_horizon, device=self.path.states.device)
-    rows = (self._index[:, None] + offsets).clamp_max(self.path.states.shape[1] - 1)
+    rows = torch.minimum(self._index[:, None] + offsets, self.path.duration[:, None])
     return self.path.states[torch.arange(batch, device=rows.device)[:, None], rows]
 
   def step(
     self, history: torch.Tensor, target: torch.Tensor, time_left: torch.Tensor
   ) -> BridgeOutput:
+    """Execute one control tick from a path with a fixed total duration."""
     if self.executor is None:
       raise RuntimeError(
         "DiffusionRuntime needs a feedback path executor. "
@@ -103,27 +103,26 @@ class DiffusionRuntime(Bridge):
       )
     current = history[:, -1]
     bridge = self.load(current.device)
+    executor_fps = float(getattr(self.executor, "fps", bridge.fps))
+    if not math.isclose(executor_fps, bridge.fps):
+      raise ValueError(
+        f"planner runs at {bridge.fps:g} Hz but executor runs at {executor_fps:g} Hz"
+      )
     batch = current.shape[0]
     if target.shape[1] < bridge.future:
       raise ValueError(
         f"diffusion checkpoint requires {bridge.future} consecutive target states"
       )
     if self._active is None:
-      self._ticks = torch.zeros(batch, device=current.device, dtype=torch.long)
-      self._index = torch.zeros_like(self._ticks)
+      self._index = torch.zeros(batch, device=current.device, dtype=torch.long)
       self._active = torch.zeros(batch, device=current.device, dtype=torch.bool)
-    assert self._ticks is not None and self._index is not None
+    assert self._index is not None
     assert self._active is not None
     if self._active.shape[0] != batch:
       raise ValueError("batch size changed; reset the runtime before reusing it")
     new = ~self._active
     if bool(new.any()):
-      ticks = (
-        (time_left[new] * bridge.fps)
-        .round()
-        .long()
-        .clamp(bridge.min_steps, bridge.max_steps)
-      )
+      ticks = (time_left[new] * bridge.fps).round().long()
       if history.shape[1] < bridge.history:
         raise ValueError(
           f"diffusion checkpoint requires {bridge.history} observed history states"
@@ -133,11 +132,11 @@ class DiffusionRuntime(Bridge):
       )
       if self.path is None:
         self.path = GeneratedPath(
-          current.new_zeros((batch, *generated.states.shape[1:])), self._ticks
+          current.new_zeros((batch, *generated.states.shape[1:])),
+          torch.zeros(batch, device=current.device, dtype=torch.long),
         )
       self.path.states[new] = generated.states
       self.path.duration[new] = ticks
-      self._ticks[new] = ticks
       self._index[new] = 0
       self._active[new] = True
     assert self.path is not None
@@ -148,7 +147,7 @@ class DiffusionRuntime(Bridge):
     if action.shape != (batch, self.action_dim):
       raise ValueError("path executor returned the wrong action shape")
     played = self._index.clone()
-    self._index += 1
+    self._index[:] = torch.minimum(self._index + 1, self.path.duration)
     within_endpoint_box = (
       self.endpoint_box_test(history, target)
       if self.endpoint_box_test is not None
@@ -156,10 +155,9 @@ class DiffusionRuntime(Bridge):
     )
     if within_endpoint_box.shape != (batch,):
       raise ValueError("endpoint box test returned the wrong shape")
-    handoff = played >= self._ticks
     return BridgeOutput(
       action=action,
-      handoff=handoff,
+      handoff=played >= self.path.duration,
       within_endpoint_box=within_endpoint_box,
-      blend=(played.float() / self._ticks.float()).clamp(max=1.0),
+      blend=(played.float() / self.path.duration.float()).clamp(max=1.0),
     )

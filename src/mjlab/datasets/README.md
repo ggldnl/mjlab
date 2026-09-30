@@ -15,12 +15,9 @@ download -> curate / crop -> csv_to_npz -> train
 | `lafan1/interactive_crop.py` | LAFAN1 CSVs | cropped CSV / NPZ | **Interactive viser viewer** to scrub a clip and save a single-skill crop. |
 | `lafan1/manual_crop.py`      | LAFAN1 CSVs | per-skill NPZs | Batch, reproducible slicing by hard-coded frame ranges. |
 | `lafan/download.py`          | Original Ubisoft LAFAN | BVH performances | Robot-agnostic source data. |
-| `lafan/build_manifest.py`    | LAFAN BVHs | JSONL manifest | Keeps only walk, run, and sprint themes; excludes dance and sports; subject 5 is validation. |
 | `openhe/download.py`         | openhe `g1-retargeted-motions` (HuggingFace) | per-skill NPZs | Already atomic; 23-DOF source remapped to 29-DOF G1. |
 | `phuma/download.py`          | PHUMA (HuggingFace) | per-skill NPZs | Already atomic, 29-DOF G1, physics-curated; large (~3.4 GB). |
-| `amass/download.py`          | AMASS (license-gated MPI portal) | SMPL-X `.npz` | Robot-agnostic; needs your own retargeting before `csv_to_npz`. |
-| `babel/build_manifest.py`    | BABEL v1.0 labels | JSONL region manifest | Merges allowed ACCAD, Transitions, and MPI_HDM05 labels into safe regions. |
-| `babel/materialize.py`       | BABEL manifest + AMASS tarballs | selected SMPL-X `.npz` | Extracts only the AMASS recordings referenced by the manifest. |
+| `amass/download.py`          | AMASS (license-gated MPI portal) | SMPL-X `.npz` | Robot-agnostic; needs your own retargeting before `csv_to_npz`. `extract` pulls single takes out of the subset tarballs. |
 | `asap/download.py`           | ASAP `LeCAR-Lab/ASAP` (GitHub) | 23-DOF joblib `.pkl` | Short single-skill jumps; the bridging jump tasks convert them. |
 | `omniretarget/download.py`   | OmniRetarget (HuggingFace) | 29-DOF `.npz` + obstacle URDF/OBJ | Robot-terrain climbs; the box each clip was solved against ships with it. |
 
@@ -57,21 +54,13 @@ import each other directly.
 - **Want robot-agnostic source to retarget yourself:** `amass/download.py`, then
   `mjlab.retargeting.gmr.retarget`. Render one selected clip on either supported robot with
   `uv run python -m mjlab.tasks.bridging.tests.retarget_amass --robot <robot>`.
-- **Want original LAFAN rather than the G1-retargeted release:** run
-  `mjlab.datasets.lafan.download`, `mjlab.datasets.lafan.build_manifest`, then
-  `mjlab.retargeting.gmr.retarget_lafan --robot g1` (or `t1`).
-  Retargeted clips receive the same floor correction and QA as BABEL clips.
-- **Want AMASS primitives selected by action labels:** download BABEL v1.0 into
-  `data/babel/babel_v1.0_release`, then run
-  `uv run python -m mjlab.datasets.babel.build_manifest`, followed by
-  `uv run python -m mjlab.datasets.babel.materialize`. Retarget every selected
-  interval with:
+- **Want the bridge's BABEL and LAFAN corpus:** one command selects, retargets,
+  grounds and filters it. The criteria live in
+  `mjlab/tasks/bridging/bridges/dataset/motion_capture/filters.py`.
 
   ```sh
-  uv run python -m mjlab.retargeting.gmr.retarget_manifest --robot g1
+  uv run python -m mjlab.tasks.bridging.bridges.dataset.motion_capture.build --robot g1
   ```
-
-  Select `t1` instead for the T1.
 
 ## Interactive cropping (`lafan1/interactive_crop.py`)
 

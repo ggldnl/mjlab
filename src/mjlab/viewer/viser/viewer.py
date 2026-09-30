@@ -77,6 +77,7 @@ class ViserPlayViewer(BaseViewer):
     info_provider: Callable[[int], str] | None = None,
     record_dir: Path | str = "videos",
     record_name: str = "episode",
+    debug_viz_extra_gui: Callable[[], None] | None = None,
   ) -> None:
     super().__init__(env, policy, frame_rate, verbosity)
     self._ckpt_mgr = checkpoint_manager
@@ -86,6 +87,7 @@ class ViserPlayViewer(BaseViewer):
     self._info_provider = info_provider
     self._record_dir = record_dir
     self._record_name = record_name
+    self._debug_viz_extra_gui = debug_viz_extra_gui
     self._recorder: ViserRecorder | None = None
     self._term_overlays: ViserTermOverlays | None = None
     self._camera_overlays: ViserCameraOverlays | None = None
@@ -205,6 +207,8 @@ class ViserPlayViewer(BaseViewer):
         )
         self._create_sensor_debug_vis_gui()
         self._create_reward_debug_vis_gui()
+        if self._debug_viz_extra_gui is not None:
+          self._debug_viz_extra_gui()
 
       with self._server.gui.add_folder("Scene"):
         self._scene.create_scene_gui(
