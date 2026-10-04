@@ -14,6 +14,7 @@ import torch
 from mjlab.utils.lab_api.math import quat_apply_inverse, yaw_quat
 
 from .commands import JumpCommand
+from .distance_command import JumpDistanceCommand
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -30,6 +31,16 @@ def jump_goal_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
   touchdown. This is what makes the policy goal-conditioned rather than clip-conditioned.
   """
   return _cmd(env, command_name).goal_b
+
+
+def jump_remaining_distance(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+  """Distance still to cover along the robot's heading, one number.
+
+  The only goal the deployed policy reads. Works on JumpCommand while training and on
+  JumpDistanceCommand when deployed, which compute it the same way.
+  """
+  term = env.command_manager.get_term(command_name)
+  return cast(JumpCommand | JumpDistanceCommand, term).remaining_distance
 
 
 def jump_phase(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:

@@ -46,11 +46,12 @@ from mjlab.tasks.bridging.config.g1.skills.jump_continuous import (
 )
 from mjlab.tasks.bridging.config.g1.skills.jump_continuous.jump_continuous_env_cfg import (
   JumpCommandCfg,
+  g1_jump_continuous_env_cfg,
 )
 from mjlab.tasks.bridging.config.g1.skills.jump_continuous.mdp.commands import (
   JumpCommand,
 )
-from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
+from mjlab.tasks.registry import load_rl_cfg, load_runner_cls
 
 FOOT_CAPSULE_RADIUS = 0.01
 """Radius of the G1's foot collision capsules, subtracted from a capsule axis to reach the
@@ -99,7 +100,9 @@ def run_mode(
   reads its config at reset and caches nothing, so mutating would probably work, but a
   policy comparison that silently shares state between arms is not worth the seconds saved.
   """
-  env_cfg = load_env_cfg(JUMP_CONTINUOUS_TASK_ID, play=True)
+  # The clip based play env, not the registered one: the entry modes are a property of the
+  # clip command, and the registered play env deploys on a distance alone
+  env_cfg = g1_jump_continuous_env_cfg(play=True)
   env_cfg.scene.num_envs = num_envs
   # An episode has to end when the clip does, or nothing is ever scored. Play sets this to
   # effectively infinite so a viewer can watch one jump forever

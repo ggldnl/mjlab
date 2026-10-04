@@ -10,9 +10,11 @@ target displacement is in the observation and in the reward, so the reachable di
 out continuous rather than five discrete points.
 
 Phase two takes the reference back out. A tracker reads mostly the clip it is chasing. It
-is distilled, in the same run, into a policy that reads the goal and its own body and nothing
-else. The student is not reconstructing hidden state from partial observations; it is
-internalizing a deterministic map whose input it already has (teacher: clip -> goal).
+is distilled, in the same run, into a policy that reads one goal number, the distance left
+to jump along its heading, and its own body. Nothing about any clip: no phase, no countdown,
+no apex. Each clip is cut to start just before its crouch, so standing with distance left
+always means jump now. Deployed, JumpDistanceCommand supplies the distance and no clip is
+loaded.
 
 The single clip sibling is skills/jump, which tracks one of these clips end to end and keeps
 the reference at inference. Reach for that one when the jump has to be the same jump every
@@ -36,7 +38,8 @@ Run
    The split is agent.tracking_iterations of agent.max_iterations. Move it with
    --agent.tracking-iterations N.
 
-3. Watch what came out, which is the student.
+3. Watch what came out, which is the student, on a distance alone. Pick it with the
+   viewer's "Jump distance" slider and press "Jump".
 
     uv run play Mjlab-G1-Jump-Continuous
 
@@ -146,11 +149,14 @@ def jump_runner_cfg(
                       recovers a conditional mean. huber is the thing to reach for if a few
                       states turn out to dominate the loss
 
-  The 12000 of 15000 split is a starting point, not a measurement. Phase two is supervised
-  against a target the teacher already computes, so it converges in far fewer iterations than
-  the policy gradient before it; what it cannot do is rescue a teacher that never learned to
-  jump. Watch the tracking rewards plateau in phase one and move the boundary to where that
-  happened.
+  The length is set by wall clock: 4000 tracking and 1000 distillation iterations, about
+  two hours at 4096 environments (1.4 s and 1.3 s an iteration on the G1, less on the T1).
+  Phase two is supervised against a target the teacher already computes, so it converges in
+  far fewer iterations than the policy gradient before it; what it cannot do is rescue a
+  teacher that never learned to jump. The curriculum's last stage lands at about iteration
+  3000, inside phase one. Watch the tracking rewards plateau in phase one; if they are still
+  climbing at the boundary, give it more with --agent.tracking-iterations and
+  --agent.max-iterations.
   """
   tracking = jump_ppo_runner_cfg(experiment_name)
   return RslRlTeacherStudentRunnerCfg(
@@ -158,7 +164,7 @@ def jump_runner_cfg(
     # this is what is left for anything that loads the checkpoint in order to act
     obs_groups={"actor": ("actor",), "critic": ("critic",)},
     teacher_obs_group="teacher",
-    tracking_iterations=12_000,
+    tracking_iterations=4_000,
     # The student, and the policy that gets deployed
     actor=RslRlModelCfg(
       hidden_dims=TRUNK,
@@ -183,14 +189,14 @@ def jump_runner_cfg(
     experiment_name=tracking.experiment_name,
     save_interval=tracking.save_interval,
     num_steps_per_env=tracking.num_steps_per_env,
-    max_iterations=tracking.max_iterations,
+    max_iterations=5_000,
   )
 
 
 register_mjlab_task(
   task_id=JUMP_CONTINUOUS_TASK_ID,
   env_cfg=g1_jump_continuous_env_cfg(),
-  play_env_cfg=g1_jump_continuous_env_cfg(play=True),
+  play_env_cfg=g1_jump_continuous_env_cfg(deploy=True),
   rl_cfg=jump_runner_cfg(),
   runner_cls=MjlabTeacherStudentRunner,
 )

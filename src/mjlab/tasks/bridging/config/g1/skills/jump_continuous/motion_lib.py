@@ -57,6 +57,47 @@ def detect_entry_steps(root_z: np.ndarray, takeoff_step: int) -> tuple[int, int]
   return load, crouch
 
 
+# Per frame arrays of a converted clip, the ones a crop has to cut
+FRAME_KEYS: tuple[str, ...] = (
+  "joint_pos",
+  "joint_vel",
+  "body_pos_w",
+  "body_quat_w",
+  "body_lin_vel_w",
+  "body_ang_vel_w",
+)
+
+
+def trim_lead_in(
+  clip: dict[str, np.ndarray], lead_in_steps: int
+) -> dict[str, np.ndarray]:
+  """Drop the stand a clip opens with, keeping lead_in_steps frames before the crouch starts.
+
+  A policy that is not told the clip's clock cannot know how long a stand is meant to last,
+  so on the same standing state it would be asked to both wait and jump. Cut, a standing
+  robot with distance left to cover always means jump now.
+
+  The flight frames move with the cut, and the goal is measured again on what is left.
+  """
+  root = clip["body_pos_w"][:, 0]
+  load, crouch = detect_entry_steps(root[:, 2], int(clip["takeoff_step"]))
+  start = max(load - lead_in_steps, 0)
+  out = dict(clip)
+  # The landmarks are found on the stand, which the cut removes, so they are carried over
+  out["entry_steps"] = np.array([load - start, crouch - start], dtype=np.int64)
+  if start == 0:
+    return out
+  for key in FRAME_KEYS:
+    out[key] = clip[key][start:]
+  for key in ("takeoff_step", "land_step"):
+    if int(clip[key]) >= 0:
+      out[key] = np.asarray(int(clip[key]) - start, dtype=np.int64)
+  root = out["body_pos_w"][:, 0]
+  out["goal_xy"] = (root[-1, :2] - root[0, :2]).astype(np.float32)
+  out["goal_apex"] = np.asarray(root[:, 2].max() - root[0, 2], dtype=np.float32)
+  return out
+
+
 @dataclass
 class MotionMetadata:
   """What a clip is, as opposed to what it contains."""
@@ -89,7 +130,17 @@ class MotionLibrary:
     motion_files: tuple[str, ...] | list[str],
     body_indexes: torch.Tensor,
     device: str = "cpu",
+    lead_in_steps: int | None = None,
   ) -> None:
+    """Load the clips.
+
+    Args:
+      motion_files: Converted npz clips.
+      body_indexes: Tracked bodies, in the robot's body order.
+      device: Torch device of every tensor.
+      lead_in_steps: Frames kept before the crouch starts. None keeps the whole clip,
+        stand included. See trim_lead_in.
+    """
     if not motion_files:
       raise ValueError("No motion files given.")
 
@@ -106,7 +157,9 @@ class MotionLibrary:
     self.device = device
     self._body_indexes = body_indexes
 
-    raw = [np.load(p) for p in paths]
+    raw = [dict(np.load(p)) for p in paths]
+    if lead_in_steps is not None:
+      raw = [trim_lead_in(clip, lead_in_steps) for clip in raw]
     lengths = [int(d["joint_pos"].shape[0]) for d in raw]
     self.time_step_total_per_motion = torch.tensor(
       lengths, dtype=torch.long, device=device
@@ -135,7 +188,10 @@ class MotionLibrary:
     self.root_lin_vel_w = all_body_lin_vel_w[:, :, 0]
 
     entry_steps = [
-      detect_entry_steps(d["body_pos_w"][:, 0, 2], int(d["takeoff_step"])) for d in raw
+      (int(d["entry_steps"][0]), int(d["entry_steps"][1]))
+      if "entry_steps" in d
+      else detect_entry_steps(d["body_pos_w"][:, 0, 2], int(d["takeoff_step"]))
+      for d in raw
     ]
 
     self.metadata = [

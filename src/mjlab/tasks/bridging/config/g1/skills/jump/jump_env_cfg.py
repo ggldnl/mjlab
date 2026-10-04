@@ -94,6 +94,9 @@ def g1_jump_env_cfg(
   motion = cfg.commands["motion"]
   assert isinstance(motion, JumpCommandCfg)
   motion.scale_range = (1.0, 1.0)
+  # The whole clip, stand included. The trim is for a policy blind to the clip's clock, and
+  # this one reads it
+  motion.lead_in = None
   # The viewer dial asks for a distance. There is one distance
   motion.gui = False
 

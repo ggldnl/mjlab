@@ -75,7 +75,15 @@ class JumpCommand(CommandTerm):
       device=self.device,
     )
 
-    self.motion = MotionLibrary(cfg.motion_files, self.body_indexes, device=self.device)
+    lead_in_steps = (
+      None if cfg.lead_in is None else int(round(cfg.lead_in / env.step_dt))
+    )
+    self.motion = MotionLibrary(
+      cfg.motion_files,
+      self.body_indexes,
+      device=self.device,
+      lead_in_steps=lead_in_steps,
+    )
     print(self.motion.describe())
 
     self.motion_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -481,6 +489,16 @@ class JumpCommand(CommandTerm):
       ],
       dim=-1,
     )
+
+  @property
+  def remaining_distance(self) -> torch.Tensor:
+    """Distance still to cover along the robot's heading, [B, 1].
+
+    What the deployed policy is told and nothing else. The deployment command,
+    JumpDistanceCommand, computes the same number without any clip, so a policy that reads
+    only this runs on either.
+    """
+    return self.goal_b[:, 0:1]
 
   @property
   def command(self) -> torch.Tensor:
@@ -1159,6 +1177,14 @@ class JumpCommandCfg(CommandTermCfg):
       level4    +0.003  -0.007    -0.075
       level5    +0.009  -0.004    -0.075
   """
+
+  lead_in: float | None = None
+  """Seconds of each clip kept before the crouch starts. None keeps the whole clip.
+
+  The clips open with one to two seconds of standing. A policy that reads only the distance
+  cannot tell how much of that stand is left, so on the same standing state it is asked to
+  both wait and jump. Cut short, standing with distance left always means jump now. See
+  motion_lib.trim_lead_in."""
 
   entry_offset: int = 0
   """Frames to back the entry landmark off by, towards the start of the clip.

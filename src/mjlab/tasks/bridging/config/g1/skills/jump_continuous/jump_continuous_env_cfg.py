@@ -31,6 +31,8 @@ Run
 
 from __future__ import annotations
 
+import copy
+
 from mjlab.asset_zoo.robots import G1_ACTION_SCALE, get_g1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
@@ -144,7 +146,6 @@ _STAGE_2 = 72_000
 ##
 
 STUDENT_TERMS = (
-  "goal",
   "base_lin_vel",
   "base_ang_vel",
   "projected_gravity",
@@ -152,31 +153,76 @@ STUDENT_TERMS = (
   "joint_vel",
   "actions",
 )
-"""What the deployed policy reads, by term name, out of the teacher's own observation.
+"""The body terms the deployed policy reads, by name, out of the teacher's observation.
 
-A strict subset, taken from the teacher rather than restated, so the two cannot drift apart
-in their noise, their scaling or their order. Everything dropped is the reference: the
-per-tick joint targets and velocities the clip holds ("command"), where in the clip the robot
-is ("phase"), and where the robot sits relative to the clip's anchor ("motion_anchor_pos_b",
-"motion_anchor_ori_b").
+Taken from the teacher rather than restated, so the two cannot drift apart in their noise,
+their scaling or their order. Everything else the teacher reads is the reference and is
+dropped: the clip's joint targets ("command"), its clock ("phase"), its goal descriptor
+("goal") and the robot's offset from its anchor."""
 
-What is left is the walk's observation with a five-number goal in place of a three-number
-twist. That is the whole point of the second phase: the clips shape the jump while it is
-learned and nothing reads them once it is."""
+LEAD_IN = 0.2
+"""Seconds of each clip kept before the crouch starts. See JumpCommandCfg.lead_in."""
 
 
-def _student_group(full: ObservationGroupCfg) -> ObservationGroupCfg:
-  """The deployed policy's group, carved out of the teacher's."""
+def student_group(full: ObservationGroupCfg) -> ObservationGroupCfg:
+  """The deployed policy's group: the distance left to jump, and the body terms.
+
+  The distance is the only goal. No turn, no apex, no countdown, nothing that names a clip,
+  so the policy runs on JumpDistanceCommand, which loads none.
+  """
+  terms = {
+    "distance": ObservationTermCfg(
+      func=mdp.jump_remaining_distance,
+      params={"command_name": "motion"},
+      noise=Unoise(n_min=-0.02, n_max=0.02),
+    )
+  }
+  terms.update({name: full.terms[name] for name in STUDENT_TERMS})
   return ObservationGroupCfg(
-    terms={name: full.terms[name] for name in STUDENT_TERMS},
-    concatenate_terms=True,
-    enable_corruption=True,
+    terms=terms, concatenate_terms=True, enable_corruption=True
   )
+
+
+def deploy_env_cfg(
+  cfg: ManagerBasedRlEnvCfg,
+  distance_range: tuple[float, float],
+  episode_length_s: float = 8.0,
+) -> ManagerBasedRlEnvCfg:
+  """Turn a jump training env into the one the distilled policy is deployed in.
+
+  The clip command gives way to JumpDistanceCommand, so a distance is the only input and no
+  clip is loaded. What only training needs goes with it: the teacher's and the critic's
+  reference observations, the rewards, the curriculum and the clip based terminations. The
+  critic group is the actor's, kept because the runner is built with one.
+  """
+  cfg.commands = {
+    "motion": mdp.JumpDistanceCommandCfg(
+      entity_name="robot",
+      resampling_time_range=(1.0e9, 1.0e9),
+      distance_range=distance_range,
+    )
+  }
+  actor = cfg.observations["actor"]
+  actor.enable_corruption = False
+  cfg.observations = {"actor": actor, "critic": copy.deepcopy(actor)}
+  cfg.rewards = {}
+  cfg.curriculum = {}
+  cfg.terminations = {
+    "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
+    "fell": TerminationTermCfg(func=mdp.bad_orientation, params={"limit_angle": 1.0}),
+  }
+  cfg.events.pop("push_robot", None)
+  cfg.events["reset_robot"] = EventTermCfg(
+    func=mdp.reset_scene_to_default, mode="reset"
+  )
+  cfg.episode_length_s = episode_length_s
+  return cfg
 
 
 def g1_jump_continuous_env_cfg(
   motion_files: tuple[str, ...] | None = None,
   play: bool = False,
+  deploy: bool = False,
 ) -> ManagerBasedRlEnvCfg:
   """Build the jump environment.
 
@@ -185,18 +231,16 @@ def g1_jump_continuous_env_cfg(
   phase fits "actor", which does not, onto it. Both are computed every step, off the same
   simulation, so nothing is recorded and replayed.
 
-  The clips stay loaded at inference and nothing reads them. That is deliberate and it is
-  cheaper than the alternative: the deployed policy's goal, a remaining displacement and a
-  countdown, is exactly what the command term already computes off the reference, so keeping
-  the term is one source of truth instead of a second implementation and a table of baked
-  constants that could drift from the clips. Reference-free is a property of the policy here,
-  not of the environment.
+  The deployed policy reads one goal number, the distance left to jump along its heading.
+  During training the clip command computes it off the clip's landing point; deployed,
+  JumpDistanceCommand computes it off a target placed ahead of the robot, with no clip.
 
   Args:
     motion_files: Converted npz clips. Defaults to every jump_forward_level* file in the
       task's motions/ directory, ordered by distance.
     play: Start every episode at the beginning of a clip, drop the observation noise and
       the pushes, and leave the reference unperturbed.
+    deploy: Build the deployment env instead, see deploy_env_cfg. Implies play.
   """
   motion_files = motion_files or discover_motion_files()
 
@@ -293,7 +337,7 @@ def g1_jump_continuous_env_cfg(
     terms=actor_terms, concatenate_terms=True, enable_corruption=True
   )
   observations = {
-    "actor": _student_group(teacher_group),
+    "actor": student_group(teacher_group),
     "teacher": teacher_group,
     "critic": ObservationGroupCfg(
       terms=critic_terms, concatenate_terms=True, enable_corruption=False
@@ -336,6 +380,7 @@ def g1_jump_continuous_env_cfg(
       scale_range=(0.7, 1.3),
       goal_success_threshold=0.25,
       sampling_mode="adaptive",
+      lead_in=LEAD_IN,
     )
   }
 
@@ -637,7 +682,7 @@ def g1_jump_continuous_env_cfg(
     episode_length_s=6.0,
   )
 
-  if play:
+  if play or deploy:
     cfg.episode_length_s = int(1e9)
     cfg.observations["actor"].enable_corruption = False
     cfg.observations["teacher"].enable_corruption = False
@@ -653,5 +698,9 @@ def g1_jump_continuous_env_cfg(
     # reproduction of the recording rather than anything the skill needs. Which frame is
     # entry_landmark. Set this to "start" to watch the whole clip, stand included
     motion_cmd.sampling_mode = "entry"
+
+  if deploy:
+    # The stretch carries the clips out to these, see scale_range
+    return deploy_env_cfg(cfg, distance_range=(0.4, 2.4))
 
   return cfg
