@@ -9,7 +9,9 @@
     passing             a standing shove of a football at a commanded launch velocity
     kick                a football kick, tracked from a published human clip with a ball
                         placed on the swing. The reference is never annealed.
-    push                walk into a heavy crate and drive it at a commanded velocity
+    push                push a 1 m box a commanded number of cells straight ahead, hands
+                        only. The G1 mirror of Mjlab-T1-Push
+    push_twist          walk into a heavy crate and drive it at a commanded velocity
     martial             one task per martial arts motion, each tracking a crop of a LAFAN1 fight
                         performance from a standstill.
     climb               onto a box, across it and down the far side. Tracks an OmniRetarget
@@ -42,9 +44,12 @@ from mjlab.tasks.bridging.config.g1.skills.kick import KICK_TASK_ID
 from mjlab.tasks.bridging.config.g1.skills.martial import MARTIAL_TASK_IDS
 from mjlab.tasks.bridging.config.g1.skills.passing import PASS_TASK_ID
 
-# Same as jump_continuous: imported so the task registers, kept out of the pool below
+# Same as jump_continuous: imported so the tasks register, kept out of the pool below
 from mjlab.tasks.bridging.config.g1.skills.push import (  # noqa: F401
   PUSH_TASK_ID,
+)
+from mjlab.tasks.bridging.config.g1.skills.push_twist import (  # noqa: F401
+  PUSH_TWIST_TASK_ID,
 )
 from mjlab.tasks.bridging.config.g1.skills.walk import WALK_TASK_ID
 
