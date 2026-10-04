@@ -1,0 +1,95 @@
+# Positions are metres, headings are degrees, durations are seconds
+scene:
+  robot_position: [0.0, 0.0]
+  robot_heading_degrees: 0.0
+  ball_position: [6.0, 0.0]
+  fallen_position: [3.0, 0.0, 0.16]
+  # Roll, pitch, yaw of the frozen robot
+  fallen_rotation_degrees: [0.0, 90.0, 90.0]
+  fallen_joints: {}
+  # Symmetric reset bounds: XY metres, yaw degrees, joint angles radians
+  fallen_position_jitter: [0.03, 0.02]
+  fallen_yaw_jitter_degrees: 2.0
+  fallen_joint_jitter:
+    left_shoulder_pitch_joint: 0.04
+    right_shoulder_pitch_joint: 0.04
+    left_elbow_joint: 0.04
+    right_elbow_joint: 0.04
+    left_hip_roll_joint: 0.025
+    right_hip_roll_joint: 0.025
+    left_knee_joint: 0.025
+    right_knee_joint: 0.025
+  goal_position: [8.0, 0.0]
+  goal_heading_degrees: 0.0
+  goal_width: 2.0
+  goal_height: 1.2
+  pitch_length: 12.0
+  pitch_width: 8.0
+
+policies:
+  # The velocity conditioned walk policy also accepts faster forward commands
+  locomotion_task: Mjlab-G1-Walk
+  locomotion_checkpoint: logs/rsl_rl/g1_walk/2026-08-02_12-16-50/model_2700.pt
+  jump_checkpoint: logs/rsl_rl/g1_jump/2026-09-05_20-57-41/model_10400.pt
+  kick_checkpoint: logs/rsl_rl/g1_kick/2026-09-06_20-10-38/model_1200.pt
+  selector_path: data/selector/states.npz
+  locomotion_entry_path: data/soccer/g1_locomotion_entry.npz
+  speed_before_jump: 0.8
+  speed_after_jump: 0.8
+  record_warmup_steps: 150
+  record_frames: 16
+
+bridge:
+  kind: diffusion
+  checkpoint: logs/rsl_rl/g1_diffusion_kinematic_planner/2026-10-01_19-20-36/model_50000.pt
+  tracker_checkpoint: logs/rsl_rl/g1_diffusion_universal_tracker/2026-09-30_16-34-12/model_20000.pt
+  sample_steps: 50
+
+walk_to_jump:
+  # The reference airborne span is centered on the sampled fallen robot position
+  heading_degrees: 0.0
+  # Source: data/bridging/calibration/g1_walk_to_jump_diffusion_complete.yaml
+  # Entry index 3 is frame 87, quality 0.919 over 3 seeds
+  entry_index: 4
+  start_distance: 0.20
+  duration: 0.40
+  tolerance_scale: 2.0
+  # Calibration scores post handoff tracking and does not enforce the endpoint box
+  require_endpoint: false
+
+jump_to_walk:
+  # No jump to walk calibration is available yet
+  # Locomotion entry is placed at the positioned jump reference's final root XY
+  heading_degrees: null
+  # Index in the recorded locomotion window
+  entry_index: 0
+  start_distance: 0.25
+  duration: 0.50
+  tolerance_scale: 2.0
+  require_endpoint: false
+
+walk_to_kick:
+  # The reference ball target is aligned with the physical ball
+  # Null aims the measured kick direction from the ball towards the goal
+  heading_degrees: null
+  # Source: data/bridging/calibration/g1_walk_to_kick_diffusion.yaml
+  # Entry index 3 is frame 124, quality 0.563 over one seed
+  entry_index: 4
+  start_distance: 0.40
+  duration: 0.80
+  tolerance_scale: 2.0
+  require_endpoint: false
+
+controller:
+  lateral_tolerance: 0.15
+  heading_tolerance: 0.30
+  turn_speed: 0.70
+  clearance_distance: 0.45
+  lift_height: 0.12
+  jump_exit_requires_landing: true
+  ball_position_tolerance: 0.03
+  fall_height: 0.40
+  phase_timeout: 15.0
+  kick_timeout: 8.0
+  launch_speed: 0.50
+  require_goal: true
