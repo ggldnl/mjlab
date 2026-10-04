@@ -1,18 +1,18 @@
-"""Run a G1 walk-to-kick handoff.
+"""Run a G1 walk-to-climb handoff.
 
 Run
 
-    uv run python -m mjlab.tasks.bridging.config.g1.tests.transitions.walk2kick
+    uv run python -m mjlab.tasks.bridging.config.g1.tests.transitions.walk2climb
 
-    uv run python -m mjlab.tasks.bridging.config.g1.tests.transitions.walk2kick \
+    uv run python -m mjlab.tasks.bridging.config.g1.tests.transitions.walk2climb \
       --viewer none --automatic True
 
-    uv run python -m mjlab.tasks.bridging.config.g1.tests.transitions.walk2kick \
+    uv run python -m mjlab.tasks.bridging.config.g1.tests.transitions.walk2climb \
       --kinematic-only True
 
 --kinematic-only shows the diffusion plan with no tracker. The walking robot
-freezes when the bridge starts, the kick robot waits on the entry state, and a
-ghost plays the plan between them. The kick starts when the plan ends.
+freezes when the bridge starts, the climb robot waits on the entry state, and a
+ghost plays the plan between them. The climb starts when the plan ends.
 """
 
 # pyright: reportPrivateImportUsage=false, reportArgumentType=false
@@ -31,7 +31,6 @@ import torch
 import tyro
 
 import mjlab
-from mjlab.asset_zoo.objects.ball import BALL_RADIUS
 from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
@@ -53,8 +52,13 @@ from mjlab.tasks.bridging.bridges.interface import BridgeCommand
 from mjlab.tasks.bridging.bridges.mixed.runtime import MixedRuntime
 from mjlab.tasks.bridging.config import get_robot
 from mjlab.tasks.bridging.config.g1 import selector as resume
-from mjlab.tasks.bridging.config.g1.skills.kick import mdp as kick_mdp
-from mjlab.tasks.bridging.config.g1.skills.kick.mdp import KickCommand
+from mjlab.tasks.bridging.config.g1.skills.climb.dataset import (
+  box_from_manifest,
+  motion_dir,
+)
+from mjlab.tasks.bridging.config.g1.skills.jump_continuous.mdp.commands import (
+  JumpCommand,
+)
 from mjlab.tasks.bridging.selector import paths as selector_paths
 from mjlab.tasks.bridging.selector.table import (
   Entry,
@@ -70,14 +74,19 @@ from mjlab.tasks.bridging.tests.stage import (
 )
 from mjlab.tasks.registry import load_rl_cfg
 from mjlab.tasks.velocity.mdp import UniformVelocityCommand
-from mjlab.utils.lab_api.math import quat_apply, yaw_quat
+from mjlab.utils.lab_api.math import (
+  quat_apply,
+  quat_from_euler_xyz,
+  quat_mul,
+  yaw_quat,
+)
 from mjlab.viewer.debug_visualizer import DebugVisualizer
 
-BALL = "ball"
 G1 = get_robot("g1")
 WALK_TASK_ID = G1.skills["walk"]
-KICK_TASK_ID = G1.skills["kick"]
+CLIMB_TASK_ID = G1.skills["climb"]
 SELECTOR_PATH = selector_paths("g1")[1]
+BOX = box_from_manifest(motion_dir("climb"))
 
 
 @dataclass(frozen=True)
@@ -89,12 +98,12 @@ class Config:
   trigger_distance: float = 0.5
   automatic: bool = True
   walk_speed: float = 1.0
-  ball_distance: float = 3.0
+  box_distance: float = 3.0
   bridge_checkpoint: Path | None = None
   tracker_checkpoint: Path | None = None
   imitation_checkpoint: Path | None = None
   walk_checkpoint: Path | None = None
-  kick_checkpoint: Path | None = None
+  climb_checkpoint: Path | None = None
   selector_path: Path = SELECTOR_PATH
   entry: int = 0
   viewer: Literal["viser", "none"] = "viser"
@@ -125,22 +134,29 @@ def _diffusion_checkpoints(
   return planner, tracker
 
 
-def _put_ball(env: ManagerBasedRlEnv, position: torch.Tensor) -> None:
-  ball: Entity = env.scene[BALL]
-  root = torch.zeros(env.num_envs, 13, device=env.device)
-  root[:, 0:3] = position
-  root[:, 2] = BALL_RADIUS
-  root[:, 3] = 1.0
-  ball.write_root_state_to_sim(root)
+def _motion(env: ManagerBasedRlEnv) -> JumpCommand:
+  command = env.command_manager.get_term("motion")
+  if not isinstance(command, JumpCommand):
+    raise TypeError("The climb skill does not have a clip tracker")
+  return command
+
+
+def _put_box(env: ManagerBasedRlEnv, pose: torch.Tensor) -> None:
+  box: Entity = env.scene["box"]
+  box.write_mocap_pose_to_sim(pose)
   env.sim.forward()
-  kick_mdp.reset_kick_phase(env)
 
 
-def _reference_ball(env: ManagerBasedRlEnv, command: KickCommand) -> torch.Tensor:
-  position = quat_apply(command.anchor_yaw_quat, command.ball_target)
-  position[:, :2] += command.anchor_pos + env.scene.env_origins[:, :2]
-  position[:, 2] = BALL_RADIUS
-  return position
+def _reference_box(env: ManagerBasedRlEnv, command: JumpCommand) -> torch.Tensor:
+  """Pose of the box the clip was solved against, moved with the anchored clip."""
+  offset = torch.tensor(BOX.pos, device=env.device).expand(env.num_envs, 3)
+  position = quat_apply(command.anchor_yaw_quat, offset)
+  position[:, :2] += command.anchor_pos
+  position += env.scene.env_origins
+  yaw = torch.full((env.num_envs,), BOX.yaw, device=env.device)
+  zero = torch.zeros_like(yaw)
+  quat = quat_mul(command.anchor_yaw_quat, quat_from_euler_xyz(zero, zero, yaw))
+  return torch.cat((position, quat), dim=-1)
 
 
 def _robot_model(
@@ -163,7 +179,7 @@ def _robot_model(
 
 
 class Run:
-  """Drive walk, bridge, then kick in one environment."""
+  """Drive walk, bridge, then climb in one environment."""
 
   def __init__(
     self,
@@ -180,10 +196,10 @@ class Run:
     self.cfg = cfg
     command = env.command_manager.get_term(BRIDGE)
     if not isinstance(command, BridgeCommand):
-      raise TypeError("The walk2kick stage does not implement BridgeCommand")
+      raise TypeError("The walk2climb stage does not implement BridgeCommand")
     self.command = command
     self.command.tolerances *= cfg.capture_tolerance_scale
-    self.motion = kick_mdp.command(env)
+    self.motion = _motion(env)
     self.robot: Entity = env.scene["robot"]
     self.phase = "walk"
     self.within_endpoint_box: bool | None = None
@@ -201,11 +217,11 @@ class Run:
     self.diagnostic_planned: list[np.ndarray] = []
     self.diagnostic_phase: list[int] = []
     self.diagnostic_action: list[np.ndarray] = []
-    self.diagnostic_kick_errors: list[np.ndarray] = []
+    self.diagnostic_climb_errors: list[np.ndarray] = []
     action_dim = entries[0].previous_action.size
-    self.kick_tracking_count = 0
-    self.kick_fell = False
-    self.kick_tracking_sum = {
+    self.climb_tracking_count = 0
+    self.climb_fell = False
+    self.climb_tracking_sum = {
       name: 0.0
       for name in (
         "error_anchor_pos",
@@ -258,44 +274,44 @@ class Run:
       return f"bridge ({self.active_bridge}{kind})  {left:.2f} s left"
     if self.phase == "failed":
       return f"failed ({self.active_bridge})"
-    return "kick"
+    return "climb"
 
   def reset(self) -> None:
     self.phase = "walk"
     self.within_endpoint_box = None
     self.fire = False
-    self.kick_tracking_count = 0
-    self.kick_fell = False
-    self.kick_tracking_sum = dict.fromkeys(self.kick_tracking_sum, 0.0)
+    self.climb_tracking_count = 0
+    self.climb_fell = False
+    self.climb_tracking_sum = dict.fromkeys(self.climb_tracking_sum, 0.0)
     self.history = None
     self.frozen = None
     self.diagnostic_actual.clear()
     self.diagnostic_planned.clear()
     self.diagnostic_phase.clear()
     self.diagnostic_action.clear()
-    self.diagnostic_kick_errors.clear()
+    self.diagnostic_climb_errors.clear()
     self.command.stop()
     self.env.action_manager.action.zero_()
 
-    # Ball is always in front of the robot, at distance=self.cfg.ball_distance
+    # Box is always in front of the robot, at distance=self.cfg.box_distance
     entry = self.entries[self.entry_index]
     resume.prepare(self.env, entry)
     here = state(self.env)
     heading = yaw_quat(here[:, 3:7])
     ahead = torch.zeros(self.env.num_envs, 3, device=self.env.device)
-    ahead[:, 0] = self.cfg.ball_distance
-    ball = here[:, 0:3] + quat_apply(heading, ahead)
-    ball[:, 2] = BALL_RADIUS
+    ahead[:, 0] = self.cfg.box_distance
+    box = here[:, 0:3] + quat_apply(heading, ahead)
 
     ids = torch.arange(self.env.num_envs, device=self.env.device)
     self.motion.anchor_to_robot(
       ids, start_frame=entry.frame, at_pos=here[:, :3], at_quat=heading
     )
-    self.motion.anchor_pos += (ball - _reference_ball(self.env, self.motion))[:, :2]
+    reference = _reference_box(self.env, self.motion)
+    self.motion.anchor_pos += (box - reference[:, :3])[:, :2]
     self.motion.update_relative_body_poses()
     self.target = resume.target(self.env, entry)
     self._hold_motion(0)
-    _put_ball(self.env, ball)
+    _put_box(self.env, _reference_box(self.env, self.motion))
     if isinstance(self.command, GoalCommand):
       foot_fields = (
         entry.foot_pos_b,
@@ -344,9 +360,9 @@ class Run:
     self._set_walk()
 
   def select_entry(self, index: int) -> None:
-    """Aim at another selected kick state and restart the handoff."""
+    """Aim at another selected climb state and restart the handoff."""
     if not 0 <= index < len(self.entries):
-      raise IndexError(f"Kick has {len(self.entries)} selector states")
+      raise IndexError(f"Climb has {len(self.entries)} selector states")
     self.entry_index = index
     self.reset()
 
@@ -488,26 +504,26 @@ class Run:
     if not handoff:
       self.phase = "failed"
       return torch.zeros_like(self.env.action_manager.action)
-    self.phase = "kick"
+    self.phase = "climb"
     bridge_action = self.env.action_manager.action.clone()
-    kick_action = self.policies["kick"](fresh_obs(self.env))
-    action_jump = (kick_action - bridge_action).square().mean(dim=-1).sqrt()
-    print(f"first kick action jump: {float(action_jump[0]):.3f}")
-    return kick_action
+    climb_action = self.policies["climb"](fresh_obs(self.env))
+    action_jump = (climb_action - bridge_action).square().mean(dim=-1).sqrt()
+    print(f"first climb action jump: {float(action_jump[0]):.3f}")
+    return climb_action
 
-  def _record_kick_tracking(self) -> None:
-    self.kick_tracking_count += 1
-    self.kick_fell |= bool(self.robot.data.projected_gravity_b[0, 2] > -0.2)
-    for name in self.kick_tracking_sum:
-      self.kick_tracking_sum[name] += float(self.motion.metrics[name][0])
+  def _record_climb_tracking(self) -> None:
+    self.climb_tracking_count += 1
+    self.climb_fell |= bool(self.robot.data.projected_gravity_b[0, 2] > -0.2)
+    for name in self.climb_tracking_sum:
+      self.climb_tracking_sum[name] += float(self.motion.metrics[name][0])
     interval = round(0.5 / self.env.step_dt)
-    if self.kick_tracking_count in (interval, 2 * interval):
+    if self.climb_tracking_count in (interval, 2 * interval):
       print(
-        f"kick tracking after {self.kick_tracking_count * self.env.step_dt:.1f}s "
-        f"(fell={self.kick_fell}): "
+        f"climb tracking after {self.climb_tracking_count * self.env.step_dt:.1f}s "
+        f"(fell={self.climb_fell}): "
         + ", ".join(
-          f"{name}={total / self.kick_tracking_count:.3f}"
-          for name, total in self.kick_tracking_sum.items()
+          f"{name}={total / self.climb_tracking_count:.3f}"
+          for name, total in self.climb_tracking_sum.items()
         )
       )
 
@@ -522,7 +538,7 @@ class Run:
       planned=np.asarray(self.diagnostic_planned),
       phase=np.asarray(self.diagnostic_phase),
       action=np.asarray(self.diagnostic_action),
-      kick_errors=np.asarray(self.diagnostic_kick_errors),
+      climb_errors=np.asarray(self.diagnostic_climb_errors),
       target=self.target[0].cpu().numpy(),
       fps=1.0 / self.env.step_dt,
       entry=self.entry_index,
@@ -574,7 +590,7 @@ class Run:
           )
           self.diagnostic_phase.append(1)
           self.diagnostic_action.append(output.action[0].cpu().numpy().copy())
-          self.diagnostic_kick_errors.append(np.full(4, np.nan))
+          self.diagnostic_climb_errors.append(np.full(4, np.nan))
         if bool(output.handoff[0]):
           return self._finish_bridge(self.active_bridge)
         grace = round(self.cfg.capture_grace_s / self.env.step_dt)
@@ -596,8 +612,8 @@ class Run:
         action = spec.mix(base, action, self.command)
       return action
 
-    self._record_kick_tracking()
-    action = self.policies["kick"](fresh_obs(self.env))
+    self._record_climb_tracking()
+    action = self.policies["climb"](fresh_obs(self.env))
     reference = torch.cat(
       (
         self.motion.body_pos_w[:, 0],
@@ -613,8 +629,10 @@ class Run:
     self.diagnostic_planned.append(reference[0].cpu().numpy().copy())
     self.diagnostic_phase.append(2)
     self.diagnostic_action.append(action[0].cpu().numpy().copy())
-    self.diagnostic_kick_errors.append(
-      np.array([float(self.motion.metrics[name][0]) for name in self.kick_tracking_sum])
+    self.diagnostic_climb_errors.append(
+      np.array(
+        [float(self.motion.metrics[name][0]) for name in self.climb_tracking_sum]
+      )
     )
     return action
 
@@ -653,14 +671,16 @@ def panel(server, run: Run) -> None:
     )
     duration.on_update(lambda _: setattr(run, "duration_s", float(duration.value)))
 
-    entry = server.gui.add_slider(
-      "Kick state",
-      min=0,
-      max=len(run.entries) - 1,
-      step=1,
-      initial_value=run.entry_index,
-    )
-    entry.on_update(lambda _: run.select_entry(int(entry.value)))
+    # The climb selector may keep a single state, a slider needs two
+    if len(run.entries) > 1:
+      entry = server.gui.add_slider(
+        "Climb state",
+        min=0,
+        max=len(run.entries) - 1,
+        step=1,
+        initial_value=run.entry_index,
+      )
+      entry.on_update(lambda _: run.select_entry(int(entry.value)))
 
   with server.gui.add_folder("Walk"):
     speed = server.gui.add_slider(
@@ -692,7 +712,7 @@ def main() -> None:
 
   selected = BRIDGES[cfg.bridge]
   stage = BRIDGES[selected.base] if selected.base is not None else selected
-  env_cfg = arena(stage.task, WALK_TASK_ID, KICK_TASK_ID)
+  env_cfg = arena(stage.task, WALK_TASK_ID, CLIMB_TASK_ID)
   if cfg.kinematic_only:
     # Run.debug_vis draws the robots, the bridge target ghosts would clutter it
     env_cfg.commands[BRIDGE] = replace(env_cfg.commands[BRIDGE], debug_vis=False)
@@ -700,7 +720,9 @@ def main() -> None:
   wrapped = RslRlVecEnvWrapper(env, clip_actions=load_rl_cfg(stage.task).clip_actions)
   policies = {
     "walk": load_policy(WALK_TASK_ID, wrapped, "leaving", device, cfg.walk_checkpoint),
-    "kick": load_policy(KICK_TASK_ID, wrapped, "entering", device, cfg.kick_checkpoint),
+    "climb": load_policy(
+      CLIMB_TASK_ID, wrapped, "entering", device, cfg.climb_checkpoint
+    ),
   }
   available = {name: spec for name, spec in BRIDGES.items() if not spec.learned}
   for name, spec in BRIDGES.items():
@@ -739,9 +761,9 @@ def main() -> None:
   command = env.command_manager.get_term(BRIDGE)
   if not isinstance(command, BridgeCommand):
     raise TypeError(f"{selected.task} does not implement BridgeCommand")
-  entries = EntryTable.load(cfg.selector_path).of("kick")
+  entries = EntryTable.load(cfg.selector_path).of("climb")
   if not 0 <= cfg.entry < len(entries):
-    raise ValueError(f"Kick has {len(entries)} selector states, not entry {cfg.entry}")
+    raise ValueError(f"Climb has {len(entries)} selector states, not entry {cfg.entry}")
   env.reset()
   run = Run(env, policies, entries, cfg, available)
   if cfg.kinematic_only:
@@ -765,14 +787,14 @@ def main() -> None:
 
   from mjlab.viewer import ViserPlayViewer
 
-  server = viser.ViserServer(label="walk2kick")
+  server = viser.ViserServer(label="walk2climb")
   panel(server, run)
   ViserPlayViewer(
     wrapped,
     run,
     viser_server=server,
     info_provider=lambda _: run.status,
-    record_name="walk2kick",
+    record_name="walk2climb",
   ).run()
   wrapped.close()
 
