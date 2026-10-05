@@ -17,21 +17,39 @@ class Scene:
   robot_position: tuple[float, float] = (0.0, 0.0)
   robot_heading_degrees: float = 0.0
   ball_position: tuple[float, float] = (6.0, 0.0)
-  fallen_position: tuple[float, float, float] = (3.0, 0.0, 0.16)
+  fallen_position: tuple[float, float, float] = (3.0, 0.0, 0.08)
   fallen_rotation_degrees: tuple[float, float, float] = (0.0, 90.0, 90.0)
-  fallen_joints: dict[str, float] = field(default_factory=dict)
-  fallen_position_jitter: tuple[float, float] = (0.03, 0.02)
-  fallen_yaw_jitter_degrees: float = 2.0
+  fallen_joints: dict[str, float] = field(
+    default_factory=lambda: {
+      "left_hip_pitch_joint": 0.175,
+      "right_hip_pitch_joint": 0.175,
+      "left_hip_yaw_joint": 1.5708,
+      "right_hip_yaw_joint": -1.5708,
+      "left_hip_roll_joint": 0.4,
+      "right_hip_roll_joint": -0.4,
+      "left_knee_joint": 1.0,
+      "right_knee_joint": 1.0,
+      "left_shoulder_yaw_joint": 1.5708,
+      "right_shoulder_yaw_joint": -1.5708,
+      "left_shoulder_roll_joint": 0.7,
+      "right_shoulder_roll_joint": -0.7,
+      "left_elbow_joint": 0.6,
+      "right_elbow_joint": 0.6,
+    }
+  )
+  fallen_position_jitter: tuple[float, float] = (0.2, 0.15)
+  fallen_yaw_jitter_degrees: float = 180.0
   fallen_joint_jitter: dict[str, float] = field(
     default_factory=lambda: {
-      "left_shoulder_pitch_joint": 0.04,
-      "right_shoulder_pitch_joint": 0.04,
-      "left_elbow_joint": 0.04,
-      "right_elbow_joint": 0.04,
-      "left_hip_roll_joint": 0.025,
-      "right_hip_roll_joint": 0.025,
-      "left_knee_joint": 0.025,
-      "right_knee_joint": 0.025,
+      "left_shoulder_roll_joint": 0.65,
+      "right_shoulder_roll_joint": 0.65,
+      "left_elbow_joint": 0.8,
+      "right_elbow_joint": 0.8,
+      "left_hip_roll_joint": 0.35,
+      "right_hip_roll_joint": 0.35,
+      "left_knee_joint": 0.8,
+      "right_knee_joint": 0.8,
+      "waist_roll_joint": 0.4,
     }
   )
   goal_position: tuple[float, float] = (8.0, 0.0)

@@ -42,6 +42,11 @@ Each reset samples `fallen_position_jitter` (symmetric XY metre bounds),
 `fallen_yaw_jitter_degrees`, and `fallen_joint_jitter` (a map of joint angle
 bounds in radians). Height, roll and pitch remain fixed. Joint variations are
 baked into the visual geometry, then stay frozen for the episode.
+The default pose turns hips and shoulders so knee and elbow bends stay along
+the floor. Wide shoulder, hip, knee, elbow and waist variations create sprawled,
+asymmetric poses, with a full range of ground headings and a lower torso height.
+Keep the fixed hip and shoulder rotations when increasing these joint bounds;
+arbitrary pitch and yaw variations can lift limbs off the floor.
 Entry locations and clearance checks use the sampled obstacle position. Set the
 bounds to zero and the joint map to `{}` to disable all variation; `--seed`
 controls the reproducible sequence of poses.
