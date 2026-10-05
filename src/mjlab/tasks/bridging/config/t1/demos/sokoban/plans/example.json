@@ -1,0 +1,6 @@
+[
+  {"skill": "push", "direction": "E", "cells": 2},
+  {"skill": "walk", "direction": "S", "cells": 1},
+  {"skill": "walk", "direction": "E", "cells": 1},
+  {"skill": "push", "direction": "N", "cells": 2}
+]
