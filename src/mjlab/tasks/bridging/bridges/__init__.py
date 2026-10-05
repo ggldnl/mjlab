@@ -12,6 +12,7 @@ from mjlab.tasks.bridging.bridges.interface import (
   Bridge,
   BridgeCommand,
 )
+from mjlab.tasks.bridging.bridges.mixed.runtime import MixedRuntime
 
 ActionMixer = Callable[[torch.Tensor, torch.Tensor, BridgeCommand], torch.Tensor]
 
@@ -47,4 +48,5 @@ BRIDGES = {
   "imitation": BridgeSpec("imitation", "Mjlab-G1-Imitation-Bridge"),
   "cvae": BridgeSpec("cvae", "Mjlab-G1-CVAE-Bridge"),
   "diffusion": BridgeSpec("diffusion", "Mjlab-G1-Imitation-Bridge", DiffusionRuntime),
+  "mixed": BridgeSpec("mixed", "Mjlab-G1-Imitation-Bridge", MixedRuntime),
 }

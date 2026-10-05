@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import mujoco
@@ -108,6 +109,10 @@ class RobotFootKinematics(nn.Module):
     )
 
   def forward(self, states: torch.Tensor) -> torch.Tensor:
+    return self.frames(states)[0]
+
+  def frames(self, states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sole positions and orientations, each with a trailing (2, 3) or (2, 4)."""
     if states.shape[-1] != 13 + 2 * self.joints:
       raise ValueError("State width does not match the selected robot")
     position = states[..., None, :3].expand(*states.shape[:-1], 2, 3)
@@ -128,7 +133,23 @@ class RobotFootKinematics(nn.Module):
         position + quat_apply(orientation, anchor) - quat_apply(rotated, anchor)
       )
       orientation = rotated
-    return position + quat_apply(orientation, self._expand(self.site_pos, states))
+    sole = position + quat_apply(orientation, self._expand(self.site_pos, states))
+    return sole, orientation
+
+
+def pose_states(pose: torch.Tensor) -> torch.Tensor:
+  """Poses as dynamic states with zero velocities, enough for foot kinematics"""
+  joints = pose.shape[-1] - 9
+  return torch.cat(
+    (
+      pose[..., :3],
+      quat_from_rot6d(pose[..., 3:9]),
+      pose.new_zeros((*pose.shape[:-1], 6)),
+      pose[..., 9:],
+      pose.new_zeros((*pose.shape[:-1], joints)),
+    ),
+    dim=-1,
+  )
 
 
 class PathLoss(nn.Module):
@@ -194,18 +215,6 @@ class PathLoss(nn.Module):
     scale = self.step_std * duration.float().sqrt()[:, None]
     return (gap / scale).square().mean()
 
-  def _states(self, pose: torch.Tensor) -> torch.Tensor:
-    return torch.cat(
-      (
-        pose[..., :3],
-        quat_from_rot6d(pose[..., 3:9]),
-        pose.new_zeros((*pose.shape[:-1], 6)),
-        pose[..., 9:],
-        pose.new_zeros((*pose.shape[:-1], self.layout.joints)),
-      ),
-      dim=-1,
-    )
-
   def _foot_slip(
     self,
     predicted: torch.Tensor,
@@ -215,8 +224,8 @@ class PathLoss(nn.Module):
   ) -> torch.Tensor:
     clean_pose = integrate(clean, self.layout, self.history, duration)
     predicted_pose = integrate(predicted, self.layout, self.history, duration)
-    clean_feet = self.feet(self._states(clean_pose))
-    predicted_feet = self.feet(self._states(predicted_pose))
+    clean_feet = self.feet(pose_states(clean_pose))
+    predicted_feet = self.feet(pose_states(predicted_pose))
     clean_delta = clean_feet[:, 1:, :, :2] - clean_feet[:, :-1, :, :2]
     clean_speed = torch.linalg.vector_norm(clean_delta, dim=-1) * self.fps
     contact = (
@@ -236,7 +245,9 @@ class PathLoss(nn.Module):
     clean: torch.Tensor,
     active_edges: torch.Tensor,
     duration: torch.Tensor,
+    known: torch.Tensor | None = None,
   ) -> torch.Tensor:
+    del known  # used by subclasses that read condition channels
     predicted = predicted * self.std + self.mean
     clean = clean * self.std + self.mean
     total = self.endpoint_weight * self._endpoint(predicted, duration)
@@ -324,7 +335,7 @@ class Diffusion(nn.Module):
     total = reconstruction + self.cfg.continuity_weight * continuity
     if path_loss is not None:
       assert duration is not None
-      total = total + path_loss(full, clean, active_edges, duration)
+      total = total + path_loss(full, clean, active_edges, duration, known)
     return total
 
   @torch.no_grad()
@@ -333,11 +344,14 @@ class Diffusion(nn.Module):
     known_values: torch.Tensor,
     known: torch.Tensor,
     trace: list[torch.Tensor] | None = None,
+    project: Callable[[torch.Tensor], torch.Tensor] | None = None,
   ) -> torch.Tensor:
     """Fill free channels; copy all conditioned channels at every denoising step.
 
     A trace list collects one clean prediction per rung of the ladder, for viewers.
     Its last entry is what is returned.
+    project, when given, corrects every clean prediction before the next rung
+    is noised from it, so later rungs adapt to the correction.
     """
     if known_values.shape != known.shape:
       raise ValueError("known values and mask must match")
@@ -353,13 +367,16 @@ class Diffusion(nn.Module):
     for index, tick in enumerate(ladder):
       step = tick.expand(noisy.shape[0])
       clean = self._inputs(self.denoiser(noisy, known, step), known_values, known)
+      alpha = self.schedule[tick]
+      # noise comes from the model's own prediction, the projection only moves x0
+      noise = (noisy - alpha.sqrt() * clean) / (1 - alpha).sqrt()
+      if project is not None:
+        clean = self._inputs(project(clean), known_values, known)
       if trace is not None:
         trace.append(clean)
       if index == len(ladder) - 1:
         return clean
-      alpha = self.schedule[tick]
       next_alpha = self.schedule[ladder[index + 1]]
-      noise = (noisy - alpha.sqrt() * clean) / (1 - alpha).sqrt()
       noisy = next_alpha.sqrt() * clean + (1 - next_alpha).sqrt() * noise
       noisy = self._inputs(noisy, known_values, known)
     raise RuntimeError("empty denoising schedule")

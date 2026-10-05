@@ -480,12 +480,15 @@ class KinematicPlanGate:
       raise ValueError("No foot collision geoms found for plan gating")
     body_ids = command.robot.indexing.body_ids.cpu().tolist()
     self.pelvis = body_ids[0]
-    self.feet = tuple(
-      mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, f"{side}_foot")
-      for side in ("left", "right")
-    )
-    if any(site < 0 for site in self.feet):
-      raise ValueError("Robot must expose left_foot and right_foot sites")
+    # Scene names carry the entity prefix, so resolve the sites through the entity
+    try:
+      local, _ = command.robot.find_sites(
+        ["left_foot", "right_foot"], preserve_order=True
+      )
+    except ValueError:
+      raise ValueError("Robot must expose left_foot and right_foot sites") from None
+    site_ids = command.robot.indexing.site_ids.cpu().tolist()
+    self.feet = tuple(site_ids[index] for index in local)
     self.joint_limits = command.robot.data.soft_joint_pos_limits[0].detach().cpu()
 
   @torch.no_grad()
@@ -965,7 +968,7 @@ class PlannerImprovementRunner(MjlabOnPolicyRunner):
       self.planner.bridge.history,
       command.post_steps,
       self.pair_cfg,
-      self.planner.windows.data.starts + self.planner.bridge.history - 1,
+      self.planner.windows.starts + self.planner.bridge.history - 1,
     )
     self.gate = KinematicPlanGate(command, self.gate_cfg)
     self.replay = PhysicalReplay(replay_capacity)
@@ -1320,7 +1323,8 @@ class PlannerImprovementRunner(MjlabOnPolicyRunner):
         learn_time=learn_time,
         loss_dict=metrics,
         learning_rate=self.planner_cfg.learning_rate,
-        action_std=self.alg.get_policy().output_std,
+        # The frozen tracker acts on its mean and never samples, so it has no std
+        action_std=torch.full((1,), torch.nan),
         rnd_weight=None,
       )
       if (

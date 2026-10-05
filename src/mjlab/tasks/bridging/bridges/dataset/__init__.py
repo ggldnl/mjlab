@@ -1,29 +1,19 @@
-"""Where a bridge's start and target states come from. Shared by every architecture.
+"""The kinematic corpus every bridge trains on. Shared by every architecture.
 
-    dataset.py             shared format, loader, and rollout driver
-    trajectory_tracking/  rollouts of motion tracking policies
-    skill_rollouts/       stitched rollouts of trained skills
-    motion_capture/       retargeted BABEL and LAFAN for the diffusion bridge
-    view.py                per source counts, and a window replayed as a ghost
+    dataset.py        shared format, loader, and rollout driver
+    motion_capture/   retargeted and filtered BABEL and LAFAN
+    motion_graph/     pairs of filtered BABEL and LAFAN clips stitched at a look-alike frame
+    view.py           per source counts, and a window replayed as a ghost
 
-One corpus, held here rather than inside an architecture, because what a bridge is asked
-to cross does not depend on how its policy is produced. An architecture points its command
-term at DEFAULT_DATASET and reads the same windows as every other one, so two of them are
-comparable.
-
-Both ends of a window are cut out of one tracker rollout a fixed time apart, which makes
-the pair reachable by construction. A retargeted human clip is a description, not a state a
-G1 is ever in, so nothing here reads motion capture directly.
+The corpus is kinematic. A planner produces kinematic trajectories too, and the universal
+tracker is what makes them physical.
 
 Run
 
-1. Build the corpus.
+1. Build the motion capture corpus, then the stitched clips on top of it.
 
-    uv run python -m mjlab.tasks.bridging.bridges.dataset.trajectory_tracking.collect
-
-   Or build the skill rollout variant.
-
-    uv run python -m mjlab.tasks.bridging.bridges.dataset.skill_rollouts.collect
+    uv run python -m mjlab.tasks.bridging.bridges.dataset.motion_capture.build --robot g1
+    uv run python -m mjlab.tasks.bridging.bridges.dataset.motion_graph.build --robot g1
 
 2. Inspect it.
 

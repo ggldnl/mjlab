@@ -11,7 +11,12 @@ from pathlib import Path
 import torch
 
 from mjlab.tasks.bridging.bridges.dataset.dataset import (
+  LOG_ROOT,
   find_checkpoint,
+)
+from mjlab.tasks.bridging.bridges.diffusion.config import (
+  improvement_experiment,
+  planner_experiment,
 )
 from mjlab.tasks.bridging.bridges.diffusion.planner.bridge import (
   EXPERIMENT,
@@ -25,6 +30,21 @@ from mjlab.tasks.bridging.bridges.interface import (
 
 PathExecutor = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 EndpointBoxTest = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+
+
+def latest_planner_checkpoint(robot: str = "g1") -> Path:
+  """Newest planner checkpoint across pretraining and planner improvement runs."""
+  experiments = (planner_experiment(robot), improvement_experiment(robot))
+  found = [
+    path for name in experiments for path in (LOG_ROOT / name).rglob("model_*.pt")
+  ]
+  if not found:
+    tried = ", ".join(str(LOG_ROOT / name) for name in experiments)
+    raise SystemExit(
+      f"No planner checkpoint found. Looked under {tried}. Train one with "
+      "`uv run python -m mjlab.tasks.bridging.bridges.diffusion.planner.train`."
+    )
+  return max(found, key=lambda path: path.stat().st_mtime)
 
 
 class DiffusionRuntime(Bridge):
@@ -59,6 +79,10 @@ class DiffusionRuntime(Bridge):
     self.executor = executor
     self.endpoint_box_test = endpoint_box_test
     self.executor_horizon = int(getattr(executor, "horizon", self.executor_horizon))
+
+  def latest_checkpoint(self) -> Path:
+    """Newest checkpoint this runtime can load, used when none is given."""
+    return latest_planner_checkpoint()
 
   def load(self, device: torch.device | str) -> DiffusionBridge:
     if self._bridge is None:

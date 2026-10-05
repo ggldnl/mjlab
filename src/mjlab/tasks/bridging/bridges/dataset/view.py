@@ -1,8 +1,7 @@
 """Viewer for the windows the bridge is trained on.
 
 A window is a start state, a target state and a deadline. Both ends come from one
-contiguous stretch of one rollout, so between them there is a real motion a real robot
-performed under physics. The bridge uses that motion as a learning signal.
+contiguous stretch of one clip, and the motion between them is the learning signal.
 
 The mask is what this shows:
 
@@ -14,6 +13,12 @@ Two robots are compiled, one green and one red, and the one not wanted is parked
 floor. A geom color is baked at compile time and cannot be repainted frame by frame, so
 switching color has to be switching robots.
 
+The Corpus dropdown picks what the windows are cut from:
+
+    BABEL, LAFAN  retargeted and filtered clips
+    Stitched      two of those joined at a seam, see motion_graph/build.py. Windows are
+                  drawn across the seam, as in training, and the readout says where it is
+
 Run
 
 1. Serve the viewer, then open the printed address. Next window draws another from the same
@@ -22,17 +27,18 @@ Run
 
     uv run python -m mjlab.tasks.bridging.bridges.dataset.view
 
-2. Restrict to one clip, and to the side of the split uv run play and evaluate read.
+2. Start on one corpus, and on the side of the split play and evaluate read.
 
     uv run python -m mjlab.tasks.bridging.bridges.dataset.view \
-      --source jumps1_subject1 --split eval
+      --corpus Stitched --split eval
 """
+
+# pyright: reportPrivateImportUsage=false
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 import mujoco
 import numpy as np
@@ -43,11 +49,11 @@ from mjviser import ViserMujocoScene
 
 import mjlab
 from mjlab.tasks.bridging.bridges.dataset.dataset import (
-  DEFAULT_DATASET,
   ROOT_STATE_DIM,
   Dataset,
-  load_dataset,
+  crosses_seam,
 )
+from mjlab.tasks.bridging.bridges.dataset.motion_graph import clips
 from mjlab.tasks.bridging.config import get_robot
 
 OUTSIDE = "context/"
@@ -67,15 +73,16 @@ ANY = "any source"
 
 @dataclass
 class ViewCfg:
-  path: Path = DEFAULT_DATASET
+  corpus: str = "BABEL"
+  """One of BABEL, LAFAN, Stitched. The dropdown changes it."""
   robot: str = "g1"
   split: str = "train"
   """Which side of the holdout split to draw from. train is what the bridge learns on,
   eval is what uv run play and evaluate read."""
 
   source: str = ""
-  """Restrict windows to one clip or skill. Empty starts on any of them, and the dropdown
-  changes it without restarting."""
+  """Restrict windows to one category, clip or skill. Empty starts on any of them, and the
+  dropdown changes it without restarting."""
 
   duration_s: tuple[float, float] = (0.3, 1.2)
   """How long a window may be. The default is BridgeCommandCfg.duration_s_range, so what
@@ -200,6 +207,8 @@ class Window:
   stop: int
   """Index of the target state it has to arrive in. Red covers [start, stop]."""
   fps: float
+  rows: np.ndarray
+  """(L,) dataset row of every played state."""
 
   @property
   def steps(self) -> int:
@@ -237,22 +246,29 @@ def draw(
   max_steps: int,
   context: int,
   rng: np.random.Generator,
+  allowed: np.ndarray,
 ) -> Window:
   """One window, drawn the way the command term draws one, plus context either side.
 
   The duration is uniform over what the chosen start actually admits and not over the
-  configured range, because a start near the end of its rollout only offers short windows.
+  configured range, because a start near the end of its clip only offers short windows.
   That is the command term's rule too, and getting it wrong here would show a distribution
-  the policy never sees.
+  the policy never sees. allowed says which dataset rows may open a window, see
+  crosses_seam.
   """
   usable = [(a, b) for a, b in spans if b - a > min_steps]
   if not usable:
     raise SystemExit(
-      f"No rollout here is longer than {min_steps} control steps, so no window of "
+      f"No clip here is longer than {min_steps} control steps, so no window of "
       f"{min_steps / data.fps:.2f} s can be cut from one."
     )
-  a, b = usable[rng.integers(len(usable))]
-  start = int(rng.integers(a, b - min_steps))
+  while True:
+    a, b = usable[rng.integers(len(usable))]
+    starts = np.arange(a, b - min_steps)
+    starts = starts[allowed[order[starts].numpy()]]
+    if len(starts):
+      break
+  start = int(rng.choice(starts))
   steps = int(rng.integers(min_steps, min(max_steps, b - 1 - start) + 1))
 
   low, high = max(a, start - context), min(b, start + steps + context + 1)
@@ -262,6 +278,7 @@ def draw(
     start=start - low,
     stop=start + steps - low,
     fps=data.fps,
+    rows=order[low:high].numpy(),
   )
 
 
@@ -270,7 +287,7 @@ def draw(
 ##
 
 
-def describe(window: Window, at: int, drawn: int) -> str:
+def describe(window: Window, note: str = "") -> str:
   """What the bridge is being asked for, in the units the question is asked in."""
   begin, end = window.states[window.start], window.states[window.stop]
   num_joints = (window.states.shape[1] - ROOT_STATE_DIM) // 2
@@ -288,10 +305,57 @@ def describe(window: Window, at: int, drawn: int) -> str:
     f"-> {float(np.linalg.norm(end[10:13])):.2f} rad/s |\n"
     f"| pelvis | {begin[2]:.2f} -> {end[2]:.2f} m |\n"
     f"| widest joint move | {travel:.2f} rad |\n"
+    f"{note}"
   )
 
 
-def listing(data: Dataset, min_steps: int) -> str:
+def seams(window: Window, data: Dataset, stitched: list[clips.Clip]) -> str:
+  """Readout rows for a stitched clip: its pieces and the seams inside the window."""
+  if not stitched:
+    return ""
+  clip = stitched[int(data.trajectory[window.rows[window.start]])]
+  frames = data.frame[window.rows].numpy()
+  begin, end = frames[window.start], frames[window.stop]
+  seam = int(clip.seams[0])
+  where = (
+    f"{(seam - begin) / window.fps:.2f} s into the window"
+    if begin < seam <= end
+    else "outside the window, a bug"
+  )
+  return f"| pieces | {' / '.join(clip.pieces)} |\n| seam | {where} |\n"
+
+
+def kinematic(corpus: str, robot: str, split: str) -> tuple[Dataset, list[clips.Clip]]:
+  """Retargeted or stitched clips as a Dataset, one trajectory per clip."""
+  loaded = clips.load(
+    clips.corpus_files(corpus, robot, "val" if split == "eval" else "train")
+  )
+  names = tuple(sorted({c.category for c in loaded.clips}))
+  states, skill, trajectory, frame, seam = [], [], [], [], []
+  for index, c in enumerate(loaded.clips):
+    kept = np.flatnonzero(c.valid)
+    states.append(c.states[kept])
+    skill.append(np.full(len(kept), names.index(c.category)))
+    trajectory.append(np.full(len(kept), index))
+    frame.append(kept)
+    seam.append(np.full(len(kept), c.seams[0] if len(c.seams) else -1))
+
+  def column(values: list[np.ndarray]) -> torch.Tensor:
+    return torch.from_numpy(np.concatenate(values)).long()
+
+  data = Dataset(
+    states=torch.from_numpy(np.concatenate(states)),
+    skill=column(skill),
+    trajectory=column(trajectory),
+    frame=column(frame),
+    names=names,
+    fps=loaded.fps,
+    seam=column(seam),
+  )
+  return data, loaded.clips if corpus == "Stitched" else []
+
+
+def listing(data: Dataset, min_steps: int, allowed: np.ndarray) -> str:
   """What is in the corpus, per source, and how much of it can be asked about."""
   lines = [
     f"{data.states.shape[0]} states at {data.fps:.0f} Hz",
@@ -301,11 +365,13 @@ def listing(data: Dataset, min_steps: int) -> str:
   print(f"[view] {data.states.shape[0]} states at {data.fps:.0f} Hz")
   for name in data.names:
     rows = data.of((name,))
-    _, spans = runs(data, rows)
-    windows = sum(max(b - a - min_steps, 0) for a, b in spans)
+    order, spans = runs(data, rows)
+    windows = sum(
+      int(allowed[order[a : b - min_steps].numpy()].sum()) for a, b in spans
+    )
     lines.append(f"| {name} | {rows.numel()} | {windows} |")
     print(
-      f"[view]   {name}: {rows.numel()} states, {len(spans)} rollouts, "
+      f"[view]   {name}: {rows.numel()} states, {len(spans)} runs, "
       f"{windows} windows of {min_steps} steps"
     )
   return "\n".join(lines)
@@ -316,28 +382,65 @@ def listing(data: Dataset, min_steps: int) -> str:
 ##
 
 
-def serve(cfg: ViewCfg) -> None:
-  data = load_dataset(cfg.path, "cpu", cfg.split)
-  if cfg.source and cfg.source not in data.names:
-    raise SystemExit(f"This dataset holds {data.names}, not '{cfg.source}'.")
+@dataclass
+class Loaded:
+  """One corpus, indexed for drawing."""
 
-  min_steps = max(1, int(np.ceil(cfg.duration_s[0] * data.fps)))
-  max_steps = max(min_steps, int(np.floor(cfg.duration_s[1] * data.fps)))
-  context = max(0, int(round(cfg.context_s * data.fps)))
-  rng = np.random.default_rng()
+  data: Dataset
+  indexed: dict[str, tuple[torch.Tensor, list[tuple[int, int]]]]
+  stitched: list[clips.Clip]
+  allowed: np.ndarray
+  """(N,) rows that may open a window."""
+  listing: str
+  min_steps: int
+  max_steps: int
+  context: int
 
-  model, outside, inside = build(cfg.robot)
-  if outside.joints.size != data.num_joints:
+
+def open_corpus(name: str, cfg: ViewCfg, joints: int) -> Loaded:
+  data, stitched = kinematic(name, cfg.robot, cfg.split)
+  if joints != data.num_joints:
     raise SystemExit(
-      f"The dataset holds {data.num_joints}-joint states and {cfg.robot} has "
-      f"{outside.joints.size}, so it was recorded against a different robot."
+      f"{name} holds {data.num_joints}-joint states and {cfg.robot} has {joints}, "
+      "so it was recorded against a different robot."
     )
-  mj_data = mujoco.MjData(model)
-
+  min_steps = max(1, int(np.ceil(cfg.duration_s[0] * data.fps)))
+  assert data.seam is not None
+  allowed = crosses_seam(data.seam, data.frame, 0, min_steps).numpy()
   # Indexed once per source. of builds a mask over the whole table, and redoing it per
   # window would scan the corpus every few seconds to draw one pair
-  indexed = {name: runs(data, data.of((name,))) for name in data.names}
+  indexed = {n: runs(data, data.of((n,))) for n in data.names}
   indexed[ANY] = runs(data, data.of(None))
+  return Loaded(
+    data=data,
+    indexed=indexed,
+    stitched=stitched,
+    allowed=allowed,
+    listing=listing(data, min_steps, allowed),
+    min_steps=min_steps,
+    max_steps=max(min_steps, int(np.floor(cfg.duration_s[1] * data.fps))),
+    context=max(0, int(round(cfg.context_s * data.fps))),
+  )
+
+
+def serve(cfg: ViewCfg) -> None:
+  if cfg.corpus not in clips.CORPORA:
+    raise SystemExit(f"corpus is one of {clips.CORPORA}, not '{cfg.corpus}'.")
+  rng = np.random.default_rng()
+  model, outside, inside = build(cfg.robot)
+  mj_data = mujoco.MjData(model)
+
+  # Loaded on first use, kept for the session
+  cache: dict[str, Loaded] = {}
+
+  def corpus_named(name: str) -> Loaded:
+    if name not in cache:
+      cache[name] = open_corpus(name, cfg, outside.joints.size)
+    return cache[name]
+
+  current = corpus_named(cfg.corpus)
+  if cfg.source and cfg.source not in current.data.names:
+    raise SystemExit(f"{cfg.corpus} holds {current.data.names}, not '{cfg.source}'.")
 
   server = viser.ViserServer(port=cfg.port)
   scene = ViserMujocoScene(server, model, num_envs=1)
@@ -357,9 +460,10 @@ def serve(cfg: ViewCfg) -> None:
     client.camera.position = (3.0, -3.0, 1.8)
     client.camera.look_at = (0.0, 0.0, 0.8)
 
-  server.gui.add_markdown(listing(data, min_steps))
+  summary = server.gui.add_markdown(current.listing)
+  corpus = server.gui.add_dropdown("Corpus", clips.CORPORA, initial_value=cfg.corpus)
   source = server.gui.add_dropdown(
-    "Source", [ANY, *data.names], initial_value=cfg.source or ANY
+    "Source", [ANY, *current.data.names], initial_value=cfg.source or ANY
   )
   back = server.gui.add_button("Previous")
   forward = server.gui.add_button("Next")
@@ -386,22 +490,22 @@ def serve(cfg: ViewCfg) -> None:
     window = history[at]
     cursor.max = window.states.shape[0] - 1
     rewind()
-    readout.content = describe(window, at, len(history))
+    readout.content = describe(window, seams(window, current.data, current.stitched))
     back.disabled = at == 0
 
+  def fresh() -> Window:
+    c = current
+    spans = c.indexed.get(source.value, c.indexed[ANY])
+    return draw(c.data, *spans, c.min_steps, c.max_steps, c.context, rng, c.allowed)
+
   def restart() -> None:
-    history.clear()
-    history.append(
-      draw(data, *indexed[source.value], min_steps, max_steps, context, rng)
-    )
+    history[:] = [fresh()]
     use(0)
 
   @forward.on_click
   def _(_) -> None:
     if at + 1 == len(history):
-      history.append(
-        draw(data, *indexed[source.value], min_steps, max_steps, context, rng)
-      )
+      history.append(fresh())
     use(at + 1)
 
   @back.on_click
@@ -427,10 +531,20 @@ def serve(cfg: ViewCfg) -> None:
   def _(_) -> None:
     restart()
 
+  @corpus.on_update
+  def _(_) -> None:
+    nonlocal current
+    current = corpus_named(corpus.value)
+    summary.content = current.listing
+    source.options = [ANY, *current.data.names]
+    source.value = ANY
+    restart()
+
   restart()
   print(f"[view] serving on http://localhost:{cfg.port}")
   while True:
-    window = history[at]
+    # The dropdowns redraw from another thread, so at can briefly run past history
+    window = history[min(at, len(history) - 1)]
     if playing:
       cursor.value = (int(cursor.value) + 1) % window.states.shape[0]
     frame = min(int(cursor.value), window.states.shape[0] - 1)

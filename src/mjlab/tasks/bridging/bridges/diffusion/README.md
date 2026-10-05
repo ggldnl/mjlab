@@ -5,7 +5,8 @@ The bridge has two stages:
 1. The planner generates a kinematic trajectory from A to B.
 2. The universal tracker executes that trajectory in MuJoCo.
 
-Both stages use the selected robot's retargeted BABEL and original LAFAN data.
+Both stages use the selected robot's retargeted BABEL and original LAFAN data, plus
+stitched pairs of those clips.
 The planner uses contiguous kinematic windows. The tracker learns to follow those
 windows and their recorded post-B continuation with physics randomization and
 perturbations. Training selects `g1` or `t1`; motion metadata is checked against
@@ -32,6 +33,19 @@ uv run python -m mjlab.tasks.bridging.bridges.dataset.motion_capture.build --rob
 
 What is taken and why is in `bridges/dataset/motion_capture/filters.py`. Each output
 folder also holds `selection.jsonl`, the clips and intervals taken, and `qa.jsonl`.
+
+Then join pairs of filtered clips at a look-alike frame, into `data/motion_graph/<robot>/`.
+Both stages only cut windows from these that cross the seam:
+
+```sh
+uv run python -m mjlab.tasks.bridging.bridges.dataset.motion_graph.build --robot g1
+```
+
+Inspect any of the three corpora, as the samplers draw them:
+
+```sh
+uv run python -m mjlab.tasks.bridging.bridges.dataset.view
+```
 
 ## Package layout
 
@@ -80,12 +94,12 @@ uv run python -m mjlab.tasks.bridging.bridges.diffusion.planner.train --robot t1
 ```
 
 Checkpoints are written to
-`logs/rsl_rl/g1_kinematic_diffusion_planner/<run>/`.
+`logs/rsl_rl/g1_diffusion_kinematic_planner/<run>/`.
 
 Evaluate a checkpoint on held-out contiguous BABEL windows:
 
 ```sh
-uv run python -m mjlab.tasks.bridging.bridges.diffusion.evaluation.kinematic --checkpoint logs/rsl_rl/g1_kinematic_diffusion_planner/<run>/model_30000.pt
+uv run python -m mjlab.tasks.bridging.bridges.diffusion.evaluation.kinematic --checkpoint logs/rsl_rl/g1_diffusion_kinematic_planner/<run>/model_30000.pt
 ```
 
 Resume a tracker checkpoint with:
@@ -99,7 +113,7 @@ uv run train Mjlab-G1-Diffusion-Universal-Tracker --agent.resume True --agent.lo
 Run planner improvement with:
 
 ```sh
-uv run train Mjlab-G1-Diffusion-Planner-Improvement --agent.max-iterations 12 --agent.tracker-checkpoint logs/rsl_rl/g1_diffusion_universal_tracker/<run>/model_5999.pt --agent.planner-checkpoint logs/rsl_rl/g1_kinematic_diffusion_planner/<run>/model_30000.pt
+uv run train Mjlab-G1-Diffusion-Planner-Improvement --agent.max-iterations 12 --agent.tracker-checkpoint logs/rsl_rl/g1_diffusion_universal_tracker/<run>/model_5999.pt --agent.planner-checkpoint logs/rsl_rl/g1_diffusion_kinematic_planner/<run>/model_30000.pt
 ```
 
 Use `Mjlab-T1-Diffusion-Planner-Improvement` with T1 tracker and planner
@@ -135,5 +149,5 @@ The unified checkpoint contains the improved planner and its frozen tracker. To
 test independently pretrained stages instead, pass both checkpoints:
 
 ```sh
-uv run python -m mjlab.tasks.bridging.config.g1.tests.transitions.walk2kick --bridge diffusion --bridge-checkpoint logs/rsl_rl/g1_kinematic_diffusion_planner/<run>/model_30000.pt --tracker-checkpoint logs/rsl_rl/g1_diffusion_universal_tracker/<run>/model_2999.pt
+uv run python -m mjlab.tasks.bridging.config.g1.tests.transitions.walk2kick --bridge diffusion --bridge-checkpoint logs/rsl_rl/g1_diffusion_kinematic_planner/<run>/model_30000.pt --tracker-checkpoint logs/rsl_rl/g1_diffusion_universal_tracker/<run>/model_2999.pt
 ```

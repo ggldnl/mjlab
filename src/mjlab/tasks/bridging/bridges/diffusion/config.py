@@ -12,7 +12,7 @@ def robot_name(robot: str) -> str:
 
 
 def motion_patterns(robot: str, split: str) -> tuple[str, ...]:
-  """Return every retargeted locomotion source for one robot and split."""
+  """Return every kinematic source for one robot and split: BABEL, LAFAN, stitched."""
   if split not in ("train", "val"):
     raise ValueError("split must be train or val")
   selected = get_robot(robot)
@@ -27,6 +27,7 @@ def motion_patterns(robot: str, split: str) -> tuple[str, ...]:
       / "*.npz"
     ),
     str(Path("data") / "lafan_retargeted" / name / split / "**" / "*.npz"),
+    str(Path("data") / "motion_graph" / name / split / "**" / "*.npz"),
   )
 
 
@@ -42,7 +43,7 @@ def tracker_experiment(robot: str) -> str:
 
 def planner_experiment(robot: str) -> str:
   get_robot(robot)
-  return f"{robot}_kinematic_diffusion_planner"
+  return f"{robot}_diffusion_kinematic_planner"
 
 
 def improvement_task_id(robot: str) -> str:

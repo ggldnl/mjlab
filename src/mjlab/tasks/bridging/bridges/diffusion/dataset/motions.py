@@ -12,7 +12,11 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-from mjlab.tasks.bridging.bridges.dataset.dataset import Dataset, Segments
+from mjlab.tasks.bridging.bridges.dataset.dataset import (
+  Dataset,
+  Segments,
+  crosses_seam,
+)
 from mjlab.tasks.bridging.bridges.diffusion.config import (
   motion_patterns as configured_motion_patterns,
 )
@@ -428,6 +432,8 @@ class MotionCorpus:
   num_joints: int
   joint_names: tuple[str, ...] = ()
   robot: str = ""
+  seam: torch.Tensor | None = None
+  """(N,) seam frame of the row's stitched clip, -1 for a recorded clip."""
 
   @property
   def num_windows(self) -> int:
@@ -442,6 +448,7 @@ class MotionCorpus:
       frame=self.frame,
       names=self.names,
       fps=self.fps,
+      seam=self.seam,
     )
 
 
@@ -472,6 +479,7 @@ class _KinematicClips:
   joint_names: tuple[str, ...]
   robot: str
   total_frames: int
+  seam: torch.Tensor
 
   def dataset(self, categories: bool) -> Dataset:
     return Dataset(
@@ -481,6 +489,7 @@ class _KinematicClips:
       frame=self.frame,
       names=self.categories if categories else self.names,
       fps=self.fps,
+      seam=self.seam,
     )
 
 
@@ -517,6 +526,7 @@ def _load_kinematic_clips(
   skills: list[torch.Tensor] = []
   trajectories: list[torch.Tensor] = []
   frames: list[torch.Tensor] = []
+  seams: list[torch.Tensor] = []
   names: list[str] = []
   fps: float | None = None
   joints: int | None = None
@@ -539,6 +549,7 @@ def _load_kinematic_clips(
           "mjlab.tasks.bridging.bridges.dataset.motion_capture.build"
         )
       valid = np.asarray(raw["valid"], dtype=bool)
+      seam = int(raw["stitch_seams"][0]) if "stitch_seams" in raw else -1
       current_robot = str(raw["robot"]) if "robot" in raw else ""
       current_joint_names = (
         tuple(str(name) for name in raw["joint_names"])
@@ -579,6 +590,7 @@ def _load_kinematic_clips(
     skills.append(torch.full((count,), categories.index(path.parent.name)))
     trajectories.append(torch.full((count,), trajectory))
     frames.append(torch.from_numpy(kept))
+    seams.append(torch.full((count,), seam))
     names.append(path.stem)
 
   if (
@@ -602,6 +614,7 @@ def _load_kinematic_clips(
     joint_names=joint_names,
     robot=clip_robot,
     total_frames=total_frames,
+    seam=torch.cat(seams).to(device),
   )
 
 
@@ -613,14 +626,14 @@ def kinematic_segments(
   before: int = 0,
   after: int = 0,
 ) -> Segments:
-  """Index valid contiguous kinematic windows for the planner or tracker."""
-  return data.segments(
-    min_steps,
-    max_steps,
-    data.of(sources),
-    before=before,
-    after=after,
-  )
+  """Index valid contiguous kinematic windows for the planner or tracker.
+
+  A window from a stitched clip always crosses its seam, see crosses_seam.
+  """
+  rows = data.of(sources)
+  if data.seam is not None:
+    rows = rows[crosses_seam(data.seam[rows], data.frame[rows], 0, min_steps)]
+  return data.segments(min_steps, max_steps, rows, before=before, after=after)
 
 
 def load_motions(
@@ -635,7 +648,9 @@ def load_motions(
   loaded = _load_kinematic_clips(patterns, device, split, holdout, robot)
   data = loaded.dataset(categories=False)
   try:
-    segments = kinematic_segments(data, columns - 1, columns - 1)
+    # Every block, stitched or not. Windows keeps the ones crossing a seam, since only
+    # it knows where A sits in the block
+    segments = data.segments(columns - 1, columns - 1)
   except ValueError as error:
     raise ValueError(f"No {split} windows remain after motion filtering") from error
   return MotionCorpus(
@@ -648,6 +663,7 @@ def load_motions(
     num_joints=loaded.num_joints,
     joint_names=loaded.joint_names,
     robot=loaded.robot,
+    seam=loaded.seam,
   )
 
 
@@ -715,14 +731,25 @@ class Windows:
     self.columns = history + max_steps + future - 1
     self.layout = Layout(data.num_joints)
     self.offsets = torch.arange(self.columns, device=data.states.device)
+    self.starts = data.starts
+    if data.seam is not None:
+      keep = crosses_seam(
+        data.seam[self.starts], data.frame[self.starts], history - 1, min_steps
+      )
+      self.starts = self.starts[keep]
 
   def sample(self, count: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Return planner feature windows and A to B durations."""
+    pose, duration = self.sample_pose(count)
+    return pose_features(pose), duration
+
+  def sample_pose(self, count: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return augmented poses in A's heading frame and A to B durations."""
     if count < 1:
       raise ValueError("count must be positive")
     device = self.data.states.device
-    picked = torch.randint(self.data.starts.numel(), (count,), device=device)
-    rows = self.data.starts[picked, None] + self.offsets
+    picked = torch.randint(self.starts.numel(), (count,), device=device)
+    rows = self.starts[picked, None] + self.offsets
     states = self.data.states[rows]
     source_duration = torch.randint(
       self.min_steps, self.max_steps + 1, (count,), device=device
@@ -760,15 +787,15 @@ class Windows:
     time = torch.arange(self.columns, device=device)[None]
     last = pose[torch.arange(count, device=device), target_last]
     pose = torch.where((time > target_last[:, None])[..., None], last[:, None], pose)
-    return pose_features(pose), duration
+    return pose, duration
 
   def states(self, count: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Return full state windows and durations for evaluation."""
     if count < 1:
       raise ValueError("count must be positive")
     device = self.data.states.device
-    picked = torch.randint(self.data.starts.numel(), (count,), device=device)
-    rows = self.data.starts[picked, None] + self.offsets
+    picked = torch.randint(self.starts.numel(), (count,), device=device)
+    rows = self.starts[picked, None] + self.offsets
     states = self.data.states[rows]
     duration = torch.randint(
       self.min_steps, self.max_steps + 1, (count,), device=device

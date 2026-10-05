@@ -68,14 +68,10 @@ ROOT_STATE_DIM = 13
 DATASET_ROOT = Path("data") / "bridge"
 
 TRACKER_DATASET = DATASET_ROOT / "tracker.npz"
-"""The human motion corpus, built by driving trajectory trackers over LAFAN1 clips."""
-
-SKILL_ROLLOUT_DATASET = DATASET_ROOT / "skills.npz"
-"""Synthetic transitions made by stitching together trained skill rollouts."""
+"""Tracker rollouts over LAFAN1 clips. Its collector is gone; the architectures still
+reading it move to the kinematic corpus when they are retrained."""
 
 DEFAULT_DATASET = TRACKER_DATASET
-"""What every config points at unless told otherwise. The human motion corpus, which is
-what keeps the bridge independent of the skill pool. See dataset/tracker.py."""
 
 LOG_ROOT = Path("logs") / "rsl_rl"
 
@@ -462,6 +458,10 @@ class Dataset:
   foot_contact: torch.Tensor | None = None
   """(N, 2) left and right foot contact state."""
 
+  seam: torch.Tensor | None = None
+  """(N,) frame where the row's stitched clip switches source, -1 for a recorded clip.
+  A window is only cut from a stitched clip when it crosses the seam."""
+
   def commands_of(self, skill: str) -> torch.Tensor | None:
     """The command column for one source, padding removed. (N, G_skill).
 
@@ -624,6 +624,19 @@ class Segments:
     return self.order[position.unsqueeze(-1) + reach]
 
 
+def crosses_seam(
+  seam: torch.Tensor, frame: torch.Tensor, offset: int, min_steps: int
+) -> torch.Tensor:
+  """Which window start rows may open a window, as a bool mask.
+
+  A of the window is offset frames after the start row. A recorded clip allows every
+  start. A stitched clip only allows A within min_steps before its seam, so a window of
+  any duration crosses the seam.
+  """
+  a = frame + offset
+  return (seam < 0) | ((a >= seam - min_steps) & (a < seam))
+
+
 def load_dataset(
   path: Path, device: str, split: str = "train", holdout: int = 8
 ) -> Dataset:
@@ -638,10 +651,7 @@ def load_dataset(
   if split not in ("train", "eval"):
     raise ValueError(f"split is 'train' or 'eval', not '{split}'.")
   if not path.exists():
-    raise SystemExit(
-      f"No dataset at {path}. Build one with `uv run python -m "
-      f"mjlab.tasks.bridging.bridges.dataset.tracker`."
-    )
+    raise SystemExit(f"No dataset at {path}.")
 
   raw = np.load(path, allow_pickle=False)
   env_id = torch.from_numpy(raw["env_id"]).to(device).long()

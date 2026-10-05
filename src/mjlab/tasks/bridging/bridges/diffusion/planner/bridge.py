@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -25,6 +26,8 @@ from mjlab.tasks.bridging.bridges.diffusion.planner.model import (
 from mjlab.tasks.bridging.bridges.diffusion.planner.process import (
   Diffusion,
   ProcessCfg,
+  RobotFootKinematics,
+  pose_states,
 )
 
 EXPERIMENT = planner_experiment("g1")
@@ -53,6 +56,7 @@ class DiffusionBridge:
     fps: float,
     min_steps: int = 3,
     robot: str = "g1",
+    floor_height: float | None = 0.0,
   ):
     self.process = process.eval()
     self.normalizer = normalizer
@@ -62,6 +66,9 @@ class DiffusionBridge:
     self.fps = fps
     self.min_steps = min_steps
     self.robot = robot
+    self.floor_height = floor_height
+    """Lowest allowed sole height between A and B, None turns the floor off"""
+    self._feet: RobotFootKinematics | None = None
 
   @property
   def max_steps(self) -> int:
@@ -129,29 +136,64 @@ class DiffusionBridge:
     if bool(((duration < self.min_steps) | (duration > self.max_steps)).any()):
       raise ValueError("duration lies outside the checkpoint's trained range")
 
-    columns = self.process.denoiser.columns
-    mask = bridge_mask(
-      batch,
-      columns,
-      self.layout,
-      self.history,
-      self.future,
-      duration,
-    )
     anchor = history[:, -1]
-    values = history.new_zeros((batch, columns, self.layout.width))
-    values[:, : self.history] = encode(history, anchor)
-    target_features = encode(target, anchor)
-    rows = self.history - 1 + duration
-    offsets = torch.arange(self.future, device=history.device)
-    indexes = torch.arange(batch, device=history.device)[:, None]
-    values[indexes, rows[:, None] + offsets] = target_features
-    normalized = self.normalizer.normalize(values)
     rungs: list[torch.Tensor] | None = [] if trace is not None else None
-    denoised = self.process.sample(normalized, mask, rungs)
+    denoised = self.denoise(history, target, duration, rungs)
     if trace is not None and rungs is not None:
       trace.extend(self.assemble(rung, anchor, target, duration) for rung in rungs)
     return self.assemble(denoised, anchor, target, duration)
+
+  def denoise(
+    self,
+    history: torch.Tensor,
+    target: torch.Tensor,
+    duration: torch.Tensor,
+    rungs: list[torch.Tensor] | None = None,
+  ) -> torch.Tensor:
+    """Normalized denoised features, before the steps are added up into a path."""
+    batch = history.shape[0]
+    columns = self.process.denoiser.columns
+    mask = bridge_mask(batch, columns, self.layout, self.history, self.future, duration)
+    anchor = history[:, -1]
+    values = history.new_zeros((batch, columns, self.layout.width))
+    values[:, : self.history] = encode(history, anchor)
+    rows = self.history - 1 + duration
+    offsets = torch.arange(self.future, device=history.device)
+    indexes = torch.arange(batch, device=history.device)[:, None]
+    values[indexes, rows[:, None] + offsets] = encode(target, anchor)
+    normalized = self.normalizer.normalize(values)
+    return self.process.sample(normalized, mask, rungs, self.floor(duration))
+
+  def floor(
+    self, duration: torch.Tensor
+  ) -> Callable[[torch.Tensor], torch.Tensor] | None:
+    """Projection that keeps both soles above the floor between A and B.
+
+    Lifts the root on frames where the shipped path puts a sole under the floor.
+    The lift goes into the root height steps and sums to zero over the bridge, so
+    the gap left at B, and the raw path seen by viewers, keep their meaning.
+    """
+    if self.floor_height is None:
+      return None
+    floor_height = self.floor_height
+    if self._feet is None:
+      self._feet = RobotFootKinematics(self.robot).to(duration.device)
+    feet = self._feet
+    anchor = self.history - 1
+    height = self.layout.root_step.start + 2
+
+    def project(normalized: torch.Tensor) -> torch.Tensor:
+      features = self.normalizer.denormalize(normalized)
+      pose = integrate(features, self.layout, self.history, duration)
+      # pose height is world height, A's heading frame only turns and shifts in xy
+      soles = feet(pose_states(pose))[..., 2].amin(-1)
+      time = torch.arange(pose.shape[1], device=pose.device)[None]
+      inside = (time > anchor) & (time < anchor + duration[:, None])
+      lift = (floor_height - soles).clamp_min(0.0) * inside
+      features[..., height] += torch.diff(lift, dim=1, prepend=lift[:, :1])
+      return self.normalizer.normalize(features)
+
+    return project
 
   def assemble(
     self,
