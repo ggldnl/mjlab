@@ -160,16 +160,28 @@ def body_pos_b(robot: Entity) -> torch.Tensor:
   return quat_apply_inverse(quat, offset)
 
 
-def entry_context(env: ManagerBasedRlEnv) -> dict[str, np.ndarray]:
-  """Record the preceding action and the reference paired with the current state."""
+def entry_context(
+  env: ManagerBasedRlEnv,
+  feet: tuple[str, str] = ("left_ankle_roll_link", "right_ankle_roll_link"),
+) -> dict[str, np.ndarray]:
+  """Record what resuming a skill from the current state needs.
+
+  Besides the preceding action and the feet, two poses, each (N, 7) with the environment
+  origin taken off x and y, and NaN when there is none:
+
+      object    the first scene entity that is neither the robot nor the terrain
+      anchor    what places an entry in a new scene: the reference of a tracker, the
+                target heading of a turn on the floor below the robot, else the object
+  """
   from mjlab.tasks.bridging.config.g1.skills.jump_continuous.mdp.commands import (
     JumpCommand,
   )
+  from mjlab.tasks.bridging.config.t1.skills.turn.command import TurnCommand
 
   robot = env.scene[ROBOT]
   data = robot.data
-  foot_names = ("left_ankle_roll_link", "right_ankle_roll_link")
-  foot_indexes = [robot.body_names.index(name) for name in foot_names]
+  origin = env.scene.env_origins[:, :2]
+  foot_indexes = [robot.body_names.index(name) for name in feet]
   foot_pos = data.body_link_pos_w[:, foot_indexes]
   foot_quat = data.body_link_quat_w[:, foot_indexes]
   foot_offset = foot_pos - data.root_link_pos_w[:, None]
@@ -211,21 +223,45 @@ def entry_context(env: ManagerBasedRlEnv) -> dict[str, np.ndarray]:
     "motion_file": np.full(env.num_envs, "", dtype="U1"),
     "motion_scale": np.ones(env.num_envs, dtype=np.float32),
   }
-  feet = env.scene.sensors.get("feet_ground_contact")
-  if isinstance(feet, ContactSensor) and feet.data.found is not None:
-    context["foot_contact"] = (feet.data.found > 0).float().cpu().numpy().copy()
+  contact = env.scene.sensors.get("feet_ground_contact")
+  if isinstance(contact, ContactSensor) and contact.data.found is not None:
+    context["foot_contact"] = (contact.data.found > 0).float().cpu().numpy().copy()
   for name in env.command_manager.active_terms:
     command = env.command_manager.get_term(name)
     if not isinstance(command, JumpCommand):
       continue
     files = command.cfg.motion_files
     pose = torch.cat([command.body_pos_w[:, 0], command.body_quat_w[:, 0]], dim=-1)
-    pose[:, :2] -= env.scene.env_origins[:, :2]
+    pose[:, :2] -= origin
     context["reference"] = pose.detach().cpu().numpy().copy()
     ids = command.motion_ids.detach().cpu().numpy()
     context["motion_file"] = np.asarray([Path(files[i]).name for i in ids])
     context["motion_scale"] = command.scales.detach().cpu().numpy().copy()
     break
+
+  context["object"] = np.full((env.num_envs, 7), np.nan, dtype=np.float32)
+  others = [name for name in env.scene.entities if name not in (ROBOT, "terrain")]
+  if others:
+    body = env.scene[others[0]].data
+    pose = torch.cat([body.root_link_pos_w, body.root_link_quat_w], dim=-1)
+    pose[:, :2] -= origin
+    context["object"] = pose.detach().cpu().numpy().copy()
+  context["anchor"] = context["reference"].copy()
+  if np.isnan(context["anchor"]).all():
+    turn = None
+    for name in env.command_manager.active_terms:
+      term = env.command_manager.get_term(name)
+      if isinstance(term, TurnCommand):
+        turn = term
+        break
+    if turn is not None:
+      half = 0.5 * turn.heading_target
+      pose = torch.zeros(env.num_envs, 7, device=env.device)
+      pose[:, :2] = data.root_link_pos_w[:, :2] - origin
+      pose[:, 3], pose[:, 6] = torch.cos(half), torch.sin(half)
+      context["anchor"] = pose.detach().cpu().numpy().copy()
+    else:
+      context["anchor"] = context["object"].copy()
   return context
 
 
@@ -259,6 +295,7 @@ def record(
   cfg: RolloutCfg,
   label: str,
   metadata: dict[str, np.ndarray] | None = None,
+  feet: tuple[str, str] = ("left_ankle_roll_link", "right_ankle_roll_link"),
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
   """Drive one trained policy in one environment, recording every control step.
 
@@ -332,7 +369,7 @@ def record(
     # produced the state, not one drawn for the episode about to start
     goals.append(commanded(env).clone())
     if metadata is not None:
-      contexts.append(entry_context(env))
+      contexts.append(entry_context(env, feet))
     keep.append(age >= cfg.settle)
     if (step + 1) % 100 == 0:
       print(f"[dataset] {label}: {step + 1}/{cfg.steps}")

@@ -13,8 +13,6 @@ Compare them with the coverage dataset.py prints and narrow them where the data 
 
 from __future__ import annotations
 
-import math
-
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -26,9 +24,9 @@ STYLE_WEIGHT = 1.0
 """Against 2.0 on each velocity tracking term, so tracking still wins a conflict."""
 
 COMMAND_RANGES = {
-  "lin_vel_x": (-0.5, 1.0),
-  "lin_vel_y": (-0.3, 0.3),
-  "ang_vel_z": (-0.8, 0.8),
+  "lin_vel_x": (0.0, 1.0),
+  "lin_vel_y": (0.0, 0.0),
+  "ang_vel_z": (0.0, 0.0),
 }
 
 HEAD_JOINTS = ("AAHead_yaw", "Head_pitch")
@@ -37,6 +35,7 @@ HEAD_JOINTS = ("AAHead_yaw", "Head_pitch")
 def t1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """The T1 flat velocity task with the style reward on top."""
   cfg = booster_t1_flat_env_cfg(play=play)
+  cfg.scene.num_envs = 1 if play else 4096
 
   cfg.rewards["style"] = RewardTermCfg(
     func=motion_style,
@@ -61,7 +60,11 @@ def t1_walk_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   assert isinstance(twist, UniformVelocityCommandCfg)
   for name, value in COMMAND_RANGES.items():
     setattr(twist.ranges, name, value)
-  twist.ranges.heading = (-math.pi, math.pi)
+  twist.heading_command = False
+  twist.ranges.heading = None
+  twist.rel_heading_envs = 0.0
+  twist.rel_world_envs = 0.0
+  twist.rel_forward_envs = 0.0
   cfg.curriculum.pop("command_vel", None)
 
   return cfg

@@ -212,6 +212,7 @@ class Run:
     self.bridge = cfg.bridge
     self.active_bridge = cfg.bridge
     self.target = torch.empty(0, device=env.device)
+    self.target_window = torch.empty(0, device=env.device)
     self.history: torch.Tensor | None = None
     self.diagnostic_actual: list[np.ndarray] = []
     self.diagnostic_planned: list[np.ndarray] = []
@@ -237,12 +238,14 @@ class Run:
     }
     chosen = self.runtime_bridges.get(cfg.bridge)
     self.history_length = 4
+    self.future = 1
     if isinstance(chosen, DiffusionRuntime) and cfg.kinematic_only:
       chosen.checkpoint = cfg.bridge_checkpoint or chosen.latest_checkpoint()
       chosen.sample_steps = cfg.diffusion_sample_steps
       # No tracker, the plan is only drawn, see debug_vis
       chosen.set_executor(lambda history, _: env.action_manager.action.clone())
       self.history_length = chosen.load(env.device).history
+      self.future = chosen.load(env.device).future
     elif isinstance(chosen, DiffusionRuntime):
       chosen.checkpoint, tracker_checkpoint = _diffusion_checkpoints(cfg, chosen)
       chosen.sample_steps = cfg.diffusion_sample_steps
@@ -252,6 +255,7 @@ class Run:
       self.history_length = max(
         chosen.load(env.device).history, getattr(tracker, "history", 1)
       )
+      self.future = chosen.load(env.device).future
     self.frozen: torch.Tensor | None = None
     self.robot_model = _robot_model(env, self.robot)
     self.plan_model = _robot_model(env, self.robot, PLAN_COLOR)
@@ -310,6 +314,7 @@ class Run:
     self.motion.anchor_pos += (box - reference[:, :3])[:, :2]
     self.motion.update_relative_body_poses()
     self.target = resume.target(self.env, entry)
+    self.target_window = resume.target_window(self.env, entry, self.future)
     self._hold_motion(0)
     _put_box(self.env, _reference_box(self.env, self.motion))
     if isinstance(self.command, GoalCommand):
@@ -573,7 +578,7 @@ class Run:
       planned = None
       if runtime is not None:
         duration = self.command.window_steps.float() / self.command.fps
-        output = runtime(self.history, self.command.target[:, None], duration)
+        output = runtime(self.history, self.target_window, duration)
         if self.cfg.kinematic_only and isinstance(runtime, DiffusionRuntime):
           # The entering robot waits on the entry while the ghost plays the plan
           self._teleport(self.target)

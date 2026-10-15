@@ -1,9 +1,12 @@
 """Run a solver or a supplied Sokoban plan in the shared T1 scene."""
 
+# pyright: reportPrivateImportUsage=false
+
 from __future__ import annotations
 
 import importlib
 import json
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -33,7 +36,11 @@ from mjlab.tasks.bridging.config.t1.demos.sokoban.controller import (
   Settings,
 )
 from mjlab.tasks.bridging.config.t1.skills.push import PUSH_TASK_ID
+from mjlab.tasks.bridging.config.t1.skills.turn import TURN_TASK_ID
+from mjlab.tasks.bridging.selector import paths
+from mjlab.tasks.bridging.selector.table import EntryTable
 from mjlab.tasks.bridging.tests.stage import load_policy
+from mjlab.viewer.debug_visualizer import DebugVisualizer
 
 LEVELS = Path(__file__).with_name("levels")
 PLANS = Path(__file__).with_name("plans")
@@ -46,18 +53,27 @@ class Config:
   map: Path | None = None
   plan: Path | None = None
   solver: str | None = None
-  walk_task: str = WALK_TASK
+  walk_task: str | None = None
   walk_checkpoint: Path | None = None
   push_checkpoint: Path | None = None
+  turn_task: str | None = None
+  turn_checkpoint: Path | None = None
   bridge: Literal["diffusion", "no-op"] = "diffusion"
   bridge_checkpoint: Path | None = None
   tracker_checkpoint: Path | None = None
-  entries: Path | None = None
+  selector: Path | None = None
+  """Entry points from python -m mjlab.tasks.bridging.selector, the robot's by default."""
   viewer: Literal["viser", "native", "none"] = "viser"
   steps: int = 15000
   device: str | None = None
   dry: bool = False
   controller: Settings = field(default_factory=Settings)
+
+  def __post_init__(self) -> None:
+    if self.walk_task is None:
+      self.walk_task = "Mjlab-G1-Walk-Straight" if self.robot == "g1" else WALK_TASK
+    if self.turn_task is None:
+      self.turn_task = "Mjlab-G1-Turn" if self.robot == "g1" else TURN_TASK_ID
 
 
 def level_path(cfg: Config) -> Path:
@@ -108,6 +124,71 @@ def read_plan(cfg: Config, board: Board) -> list[Action]:
   return result
 
 
+def entry_sets(skills: set[str]) -> dict[str, str]:
+  """Selector set behind each entry the controller asks for, keyed by that entry.
+
+  A turn has one set per direction.
+  """
+  sets = {"walk": "walk", "push": "push"}
+  if "turn" in skills:
+    sets |= {"turn_left": "turn_left", "turn_right": "turn_right"}
+  return sets
+
+
+def check_entry_sets(
+  table: EntryTable,
+  robot: str,
+  tasks: Mapping[str, str | None],
+  pins: Mapping[str, Path | None],
+  skills: set[str],
+) -> dict[str, str]:
+  """The sets the demo reads, refused unless recorded with the tasks and pins it runs.
+
+  Cheap, so it runs before the simulation is built.
+  """
+  sets = entry_sets(skills)
+  for key, name in sets.items():
+    skill = key.split("_")[0]
+    if table.tasks.get(name) != tasks[skill]:
+      raise ValueError(
+        f"The selector's {name} set was recorded with {table.tasks.get(name)}, the demo "
+        f"runs {tasks[skill]}; run python -m mjlab.tasks.bridging.selector --robot {robot}"
+      )
+    pinned, recorded = pins[skill], table.checkpoints.get(name)
+    if pinned is not None and (
+      recorded is None or Path(recorded).resolve() != pinned.resolve()
+    ):
+      raise ValueError(
+        f"The selector's {name} set was recorded with {recorded}, not {pinned}; "
+        f"pin it with --checkpoints {name} {pinned} and run the selector again"
+      )
+  return sets
+
+
+def selector_entries(
+  table: EntryTable, sets: dict[str, str], env: ManagerBasedRlEnv, future: int
+) -> dict[str, torch.Tensor]:
+  """Each entry point followed by its future, keyed by the entry the controller asks for."""
+  if not np.isclose(table.fps, 1.0 / env.step_dt):
+    raise ValueError("Selector entry points use a different control frequency")
+  width = 13 + 2 * len(env.scene["robot"].joint_names)
+  entries = {}
+  for key, name in sets.items():
+    entry = table.of(name)[0]
+    if entry.future_states is None or entry.future_mask is None:
+      raise ValueError(f"The selector's {name} set has no future states")
+    clip = np.concatenate((entry.state[None], entry.future_states), axis=0)[:future]
+    if (
+      len(clip) < future
+      or not entry.future_mask[: future - 1].all()
+      or clip.shape[1] != width
+      or not np.isfinite(clip).all()
+    ):
+      raise ValueError(f"The selector's {name} set needs {future} finite states")
+    entries[key] = torch.as_tensor(clip, device=env.device, dtype=torch.float32)
+  return entries
+
+
 def main(cfg: Config) -> None:
   from mjlab import tasks as _tasks
 
@@ -120,18 +201,30 @@ def main(cfg: Config) -> None:
     )
   if cfg.dry:
     return
-  if cfg.bridge == "diffusion" and cfg.entries is None:
-    raise ValueError(
-      f"Diffusion needs --entries with recorded {cfg.robot.upper()} walk and push entry states"
-    )
   device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+  assert cfg.walk_task is not None
   push_task = PUSH_TASK_ID
   if cfg.robot == "g1":
     from mjlab.tasks.bridging.config.g1.skills.push import PUSH_TASK_ID as G1_PUSH
 
     push_task = G1_PUSH
+  table, sets = None, {}
+  if cfg.bridge == "diffusion":
+    table = EntryTable.load(cfg.selector or paths(cfg.robot)[1])
+    skills = {"walk", "push"} | ({"turn"} if cfg.turn_task is not None else set())
+    sets = check_entry_sets(
+      table,
+      cfg.robot,
+      {"walk": cfg.walk_task, "push": push_task, "turn": cfg.turn_task},
+      {
+        "walk": cfg.walk_checkpoint,
+        "push": cfg.push_checkpoint,
+        "turn": cfg.turn_checkpoint,
+      },
+      skills,
+    )
   env = ManagerBasedRlEnv(
-    sokoban_env_cfg(board, cfg.walk_task, push_task), device=device
+    sokoban_env_cfg(board, cfg.walk_task, push_task, cfg.turn_task), device=device
   )
   wrapped = RslRlVecEnvWrapper(env)
   try:
@@ -144,8 +237,13 @@ def main(cfg: Config) -> None:
       ),
     }
     policies["push"] = PushPolicy(env, policies["push"], push_rest_pose(push_task))
+    if cfg.turn_task is not None:
+      policies["turn"] = load_policy(
+        cfg.turn_task, wrapped, "turn", device, cfg.turn_checkpoint, task_runner=False
+      )
     runtime: Bridge = Bridge(wrapped.num_actions)
     history_length = 30
+    future = 1
     if cfg.bridge == "diffusion":
       from mjlab.tasks.bridging.bridges.diffusion.execution.learned_tracker import (
         LearnedTrackerExecutor,
@@ -167,39 +265,21 @@ def main(cfg: Config) -> None:
       )
       diffusion.set_executor(tracker, tracker.within_endpoint_box)
       history_length = max(planner.history, tracker.history)
+      future = planner.future
       runtime = diffusion
     entries = {}
-    if cfg.entries is not None:
-      with np.load(cfg.entries, allow_pickle=False) as data:
-        if "joint_names" in data and tuple(data["joint_names"]) != tuple(
-          env.scene["robot"].joint_names
-        ):
-          raise ValueError("Entry recordings use a different joint order")
-        if "fps" in data and not np.isclose(float(data["fps"]), 1.0 / env.step_dt):
-          raise ValueError("Entry recordings use a different control frequency")
-        entries = {
-          name: torch.as_tensor(data[name], device=device, dtype=torch.float32)
-          for name in ("walk", "push")
-        }
-      if any(
-        entry.ndim != 2
-        or entry.shape[0] == 0
-        or entry.shape[1] != 13 + 2 * len(env.scene["robot"].joint_names)
-        or not bool(torch.isfinite(entry).all())
-        for entry in entries.values()
-      ):
-        raise ValueError(
-          f"Entry recordings must contain finite {cfg.robot.upper()} state windows"
-        )
-      if cfg.bridge == "diffusion" and any(
-        len(entry) < planner.future for entry in entries.values()
-      ):
-        raise ValueError(
-          f"Each entry needs at least {planner.future} consecutive states"
-        )
+    if table is not None:
+      entries = selector_entries(table, sets, env, future)
     controller = Controller(
       env, board, plan, policies, runtime, entries, history_length, cfg.controller
     )
+    environment_visualizers = env.update_visualizers
+
+    def draw_scene(visualizer: DebugVisualizer) -> None:
+      environment_visualizers(visualizer)
+      controller.debug_vis(visualizer)
+
+    env.update_visualizers: Callable[[DebugVisualizer], None] = draw_scene
     if cfg.viewer == "none":
       obs = wrapped.get_observations()
       for _ in range(cfg.steps):

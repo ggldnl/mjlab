@@ -61,12 +61,19 @@ def body_contact(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def box_features(env: ManagerBasedRlEnv) -> torch.Tensor:
-  """Box position, velocity, forward and up axes, angular velocity, heading frame"""
+  """Box state in the robot heading frame, using the face nearest the push axis"""
   robot = env.scene["robot"]
-  box = command(env).box
+  term = command(env)
+  box = term.box
   heading = yaw_quat(robot.data.root_link_quat_w)
   quat = box.data.root_link_quat_w
-  forward = quat_apply(quat, quat.new_tensor([1.0, 0.0, 0.0]).expand(env.num_envs, -1))
+  face_angle = torch.round((term.axis_yaw - box.data.heading_w) / (torch.pi / 2)) * (
+    torch.pi / 2
+  )
+  face = torch.stack(
+    (torch.cos(face_angle), torch.sin(face_angle), torch.zeros_like(face_angle)), -1
+  )
+  forward = quat_apply(quat, face)
   up = quat_apply(quat, quat.new_tensor([0.0, 0.0, 1.0]).expand(env.num_envs, -1))
   vectors = (
     box.data.root_link_pos_w - robot.data.root_link_pos_w,

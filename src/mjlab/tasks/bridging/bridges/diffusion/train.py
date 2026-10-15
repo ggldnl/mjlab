@@ -30,9 +30,9 @@ from mjlab.tasks.bridging.bridges.diffusion.config import (
 )
 from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import (
   Normalizer,
+  PlannerLayout,
   Windows,
   bridge_mask,
-  encode,
   load_motions,
 )
 from mjlab.tasks.bridging.bridges.diffusion.planner.bridge import (
@@ -42,6 +42,7 @@ from mjlab.tasks.bridging.bridges.diffusion.planner.bridge import (
 from mjlab.tasks.bridging.bridges.diffusion.planner.model import Denoiser, ModelCfg
 from mjlab.tasks.bridging.bridges.diffusion.planner.process import (
   Diffusion,
+  FootChannels,
   PathLoss,
   ProcessCfg,
 )
@@ -311,7 +312,10 @@ class CrossTrajectoryPairs:
 
 
 class EvaluationTrackerCommand(TrackerCommand):
-  """Run an exact externally supplied route once in every environment."""
+  """Run an exact externally supplied route once in every environment.
+
+  The history may be longer than the tracker's, batch_history keeps all of it placed.
+  """
 
   def __init__(self, cfg: EvaluationTrackerCommandCfg, env: ManagerBasedRlEnv) -> None:
     super().__init__(cfg, env)
@@ -330,7 +334,12 @@ class EvaluationTrackerCommand(TrackerCommand):
     self, history: torch.Tensor, routes: torch.Tensor, duration: torch.Tensor
   ) -> None:
     expected = (self.num_envs, self.max_steps + self.post_steps + 1, self.state_dim)
-    if history.shape != (self.num_envs, STATE_HISTORY, self.state_dim):
+    if (
+      history.ndim != 3
+      or history.shape[0] != self.num_envs
+      or history.shape[1] < STATE_HISTORY
+      or history.shape[2] != self.state_dim
+    ):
       raise ValueError("Evaluation history has the wrong shape")
     if routes.shape != expected or duration.shape != (self.num_envs,):
       raise ValueError("Evaluation routes or durations have the wrong shape")
@@ -370,8 +379,8 @@ class EvaluationTrackerCommand(TrackerCommand):
     placed_history = self._place_state(history.flatten(0, 1)).view_as(history)
     initial = self._write_initial_state(env_ids, self.routes[:, 0])
     placed_history[:, -1] = initial
-    self.batch_history[:] = placed_history
-    self.actual_history[:] = placed_history
+    self.batch_history = placed_history
+    self.actual_history[:] = placed_history[:, -STATE_HISTORY:]
     self.window_steps[:] = duration
     self._opened[:] = self._env.common_step_counter
     batch = torch.arange(self.num_envs, device=self.device)
@@ -679,15 +688,13 @@ class PhysicalReplay:
       self.states = self.states[-self.capacity :]
       self.duration = self.duration[-self.capacity :]
 
-  def sample(
-    self, count: int, device: str, history: int
-  ) -> tuple[torch.Tensor, torch.Tensor]:
+  def sample(self, count: int, device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """State windows, A at the planner's history index, and their durations."""
     if self.states is None or self.duration is None:
       raise RuntimeError("Physical replay is empty")
     picked = torch.randint(len(self), (count,))
     states = self.states[picked].to(device=device, dtype=torch.float32)
-    duration = self.duration[picked].to(device)
-    return encode(states, states[:, history - 1]), duration
+    return states, self.duration[picked].to(device)
 
   def checkpoint(self) -> dict[str, torch.Tensor | int | None]:
     return {
@@ -706,20 +713,26 @@ class PhysicalReplay:
 
 @dataclass(frozen=True)
 class PlannerCfg:
-  history: int = 4
-  future: int = 1
+  history: int = 50
+  """Frames up to A, one gait cycle at 50 Hz"""
+  future: int = 25
+  """Frames from B on, one step at 50 Hz"""
   min_steps: int = 15
   max_steps: int = 60
   time_scale_range: tuple[float, float] = (0.8, 1.25)
   start_xy_range: float = 0.01
   start_perturb_probability: float = 0.5
   mirror_probability: float = 0.5
+  foot_channels: bool = True
+  history_noise: float = 0.01
+  history_noise_probability: float = 0.5
   model: ModelCfg = field(default_factory=ModelCfg)
   process: ProcessCfg = field(default_factory=ProcessCfg)
   endpoint_weight: float = 1.0
   foot_slip_weight: float = 1.0
   foot_contact_height: float = 0.05
   foot_contact_speed: float = 0.2
+  contact_weight: float = 1.0
   batch: int = 256
   bootstrap_updates: int = 30_000
   updates_per_cycle: int = 1_000
@@ -745,6 +758,22 @@ class PlannerTrainer:
     corpus = load_motions(
       motion_patterns(robot, "train"), columns, device, "all", robot=robot
     )
+    self.warm_started = checkpoint is not None
+    loaded = DiffusionBridge.load(checkpoint, device) if checkpoint else None
+    if loaded is not None and loaded.robot != robot:
+      raise ValueError(f"Planner checkpoint is for {loaded.robot}, not {robot}")
+    if loaded is not None:
+      feet = (
+        loaded.foot_channels(device)
+        if isinstance(loaded.layout, PlannerLayout)
+        else None
+      )
+    elif cfg.foot_channels:
+      feet = FootChannels(
+        robot, corpus.fps, cfg.foot_contact_height, cfg.foot_contact_speed
+      ).to(device)
+    else:
+      feet = None
     self.windows = Windows(
       corpus,
       cfg.history,
@@ -755,12 +784,12 @@ class PlannerTrainer:
       cfg.start_xy_range,
       cfg.start_perturb_probability,
       cfg.mirror_probability,
+      feet,
+      cfg.history_noise,
+      cfg.history_noise_probability,
     )
-    self.warm_started = checkpoint is not None
-    if checkpoint is not None:
-      self.bridge = DiffusionBridge.load(checkpoint, device)
-      if self.bridge.robot != robot:
-        raise ValueError(f"Planner checkpoint is for {self.bridge.robot}, not {robot}")
+    if loaded is not None and checkpoint is not None:
+      self.bridge = loaded
       raw = torch.load(checkpoint, map_location="cpu", weights_only=False)
       self.metadata = dict(raw.get("planner", raw))
     else:
@@ -782,6 +811,8 @@ class PlannerTrainer:
         corpus.fps,
         cfg.min_steps,
         robot,
+        contact_height=cfg.foot_contact_height,
+        contact_speed=cfg.foot_contact_speed,
       )
       self.metadata = checkpoint_metadata(
         cfg.model,
@@ -796,6 +827,8 @@ class PlannerTrainer:
         dict(model.state_dict()),
         0,
         robot,
+        cfg.foot_contact_height,
+        cfg.foot_contact_speed,
       )
     if self.bridge.layout != self.windows.layout or not math.isclose(
       self.bridge.fps, corpus.fps
@@ -824,8 +857,9 @@ class PlannerTrainer:
       self.bridge.fps,
       self.cfg.endpoint_weight,
       self.cfg.foot_slip_weight,
-      self.cfg.foot_contact_height,
-      self.cfg.foot_contact_speed,
+      self.bridge.contact_height,
+      self.bridge.contact_speed,
+      self.cfg.contact_weight,
     ).to(self.device)
 
   def _loss(self, features: torch.Tensor, duration: torch.Tensor) -> torch.Tensor:
@@ -855,8 +889,10 @@ class PlannerTrainer:
       loss = real_loss
       physical_loss = None
       if physical_weight:
-        physical = replay.sample(self.cfg.batch, self.device, self.bridge.history)
-        physical_loss = self._loss(*physical)
+        states, duration = replay.sample(self.cfg.batch, self.device)
+        physical_loss = self._loss(
+          self.bridge.window_features(states, duration), duration
+        )
         loss = (1 - physical_weight) * real_loss + physical_weight * physical_loss
       self.optimizer.zero_grad(set_to_none=True)
       loss.backward()
@@ -956,6 +992,8 @@ class PlannerImprovementRunner(MjlabOnPolicyRunner):
     self.planner = PlannerTrainer(self.planner_cfg, planner_path, device, robot)
     if self.planner.bridge.history < STATE_HISTORY:
       raise ValueError("Planner history is shorter than tracker state history")
+    if command.post_steps < self.planner.bridge.future - 1:
+      raise ValueError("Tracker post B horizon is shorter than the planner future")
     if self.planner.bridge.max_steps != command.max_steps:
       raise ValueError("Planner and evaluator maximum durations differ")
     transitions = self.planner.windows.data.dataset()
@@ -1010,7 +1048,7 @@ class PlannerImprovementRunner(MjlabOnPolicyRunner):
   ) -> RolloutResult:
     count = history.shape[0]
     total = self.env.num_envs
-    padded_history = _repeat_to_batch(history[:, -STATE_HISTORY:], total)
+    padded_history = _repeat_to_batch(history, total)
     padded_routes = _repeat_to_batch(routes, total)
     padded_duration = _repeat_to_batch(duration, total)
     self.command.set_batch(padded_history, padded_routes, padded_duration)
@@ -1206,10 +1244,9 @@ class PlannerImprovementRunner(MjlabOnPolicyRunner):
     action_rate = bridge_score.clone()
     success = torch.zeros_like(hard_pass)
     hindsight = torch.zeros_like(hard_pass)
+    bridge = self.planner.bridge
     accepted_states = planned.new_empty(
-      0,
-      self.planner.bridge.history + self.planner.bridge.max_steps,
-      planned.shape[-1],
+      0, bridge.history + bridge.max_steps + bridge.future - 1, planned.shape[-1]
     )
     accepted_duration = pair.duration[:0]
     if survivors.numel():
@@ -1232,12 +1269,13 @@ class PlannerImprovementRunner(MjlabOnPolicyRunner):
       accepted_local = (measured["success"] | measured["hindsight"]).nonzero().flatten()
       if accepted_local.numel():
         accepted = survivors[accepted_local]
-        actual = rollout.actual[
-          accepted_local, : self.planner.bridge.max_steps + 1
-        ].clone()
+        # B and its executed continuation become the relabelled boundary
+        actual = rollout.actual[accepted_local, : bridge.max_steps + bridge.future]
+        actual = actual.clone()
         accepted_duration = pair.duration[accepted]
         for row, steps in enumerate(accepted_duration.tolist()):
-          actual[row, steps:] = actual[row, steps]
+          last = steps + bridge.future - 1
+          actual[row, last:] = actual[row, last]
         accepted_states = torch.cat(
           (rollout.history[accepted_local, :-1], actual), dim=1
         )

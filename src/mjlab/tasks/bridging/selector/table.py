@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
-from mjlab.tasks.bridging.selector import TABLE_PATH
+from mjlab.tasks.bridging.selector import TABLE_PATH, paths
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,14 @@ class Entry:
   future_states: np.ndarray | None = None
   future_contact: np.ndarray | None = None
   future_mask: np.ndarray | None = None
+  command: np.ndarray | None = None
+  """What the skill was commanded while recorded, its fixed conditioning."""
+  anchor: np.ndarray | None = None
+  """Pose the entry point is placed relative to, NaN when it is placed freely."""
+  object: np.ndarray | None = None
+  """Pose of the object in the scene, NaN without one."""
+  spread: float | None = None
+  """Mean distance of the other recorded executions, in units of a typical error."""
 
   @property
   def name(self) -> str:
@@ -43,6 +51,10 @@ class EntryTable:
 
   entries: tuple[Entry, ...]
   fps: float
+  tasks: dict[str, str] = field(default_factory=dict)
+  """Task each set was recorded with."""
+  checkpoints: dict[str, str] = field(default_factory=dict)
+  """Checkpoint each set was recorded with."""
 
   @property
   def skills(self) -> tuple[str, ...]:
@@ -55,9 +67,15 @@ class EntryTable:
     return found
 
   @staticmethod
+  def for_robot(robot: str) -> EntryTable:
+    return EntryTable.load(paths(robot)[1])
+
+  @staticmethod
   def load(path: Path = TABLE_PATH) -> EntryTable:
     if not path.exists():
-      raise FileNotFoundError(f"No selector states at {path}. Run selector.build first")
+      raise FileNotFoundError(
+        f"No selector states at {path}. Run python -m mjlab.tasks.bridging.selector"
+      )
     with np.load(path, allow_pickle=False) as raw:
       required = {
         "fps",
@@ -76,6 +94,21 @@ class EntryTable:
         raise ValueError(f"{path} is missing: {', '.join(sorted(missing))}")
       names = tuple(str(name) for name in raw["skill_names"])
       fps = float(raw["fps"])
+      widths = raw["goal_dim"] if "goal_dim" in raw.files else None
+
+      def column(name: str, index: int) -> np.ndarray | None:
+        return raw[name][index].copy() if name in raw.files else None
+
+      def command(index: int) -> np.ndarray | None:
+        if "goal" not in raw.files or widths is None:
+          return None
+        return raw["goal"][index, : int(widths[int(raw["skill"][index])])].copy()
+
+      def provenance(name: str) -> dict[str, str]:
+        if name not in raw.files:
+          return {}
+        return dict(zip(names, (str(value) for value in raw[name]), strict=True))
+
       entries = tuple(
         Entry(
           skill=names[int(raw["skill"][index])],
@@ -117,7 +150,13 @@ class EntryTable:
           future_mask=(
             raw["future_mask"][index].copy() if "future_mask" in raw.files else None
           ),
+          command=command(index),
+          anchor=column("anchor", index),
+          object=column("object", index),
+          spread=float(raw["spread"][index]) if "spread" in raw.files else None,
         )
         for index in range(len(raw["states"]))
       )
-    return EntryTable(entries, fps)
+      return EntryTable(
+        entries, fps, provenance("skill_tasks"), provenance("skill_checkpoints")
+      )

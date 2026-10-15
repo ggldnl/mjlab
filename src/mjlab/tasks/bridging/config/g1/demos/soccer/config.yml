@@ -48,25 +48,24 @@ policies:
   locomotion_checkpoint: logs/rsl_rl/g1_walk/2026-08-02_12-16-50/model_2700.pt
   jump_checkpoint: logs/rsl_rl/g1_jump/2026-09-05_20-57-41/model_10400.pt
   kick_checkpoint: logs/rsl_rl/g1_kick/2026-09-06_20-10-38/model_1200.pt
+  # Entry points of every G1 skill, built by python -m mjlab.tasks.bridging.selector
   selector_path: data/selector/states.npz
-  locomotion_entry_path: data/soccer/g1_locomotion_entry.npz
   speed_before_jump: 0.8
+  # Must match the speed the selector's walk set is recorded at
   speed_after_jump: 0.8
-  record_warmup_steps: 150
-  record_frames: 16
 
 bridge:
   kind: diffusion
-  checkpoint: logs/rsl_rl/g1_diffusion_kinematic_planner/2026-10-01_19-20-36/model_50000.pt
+  checkpoint: logs/rsl_rl/g1_diffusion_kinematic_planner/2026-10-05_18-28-13/model_30000.pt
   tracker_checkpoint: logs/rsl_rl/g1_diffusion_universal_tracker/2026-09-30_16-34-12/model_20000.pt
   sample_steps: 50
 
 walk_to_jump:
   # The reference airborne span is centered on the sampled fallen robot position
   heading_degrees: 0.0
-  # Source: data/bridging/calibration/g1_walk_to_jump_diffusion_complete.yaml
-  # Entry index 3 is frame 87, quality 0.919 over 3 seeds
-  entry_index: 4
+  # The jump now starts from the crouch and has two entry points. The calibration below
+  # predates that, run it again: data/bridging/calibration/g1_walk_to_jump_diffusion_complete.yaml
+  entry_index: 0
   start_distance: 0.20
   duration: 0.40
   tolerance_scale: 2.0
@@ -77,7 +76,7 @@ jump_to_walk:
   # No jump to walk calibration is available yet
   # Locomotion entry is placed at the positioned jump reference's final root XY
   heading_degrees: null
-  # Index in the recorded locomotion window
+  # Index among the entry points of the selector's walk set, one gait period
   entry_index: 0
   start_distance: 0.25
   duration: 0.50

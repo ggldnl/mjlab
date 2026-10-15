@@ -51,6 +51,7 @@ from mjlab.tasks.bridging.config.g1.skills.push import (  # noqa: F401
 from mjlab.tasks.bridging.config.g1.skills.push_twist import (  # noqa: F401
   PUSH_TWIST_TASK_ID,
 )
+from mjlab.tasks.bridging.config.g1.skills.turn import TURN_TASK_ID  # noqa: F401
 from mjlab.tasks.bridging.config.g1.skills.walk import WALK_TASK_ID
 
 SKILLS: dict[str, str] = {

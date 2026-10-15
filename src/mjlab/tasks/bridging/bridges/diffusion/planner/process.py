@@ -15,6 +15,7 @@ from torch import nn
 from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import (
   Layout,
   Normalizer,
+  PlannerLayout,
   integrate,
   quat_from_rot6d,
 )
@@ -152,11 +153,61 @@ def pose_states(pose: torch.Tensor) -> torch.Tensor:
   )
 
 
+def _yaw(quat: torch.Tensor) -> torch.Tensor:
+  w, x, y, z = quat.unbind(-1)
+  return torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+
+
+class FootChannels(nn.Module):
+  """Contact and sole channels of PlannerLayout, from poses in A's heading frame.
+
+  A foot is planted when its sole is below height and slower than speed. Speeds are
+  central differences, one sided at the ends of the given poses. window() computes
+  the history and B's continuation on their own, so they get the same values in
+  training as at deployment, where nothing between them is known.
+  """
+
+  def __init__(self, robot: str, fps: float, height: float, speed: float) -> None:
+    super().__init__()
+    if min(fps, height, speed) <= 0:
+      raise ValueError("fps and contact thresholds must be positive")
+    self.feet = RobotFootKinematics(robot)
+    self.fps = fps
+    self.height = height
+    self.speed = speed
+
+  def forward(self, pose: torch.Tensor) -> torch.Tensor:
+    """Channels (B, T, 2 + 2 * SOLE_CHANNELS) of one contiguous pose sequence."""
+    position, orientation = self.feet.frames(pose_states(pose))
+    ahead = torch.cat((position[:, 1:], position[:, -1:]), dim=1)
+    behind = torch.cat((position[:, :1], position[:, :-1]), dim=1)
+    span = torch.full((pose.shape[1],), 2.0, device=pose.device)
+    span[0] = span[-1] = 1.0
+    rate = (ahead - behind)[..., :2].norm(dim=-1) * self.fps / span[None, :, None]
+    contact = (position[..., 2] <= self.height) & (rate <= self.speed)
+    yaw = _yaw(orientation)
+    soles = torch.cat((position, yaw.cos()[..., None], yaw.sin()[..., None]), dim=-1)
+    return torch.cat((contact.to(pose.dtype), soles.flatten(-2)), dim=-1)
+
+  def window(
+    self, pose: torch.Tensor, history: int, future: int, duration: torch.Tensor
+  ) -> torch.Tensor:
+    """Channels of a bridge window, with each boundary sequence computed alone."""
+    out = self(pose)
+    out[:, :history] = self(pose[:, :history])
+    rows = history - 1 + duration[:, None] + torch.arange(future, device=pose.device)
+    batch = torch.arange(pose.shape[0], device=pose.device)[:, None]
+    out[batch, rows] = self(pose[batch, rows])
+    return out
+
+
 class PathLoss(nn.Module):
   """Losses on the path rebuilt from predicted steps.
 
   endpoint   gap between the summed steps and B, in typical steps times sqrt(duration)
   foot slip  horizontal sole speed on edges where the demonstration has a planted foot
+  contact    horizontal sole speed on edges where the model says the foot is planted,
+             only with PlannerLayout; the contact is not pushed by this term
   """
 
   mean: torch.Tensor
@@ -174,17 +225,19 @@ class PathLoss(nn.Module):
     foot_slip_weight: float,
     contact_height: float,
     contact_speed: float,
+    contact_weight: float = 0.0,
   ) -> None:
     super().__init__()
     if min(fps, contact_height, contact_speed) <= 0 or history < 1:
       raise ValueError("invalid path loss configuration")
-    if min(endpoint_weight, foot_slip_weight) < 0:
+    if min(endpoint_weight, foot_slip_weight, contact_weight) < 0:
       raise ValueError("path loss weights cannot be negative")
     self.layout = layout
     self.history = history
     self.fps = fps
     self.endpoint_weight = endpoint_weight
     self.foot_slip_weight = foot_slip_weight
+    self.contact_weight = contact_weight if isinstance(layout, PlannerLayout) else 0.0
     self.contact_height = contact_height
     self.contact_speed = contact_speed
     self.register_buffer("mean", normalizer.mean)
@@ -217,15 +270,13 @@ class PathLoss(nn.Module):
 
   def _foot_slip(
     self,
-    predicted: torch.Tensor,
+    slip: torch.Tensor,
     clean: torch.Tensor,
     active_edges: torch.Tensor,
     duration: torch.Tensor,
   ) -> torch.Tensor:
     clean_pose = integrate(clean, self.layout, self.history, duration)
-    predicted_pose = integrate(predicted, self.layout, self.history, duration)
     clean_feet = self.feet(pose_states(clean_pose))
-    predicted_feet = self.feet(pose_states(predicted_pose))
     clean_delta = clean_feet[:, 1:, :, :2] - clean_feet[:, :-1, :, :2]
     clean_speed = torch.linalg.vector_norm(clean_delta, dim=-1) * self.fps
     contact = (
@@ -234,10 +285,17 @@ class PathLoss(nn.Module):
       & (clean_speed <= self.contact_speed)
       & active_edges.any(-1)[..., None]
     )
-    slip = (predicted_feet[:, 1:, :, :2] - predicted_feet[:, :-1, :, :2]) * self.fps
     if not bool(contact.any()):
       return slip.sum() * 0.0
     return slip.square().sum(-1)[contact].mean()
+
+  def _contact(
+    self, slip: torch.Tensor, predicted: torch.Tensor, active_edges: torch.Tensor
+  ) -> torch.Tensor:
+    assert isinstance(self.layout, PlannerLayout)
+    planted = predicted[..., self.layout.contact].clamp(0.0, 1.0).detach()
+    weight = planted[:, 1:] * planted[:, :-1] * active_edges.any(-1)[..., None]
+    return (slip.square().sum(-1) * weight).sum() / weight.sum().clamp_min(1.0)
 
   def forward(
     self,
@@ -251,10 +309,17 @@ class PathLoss(nn.Module):
     predicted = predicted * self.std + self.mean
     clean = clean * self.std + self.mean
     total = self.endpoint_weight * self._endpoint(predicted, duration)
+    if not (self.foot_slip_weight or self.contact_weight):
+      return total
+    pose = integrate(predicted, self.layout, self.history, duration)
+    feet = self.feet(pose_states(pose))
+    slip = (feet[:, 1:, :, :2] - feet[:, :-1, :, :2]) * self.fps
     if self.foot_slip_weight:
       total = total + self.foot_slip_weight * self._foot_slip(
-        predicted, clean, active_edges, duration
+        slip, clean, active_edges, duration
       )
+    if self.contact_weight:
+      total = total + self.contact_weight * self._contact(slip, predicted, active_edges)
     return total
 
 
@@ -287,7 +352,7 @@ class Diffusion(nn.Module):
     self.cfg = cfg
     self.register_buffer("alphas", cosine_schedule(cfg.steps))
     predicted = torch.zeros(layout.width, dtype=torch.bool)
-    predicted[layout.predicted] = True
+    predicted[layout.predicted_channels] = True
     self.register_buffer("predicted", predicted)
 
   @property

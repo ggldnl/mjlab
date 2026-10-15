@@ -7,7 +7,6 @@ import math
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
 
 import mujoco
 import numpy as np
@@ -38,6 +37,9 @@ from mjlab.utils.lab_api.math import quat_apply
 from mjlab.viewer.debug_visualizer import DebugVisualizer
 
 Policy = Callable[[TensorDict], torch.Tensor]
+
+LOOKAHEAD = 0.6
+"""Metres ahead along the line of approach the walk is steered at."""
 
 
 def rotate_xy(vector: torch.Tensor, yaw: float) -> torch.Tensor:
@@ -95,7 +97,10 @@ def center_jump(
   landing = int(command.landing_step[0])
   length = int(command.motion.time_step_total_per_motion[motion_id])
   if not 0 <= entry_frame < takeoff < landing < length:
-    raise ValueError("Jump entry needs valid takeoff and landing landmarks after it")
+    raise ValueError(
+      "Jump entry needs valid takeoff and landing landmarks after it: entry "
+      f"{entry_frame}, takeoff {takeoff}, landing {landing}, length {length}"
+    )
   roots = []
   try:
     for frame in (takeoff, landing, length - 1):
@@ -115,9 +120,8 @@ def center_jump(
   return points + shift
 
 
-def recorded_target(
-  env: ManagerBasedRlEnv, entry: Entry, command: JumpCommand, future: int
-) -> torch.Tensor:
+def entry_sequence(entry: Entry, future: int) -> np.ndarray:
+  """The entry point followed by its recorded states, future of them in all."""
   sequence = (
     np.concatenate((entry.state[None], entry.future_states), axis=0)
     if entry.future_states is not None
@@ -128,9 +132,17 @@ def recorded_target(
     and (entry.future_mask is None or not entry.future_mask[: future - 1].all())
   ):
     raise ValueError(
-      f"{entry.skill} frame {entry.frame} needs {future} consecutive selector states; rebuild the selector"
+      f"{entry.skill} frame {entry.frame} needs {future} consecutive selector states; run the selector again"
     )
-  states = torch.as_tensor(sequence[:future], device=env.device, dtype=torch.float32)
+  return sequence[:future]
+
+
+def recorded_target(
+  env: ManagerBasedRlEnv, entry: Entry, command: JumpCommand, future: int
+) -> torch.Tensor:
+  states = torch.as_tensor(
+    entry_sequence(entry, future), device=env.device, dtype=torch.float32
+  )
   reference = torch.as_tensor(entry.reference, device=env.device).expand(
     len(states), -1
   )
@@ -188,6 +200,7 @@ class Controller:
         "Soccer requires velocity, jump tracking and kick tracking commands"
       )
     self.twist, self.jump, self.kick = twist, jump, kick
+    self.table = table
     self.entries = {
       "jump": select_entry(table, "jump", settings.walk_to_jump.entry_index),
       "kick": select_entry(table, "kick", settings.walk_to_kick.entry_index),
@@ -255,32 +268,20 @@ class Controller:
 
   def _walk_point(self) -> EntryPoint:
     handoff = self.settings.jump_to_walk
-    path = Path(self.settings.policies.locomotion_entry_path)
-    if not path.exists():
-      raise FileNotFoundError(
-        f"No locomotion entry at {path}; run soccer.record with this config first"
+    entry = select_entry(self.table, "walk", handoff.entry_index)
+    speed = self.settings.policies.speed_after_jump
+    if entry.command is None or not np.isclose(float(entry.command[0]), speed):
+      raise ValueError(
+        f"The selector's walk entry points are not recorded at {speed:g} m/s, the "
+        "speed_after_jump; change one of the two and run the selector again"
       )
-    with np.load(path, allow_pickle=False) as data:
-      if tuple(data["joint_names"]) != tuple(
-        self.env.scene["robot"].joint_names
-      ) or not np.isclose(float(data["fps"]), 1.0 / self.env.step_dt):
-        raise ValueError(
-          "Locomotion recording uses a different joint layout or control frequency"
-        )
-      if not np.isclose(float(data["speed"]), self.settings.policies.speed_after_jump):
-        raise ValueError(
-          "Locomotion entry speed differs from speed_after_jump; record it again"
-        )
-      clip = torch.as_tensor(
-        data["states"], device=self.env.device, dtype=torch.float32
-      )
-    clip = clip[handoff.entry_index : handoff.entry_index + self.future]
-    if clip.shape != (self.future, state(self.env).shape[-1]) or not bool(
+    clip = torch.as_tensor(
+      entry_sequence(entry, self.future), device=self.env.device, dtype=torch.float32
+    )
+    if clip.shape[-1] != state(self.env).shape[-1] or not bool(
       torch.isfinite(clip).all()
     ):
-      raise ValueError(
-        "Locomotion entry must cover the requested frame and planner future window"
-      )
+      raise ValueError("Invalid G1 walk selector state window")
     yaw = (
       math.radians(handoff.heading_degrees)
       if handoff.heading_degrees is not None
@@ -394,7 +395,9 @@ class Controller:
       self.distance_at_start = float(delta.norm())
       self._start_bridge(transition)
       return self._bridge()
-    desired = math.atan2(float(delta[1]), float(delta[0]))
+    # Aim at the line of approach a short way ahead, not at the entry itself. Aiming at the
+    # entry from off the line arrives at an angle and misses the heading gate
+    desired = point.yaw + math.atan2(float(along[1]), LOOKAHEAD)
     turn = math.atan2(math.sin(desired - heading), math.cos(desired - heading))
     self.twist.vel_command_b[0] = self.twist.vel_command_b.new_tensor(
       [

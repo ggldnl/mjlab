@@ -10,16 +10,31 @@ they do not guarantee a running gait.
 Run these commands from the repository root:
 
 ```powershell
-uv run -m mjlab.tasks.bridging.config.g1.demos.soccer.record
+uv run -m mjlab.tasks.bridging.selector --robot g1 --sets "('walk', 'jump', 'kick')"
 uv run -m mjlab.tasks.bridging.config.g1.demos.soccer.run
 ```
 
-The first command records a moving locomotion entry for jump recovery. Repeat it
-when changing the locomotion checkpoint or `speed_after_jump`. It writes the path
-specified by `policies.locomotion_entry_path`. The demo also requires the G1 jump
-and kick entries in `policies.selector_path` and trained walk, jump, kick, planner
-and tracker checkpoints. Null checkpoint paths select the available latest models.
-Pin explicit paths for reproducible experiments.
+To view the field and run the skills with immediate handoffs, use:
+
+```powershell
+uv run -m mjlab.tasks.bridging.config.g1.demos.soccer.run --bridge no-op --viewer viser
+```
+
+Open the local Viser URL printed at startup. Use `--viewer native` for a desktop
+MuJoCo window. The camera uses a closer view from the side, centered on the path
+from the robot spawn to the goal. Episode recordings use this same configured
+camera rather than the browser's current camera position.
+No-op mode skips the diffusion planner and tracker entirely, but
+still needs the walk, jump and kick checkpoints and the selector entry points.
+It is a visual baseline; immediate handoffs can fail physically.
+
+The first command builds the walk, jump and kick entry points in
+`policies.selector_path`. The walk set is recorded walking at 0.8 m/s, so it must
+match `speed_after_jump`; the demo refuses it otherwise. Run it again when changing
+a skill checkpoint, and pin the same checkpoints the demo uses with
+`--checkpoints walk <path> jump <path> kick <path>`. The demo also requires trained
+walk, jump, kick, planner and tracker checkpoints. Null checkpoint paths select the
+available latest models. Pin explicit paths for reproducible experiments.
 
 The default viewer is Viser. Its Info panel displays the active skill or bridge,
 controller phase, speed and goal status. Green markers show entry locations;
@@ -70,7 +85,8 @@ center, and the selected entry also accounts for the reference's run-up before
 takeoff. Rotation and motion scaling apply before this placement.
 
 Recovery starts at the positioned jump reference's final root location and uses
-a locomotion recording at `speed_after_jump`, preserving a moving target. There
+an entry point of the selector's walk set, recorded at `speed_after_jump`,
+preserving a moving target. There
 are no independent entry offsets to tune. Changing an entry index changes its
 pose and run-up while preserving the task alignment.
 
@@ -80,6 +96,13 @@ obstacle clearance, the recovery trigger, and optionally a landing. Configure
 these gates in `controller`. The reference must have enough clearance for the
 fallen robot's geometry; centering the flight does not increase its jump length.
 
+The pitch has alternating turf stripes, touchlines, a halfway line, center circle,
+and penalty and goal areas. Its scoring end follows the configured goal position
+and heading; pitch length extends back from that goal. Markings and turf are visual
+and use the existing ground for contact.
+
+The goal has white posts and a crossbar, rear supports, and a visible mesh net.
+Only the front frame collides; the net is decorative and does not catch the ball.
 The goal is a physical frame with a goal-plane crossing check. Goal heading points
 in the scoring direction. `controller.require_goal: false` accepts a confirmed
 ball launch instead of a goal, which is useful while tuning. Either success waits

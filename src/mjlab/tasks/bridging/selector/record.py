@@ -1,48 +1,84 @@
-"""Collect the policy rollouts consumed by build.py."""
+"""Record the rollouts entry points are taken from.
+
+Every entry set runs its task under the settings the experiments run it with: the play
+config, no rewards, metrics, curriculum or pushes, commands never resampled, a tracker
+started at its first frame, and the set's own fixed command on top. Each environment runs
+one episode, just long enough to cover the range and the future after it. Auto reset stays
+on, so a run that fails starts a new trajectory instead of carrying on from the floor.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import tyro
 
-import mjlab
+from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.tasks.bridging.bridges.dataset import dataset
 from mjlab.tasks.bridging.bridges.dataset.dataset import RolloutCfg
 from mjlab.tasks.bridging.config import get_robot
-from mjlab.tasks.bridging.selector import (
-  WINDOWS,
-  paths,
+from mjlab.tasks.bridging.config.g1.skills.jump_continuous.mdp.commands import (
+  JumpCommandCfg,
 )
-from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
+from mjlab.tasks.bridging.selector import FUTURE_STATES
+from mjlab.tasks.bridging.selector.specs import Spec
+from mjlab.tasks.registry import load_env_cfg
 
 
-@dataclass
-class RecordCfg(RolloutCfg):
-  """Skills, checkpoints, and output for rollout collection."""
-
-  robot: str = "g1"
-  num_envs: int = 256
-  steps: int = 800
-  settle: int = 0
-  skills: tuple[str, ...] = ()
-  checkpoints: tuple[str, ...] = ()
-  path: Path | None = None
+def recorded_steps(spec: Spec) -> int:
+  """Control steps per episode: the range, the future after its last step, and slack."""
+  return spec.stop + FUTURE_STATES + 2
 
 
-def collect(cfg: RecordCfg) -> Path:
-  """Drive each skill and write one shared rollout file."""
-  available = get_robot(cfg.robot).skills
-  skills = cfg.skills or tuple(name for name in WINDOWS if name in available)
-  unknown = set(skills) - available.keys()
-  if unknown:
-    raise ValueError(f"Unknown skills: {', '.join(sorted(unknown))}")
-  if cfg.checkpoints and len(cfg.checkpoints) != len(skills):
-    raise ValueError("checkpoints must be empty or contain one path per skill")
+def experiment_cfg(
+  spec: Spec, robot: str, runs: int, seed: int
+) -> ManagerBasedRlEnvCfg:
+  """The task's environment as the experiments run it, with the set's command fixed."""
+  cfg = load_env_cfg(spec.task, play=True)
+  cfg.scene.num_envs = runs
+  cfg.seed = seed
+  cfg.rewards, cfg.metrics, cfg.curriculum = {}, {}, {}
+  cfg.events.pop("push_robot", None)
+  for command in cfg.commands.values():
+    command.resampling_time_range = (1.0e9, 1.0e9)
+    command.gui = command.debug_vis = False
+    if isinstance(command, JumpCommandCfg):
+      command.sampling_mode = "start"
+  if spec.condition is not None:
+    spec.condition(cfg)
+  step_dt = cfg.sim.mujoco.timestep * cfg.decimation
+  cfg.episode_length_s = max(cfg.episode_length_s, (recorded_steps(spec) + 1) * step_dt)
+  sensors = tuple(cfg.scene.sensors or ())
+  if not any(sensor.name == "feet_ground_contact" for sensor in sensors):
+    left, right = get_robot(robot).foot_body_names
+    cfg.scene.sensors = (
+      *sensors,
+      ContactSensorCfg(
+        name="feet_ground_contact",
+        primary=ContactMatch(
+          mode="subtree", pattern=rf"^({left}|{right})$", entity="robot"
+        ),
+        secondary=ContactMatch(mode="body", pattern="terrain"),
+        fields=("found",),
+        reduce="netforce",
+        num_slots=1,
+      ),
+    )
+  return cfg
 
+
+def collect(
+  specs: dict[str, Spec],
+  robot: str,
+  checkpoints: dict[str, Path],
+  path: Path,
+  runs: int = 64,
+  seed: int = 0,
+  device: str = "cuda:0",
+) -> Path:
+  """Record every entry set into one rollout file, one source per set."""
+  feet = get_robot(robot).foot_body_names
   states: list[np.ndarray] = []
   env_ids: list[np.ndarray] = []
   trajectories: list[np.ndarray] = []
@@ -53,44 +89,21 @@ def collect(cfg: RecordCfg) -> Path:
   metadata: list[dict[str, np.ndarray]] = []
   fps: float | None = None
 
-  for source, skill in enumerate(skills):
-    task = available[skill]
-    env_cfg = load_env_cfg(task)
-    if not any(
-      sensor.name == "feet_ground_contact" for sensor in env_cfg.scene.sensors
-    ):
-      env_cfg.scene.sensors = (
-        *env_cfg.scene.sensors,
-        ContactSensorCfg(
-          name="feet_ground_contact",
-          primary=ContactMatch(
-            mode="subtree",
-            pattern=r"^(left_ankle_roll_link|right_ankle_roll_link)$",
-            entity="robot",
-          ),
-          secondary=ContactMatch(mode="body", pattern="terrain"),
-          fields=("found",),
-          reduce="netforce",
-          num_slots=1,
-        ),
-      )
+  for source, (name, spec) in enumerate(specs.items()):
+    env_cfg = experiment_cfg(spec, robot, runs, seed)
     rate = dataset.control_rate(env_cfg)
     if fps is not None and abs(rate - fps) > 1e-6:
       raise ValueError("All recorded skills must use the same control rate")
     fps = rate
-
-    explicit = cfg.checkpoints[source] if cfg.checkpoints else None
-    experiment = load_rl_cfg(task).experiment_name
-    checkpoint = dataset.find_checkpoint(
-      (experiment,),
-      explicit,
-      hint=f" Train it with `uv run train {task}`.",
+    options = RolloutCfg(
+      num_envs=runs, steps=recorded_steps(spec), settle=0, device=device
     )
     context: dict[str, np.ndarray] = {}
-    result = dataset.record(task, env_cfg, checkpoint, cfg, skill, metadata=context)
+    state, env_id, trajectory, frame, phase, command = dataset.record(
+      spec.task, env_cfg, checkpoints[name], options, name, metadata=context, feet=feet
+    )
     if "foot_contact" not in context:
-      raise ValueError(f"{skill} has no recorded feet_ground_contact sensor")
-    state, env_id, trajectory, frame, phase, command = result
+      raise ValueError(f"{name} has no recorded feet_ground_contact sensor")
     states.append(state)
     env_ids.append(env_id)
     trajectories.append(trajectory)
@@ -101,21 +114,17 @@ def collect(cfg: RecordCfg) -> Path:
     metadata.append(context)
 
   if fps is None:
-    raise ValueError("At least one skill is required")
+    raise ValueError("At least one entry set is required")
   return dataset.write(
-    cfg.path or paths(cfg.robot)[0],
+    path,
     states,
     env_ids,
     trajectories,
     frames,
     sources,
-    skills,
+    tuple(specs),
     fps,
     commands,
     phases,
     metadata,
   )
-
-
-if __name__ == "__main__":
-  collect(tyro.cli(RecordCfg, config=mjlab.TYRO_FLAGS))

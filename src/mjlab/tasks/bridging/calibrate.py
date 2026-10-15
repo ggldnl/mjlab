@@ -234,26 +234,7 @@ def translate_history(
 
 
 def target_window(env: ManagerBasedRlEnv, entry: Entry, future: int) -> torch.Tensor:
-  motion = env.command_manager.get_term("motion")
-  assert isinstance(motion, JumpCommand)
-  states = [entry.state]
-  if future > 1:
-    if (
-      entry.future_states is None
-      or entry.future_mask is None
-      or len(entry.future_states) < future - 1
-      or not entry.future_mask[: future - 1].all()
-    ):
-      raise ValueError(
-        f"{entry.skill}/{entry.name} lacks {future - 1} consecutive future states; rebuild the selector"
-      )
-    states.extend(entry.future_states[: future - 1])
-  recorded = torch.as_tensor(np.stack(states), device=env.device)
-  reference = torch.as_tensor(entry.reference, device=env.device)[None]
-  placed = torch.cat((motion.body_pos_w[:, 0], motion.body_quat_w[:, 0]), dim=-1)
-  return torch.stack(
-    [resume.place(frame[None], reference, placed) for frame in recorded], dim=1
-  )
+  return resume.target_window(env, entry, future)
 
 
 def write_report(path: Path, report: dict) -> None:

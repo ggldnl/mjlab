@@ -12,12 +12,8 @@ import yaml
 import mjlab
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
-from mjlab.tasks.bridging.bridges.diffusion.execution.learned_tracker import (
-  LearnedTrackerExecutor,
-)
 from mjlab.tasks.bridging.bridges.imitation.command import Tolerances
 from mjlab.tasks.bridging.bridges.interface import Bridge
-from mjlab.tasks.bridging.bridges.mixed.runtime import runtime_kind
 from mjlab.tasks.bridging.config.g1.demos.soccer.arena import soccer_env_cfg
 from mjlab.tasks.bridging.config.g1.demos.soccer.config import CONFIG_PATH, Settings
 from mjlab.tasks.bridging.config.g1.demos.soccer.controller import Controller
@@ -97,6 +93,11 @@ def main(config: Config) -> None:
     history, future = 30, 1
     tolerances = Tolerances().tensor(device)
     if settings.bridge.kind != "no-op":
+      from mjlab.tasks.bridging.bridges.diffusion.execution.learned_tracker import (
+        LearnedTrackerExecutor,
+      )
+      from mjlab.tasks.bridging.bridges.mixed.runtime import runtime_kind
+
       checkpoint = (
         Path(settings.bridge.checkpoint) if settings.bridge.checkpoint else None
       )

@@ -50,6 +50,40 @@ def target(
   return place(state, reference, placed)
 
 
+def target_window(
+  env: ManagerBasedRlEnv, entry: Entry, future: int, command_name: str = "motion"
+) -> torch.Tensor:
+  """The entry and its next future - 1 recorded states, placed like target.
+
+  Shape (num_envs, future, state). The planner conditions on all of them.
+  """
+  command = env.command_manager.get_term(command_name)
+  if not isinstance(command, JumpCommand):
+    raise TypeError("A selector entry requires a clip tracker")
+  states = [entry.state]
+  if future > 1:
+    if (
+      entry.future_states is None
+      or entry.future_mask is None
+      or len(entry.future_states) < future - 1
+      or not entry.future_mask[: future - 1].all()
+    ):
+      raise ValueError(
+        f"{entry.skill} frame {entry.frame} lacks {future - 1} consecutive future "
+        "states; run selector.record and selector.build again"
+      )
+    states.extend(entry.future_states[: future - 1])
+  recorded = torch.as_tensor(np.stack(states), device=env.device)
+  reference = torch.as_tensor(entry.reference, device=env.device).expand(
+    env.num_envs, -1
+  )
+  placed = torch.cat([command.body_pos_w[:, 0], command.body_quat_w[:, 0]], dim=-1)
+  return torch.stack(
+    [place(frame.expand(env.num_envs, -1), reference, placed) for frame in recorded],
+    dim=1,
+  )
+
+
 def place(
   state: torch.Tensor, reference: torch.Tensor, placed: torch.Tensor
 ) -> torch.Tensor:

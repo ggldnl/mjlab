@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import copy
 import math
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Callable
 
+import mujoco
+import numpy as np
 import torch
 from tensordict import TensorDict
 
@@ -20,25 +23,31 @@ from mjlab.tasks.bridging.config.t1.demos.sokoban.board import (
   Instruction,
 )
 from mjlab.tasks.bridging.config.t1.skills.push.command import PushCommand
+from mjlab.tasks.bridging.config.t1.skills.turn.command import TurnCommand
 from mjlab.tasks.bridging.tests.stage import fresh_obs, state
 from mjlab.tasks.velocity.mdp import UniformVelocityCommand
 from mjlab.utils.lab_api.math import quat_apply, quat_mul, wrap_to_pi
+from mjlab.viewer.debug_visualizer import DebugVisualizer
 
 Policy = Callable[[TensorDict], torch.Tensor]
 
 
 @dataclass(frozen=True)
 class Settings:
-  position_tolerance: float = 0.08
-  heading_tolerance: float = 0.10
+  position_tolerance: float = 0.25
+  heading_tolerance: float = 0.20
+  entry_position_tolerance: float = 0.08
+  entry_heading_tolerance: float = 0.10
+  push_standoff: float = 1.0
   box_tolerance: float = 0.04
   box_yaw_tolerance: float = 0.04
-  settled_speed: float = 0.06
-  settle_seconds: float = 0.4
+  settled_speed: float = 0.15
+  settle_seconds: float = 0.2
   bridge_seconds: float = 1.0
+  bridge_timeout: float = 10.0
   action_timeout: float = 60.0
   walk_speed: float = 0.5
-  turn_speed: float = 0.6
+  position_gain: float = 3.0
 
 
 def place_entry(clip: torch.Tensor, xy: torch.Tensor, yaw: float) -> torch.Tensor:
@@ -82,6 +91,7 @@ class Controller:
     self.policies, self.bridge = policies, bridge
     self.entries, self.settings = entries or {}, settings or Settings()
     self.history: deque[torch.Tensor] = deque(maxlen=history_length)
+    self.entry_ghost: mujoco.MjModel | None = None
     self.reset()
 
   def reset(self) -> None:
@@ -97,7 +107,11 @@ class Controller:
     self.prepared_index = -1
     self.expected_boxes = list(self.board.boxes)
     self.walk_waypoint = 1
+    self.starting = True
+    self.feedback = ""
     self._twist().vel_command_b.zero_()
+    if "turn" in self.policies:
+      self._turn().set_angle(torch.zeros(1, device=self.env.device))
     for policy in self.policies.values():
       reset = getattr(policy, "reset", None)
       if callable(reset):
@@ -116,11 +130,45 @@ class Controller:
     )
     return (
       f"Active skill: {active} | Phase: {self.phase}\n"
-      f"Plan action: {min(self.index + 1, len(self.plan))}/{len(self.plan)} | {self.reason}"
+      f"Plan action: {min(self.index + 1, len(self.plan))}/{len(self.plan)} | {self.reason}\n"
+      f"{self.feedback}"
+    )
+
+  def debug_vis(self, visualizer: DebugVisualizer) -> None:
+    """Show the bridge's full target pose and keep it visible on failure"""
+    if self.target is None or self.phase == "done":
+      return
+    pose = self.target[0, 0].detach().cpu().numpy()
+    robot = self.env.scene["robot"]
+    if self.entry_ghost is None:
+      self.entry_ghost = copy.deepcopy(self.env.sim.mj_model)
+      visible = np.zeros(self.entry_ghost.ngeom, dtype=bool)
+      visible[robot.indexing.geom_ids.cpu().numpy()] = True
+      visible &= (self.entry_ghost.geom_contype == 0) & (
+        self.entry_ghost.geom_conaffinity == 0
+      )
+      self.entry_ghost.geom_rgba[:, 3] = 0.0
+      self.entry_ghost.geom_rgba[visible] = (0.2, 0.9, 0.8, 0.35)
+    qpos = self.entry_ghost.qpos0.copy()
+    qpos[robot.indexing.free_joint_q_adr.cpu().numpy()] = pose[:7]
+    joints = robot.indexing.joint_q_adr.cpu().numpy()
+    qpos[joints] = pose[13 : 13 + len(joints)]
+    visualizer.add_ghost_mesh(
+      qpos, self.entry_ghost, alpha=0.35, label=f"{self.entering} entry target"
+    )
+    entry = pose[:3].copy()
+    entry[2] = float(self.env.scene.env_origins[0, 2]) + 0.08
+    w, x, y, z = pose[3:7]
+    yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+    direction = np.array([math.cos(yaw), math.sin(yaw), 0.0])
+    color = (1.0, 0.6, 0.1, 0.9)
+    visualizer.add_sphere(entry, 0.08, color, label=f"{self.entering} entry")
+    visualizer.add_arrow(
+      entry, entry + 0.5 * direction, color, label="Bridge target heading"
     )
 
   def _fail(self, reason: str) -> None:
-    self.phase, self.reason = "failed", reason
+    self.phase, self.reason = "failed", f"{reason}; {self.feedback}"
     self.skill = "walk"
     self._twist().vel_command_b.zero_()
 
@@ -132,6 +180,11 @@ class Controller:
   def _push(self) -> PushCommand:
     command = self.env.command_manager.get_term("push")
     assert isinstance(command, PushCommand)
+    return command
+
+  def _turn(self) -> TurnCommand:
+    command = self.env.command_manager.get_term("turn")
+    assert isinstance(command, TurnCommand)
     return command
 
   def _xy(self, cell: tuple[int, int]) -> torch.Tensor:
@@ -147,25 +200,68 @@ class Controller:
   def _walk_to(self, target: torch.Tensor, yaw: float) -> bool:
     position, heading = self._robot_pose()
     delta = target - position
-    yaw_error = float(wrap_to_pi(torch.tensor(yaw - heading)))
     twist = self._twist()
     twist.vel_command_b.zero_()
     distance = float(delta.norm())
-    desired_yaw = (
+    travel_yaw = (
       math.atan2(float(delta[1]), float(delta[0]))
       if distance > self.settings.position_tolerance
       else yaw
     )
-    error = math.atan2(math.sin(desired_yaw - heading), math.cos(desired_yaw - heading))
-    twist.vel_command_b[0, 2] = max(
-      -self.settings.turn_speed, min(self.settings.turn_speed, 2.0 * error)
+    yaw_error = float(wrap_to_pi(delta.new_tensor(travel_yaw - heading)))
+    robot = self.env.scene["robot"].data
+    speed = float(robot.root_link_lin_vel_w[0, :2].norm())
+    turn_rate = abs(float(robot.root_link_ang_vel_w[0, 2]))
+    if self.skill == "turn":
+      # Finish the latched rotation even if turning shifts the target bearing
+      yaw_error = float(self._turn().remaining[0])
+    self.feedback = (
+      f"Robot ({float(position[0]):.2f}, {float(position[1]):.2f}) | "
+      f"Target error {distance:.3f} m, heading {yaw_error:.3f} rad | "
+      f"Speed {speed:.3f} m/s, turn {turn_rate:.3f} rad/s"
     )
-    if distance > self.settings.position_tolerance and abs(error) < 0.2:
-      twist.vel_command_b[0, 0] = min(self.settings.walk_speed, distance)
-    return (
+    if self.skill == "turn":
+      ready = (
+        abs(yaw_error) <= self.settings.heading_tolerance
+        and speed <= self.settings.settled_speed
+        and turn_rate <= self.settings.settled_speed
+      )
+      self.stable = self.stable + self.env.step_dt if ready else 0.0
+      self.reason = f"Turn in place; heading error {yaw_error:.3f} rad"
+      if self.stable >= self.settings.settle_seconds:
+        self._switch("walk", position, heading)
+      return False
+    if abs(yaw_error) > self.settings.heading_tolerance:
+      self.stable = 0.0
+      if "turn" not in self.policies:
+        raise ValueError("Direction changes require a trained turn skill")
+      if (
+        speed <= self.settings.settled_speed
+        and turn_rate <= self.settings.settled_speed
+      ):
+        self._turn().set_heading(delta.new_tensor([travel_yaw]))
+        if self.starting:
+          self.skill = self.entering = "turn"
+          self.reason = "Start turning from standing"
+        else:
+          self._switch("turn", position, heading)
+      return False
+    if (
+      turn_rate <= self.settings.settled_speed
+      and distance > self.settings.position_tolerance
+    ):
+      forward = self.settings.position_gain * (
+        math.cos(heading) * float(delta[0]) + math.sin(heading) * float(delta[1])
+      )
+      twist.vel_command_b[0, 0] = max(0.0, min(self.settings.walk_speed, forward))
+    ready = (
       distance <= self.settings.position_tolerance
       and abs(yaw_error) <= self.settings.heading_tolerance
+      and speed <= self.settings.settled_speed
+      and turn_rate <= self.settings.settled_speed
     )
+    self.stable = self.stable + self.env.step_dt if ready else 0.0
+    return self.stable >= self.settings.settle_seconds
 
   def _switch(self, skill: str, xy: torch.Tensor, yaw: float) -> None:
     if skill == self.skill:
@@ -174,19 +270,57 @@ class Controller:
     self.bridge.reset()
     self.entering = skill
     self.bridge_elapsed = 0.0
+    self.stable = 0.0
     self.phase = "bridge"
     self.reason = f"{self.skill} -> {skill}"
     if type(self.bridge) is Bridge:
       self.target = state(self.env)[:, None].clone()
+      self.target[0, 0, :2] = xy
+      self.target[0, 0, 3:7] = self.target.new_tensor(
+        [math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)]
+      )
     else:
-      if skill not in self.entries:
-        raise ValueError(f"A recorded {skill} entry is required for the learned bridge")
-      self.target = place_entry(self.entries[skill], xy, yaw)
+      name = skill
+      if skill == "turn":
+        # The heading is latched before the switch, so its sign picks the direction
+        left = float(self._turn().remaining[0]) >= 0
+        name = "turn_left" if left else "turn_right"
+      if name not in self.entries:
+        raise ValueError(f"A recorded {name} entry is required for the learned bridge")
+      self.target = place_entry(self.entries[name], xy, yaw)
       if self.target.shape[-1] != state(self.env).shape[-1]:
         raise ValueError("Entry joint layout does not match the robot")
       self.target[:, :, 2] += self.env.scene.env_origins[0, 2]
 
-  def _box_ready(self, index: int, destination: tuple[int, int]) -> bool:
+  def _push_entry(self, instruction: Instruction) -> tuple[torch.Tensor, float]:
+    assert instruction.box_index is not None
+    direction = DIRECTIONS[instruction.action.direction]
+    axis_yaw = math.atan2(direction[1], direction[0])
+    box = self.env.scene[box_names(self.board)[instruction.box_index]].data
+    box_yaw = float(box.heading_w[0])
+    yaw = (
+      axis_yaw
+      + math.atan2(
+        math.sin(4 * (box_yaw - axis_yaw)), math.cos(4 * (box_yaw - axis_yaw))
+      )
+      / 4
+    )
+    axis = box.root_link_pos_w.new_tensor([math.cos(yaw), math.sin(yaw)])
+    return box.root_link_pos_w[0, :2] - self.settings.push_standoff * axis, yaw
+
+  def _push_entry_ready(self) -> bool:
+    assert self.target is not None
+    position, yaw = self._robot_pose()
+    target_xy, target_yaw = self._push_entry(self.plan[self.index])
+    return (
+      float((position - target_xy).norm()) <= self.settings.entry_position_tolerance
+      and abs(math.atan2(math.sin(yaw - target_yaw), math.cos(yaw - target_yaw)))
+      <= self.settings.entry_heading_tolerance
+    )
+
+  def _box_ready(
+    self, index: int, destination: tuple[int, int], approach: bool = False
+  ) -> bool:
     box = self.env.scene[box_names(self.board)[index]]
     position = box.data.root_link_pos_w[0]
     yaw = float(box.data.heading_w[0])
@@ -195,8 +329,11 @@ class Controller:
     up = quat_apply(quat, quat.new_tensor([[0.0, 0.0, 1.0]]))[0, 2]
     return (
       float((position[:2] - self._xy(destination)).norm())
-      <= self.settings.box_tolerance
-      and yaw_error <= self.settings.box_yaw_tolerance
+      <= (self.settings.position_tolerance if approach else self.settings.box_tolerance)
+      and yaw_error
+      <= (
+        self.settings.heading_tolerance if approach else self.settings.box_yaw_tolerance
+      )
       and float(up) > math.cos(self._push().cfg.tilt_tolerance)
       and abs(float(position[2] - self.env.scene.env_origins[0, 2]) - 0.5) < 0.04
       and float(box.data.root_link_lin_vel_w.norm()) < self.settings.settled_speed
@@ -237,26 +374,23 @@ class Controller:
         ),
       )
       self.bridge_elapsed += self.env.step_dt
-      if bool(output.handoff[0]):
-        if type(self.bridge) is not Bridge and not bool(output.within_endpoint_box[0]):
-          self._fail("Bridge finished outside the skill entry tolerances")
-          return self.policies[self.skill](fresh_obs(self.env))
+      self.feedback = (
+        f"Robot ({float(current[0, 0]):.2f}, {float(current[0, 1]):.2f}) | "
+        f"Entry position error {float((current[0, :2] - self.target[0, 0, :2]).norm()):.3f} m | "
+        f"Entry ready: {bool(output.within_endpoint_box[0])} | "
+        f"Elapsed {self.bridge_elapsed:.2f} s"
+      )
+      entry_ready = self.entering != "push" or self._push_entry_ready()
+      if (
+        type(self.bridge) is Bridge or bool(output.within_endpoint_box[0])
+      ) and entry_ready:
         self.skill, self.phase = self.entering, "execute"
-        if self.skill == "push":
-          instruction = self.plan[self.index]
-          direction = DIRECTIONS[instruction.action.direction]
-          position, yaw = self._robot_pose()
-          wanted_yaw = math.atan2(direction[1], direction[0])
-          if (
-            float((position - self._xy(instruction.start)).norm())
-            > self.settings.position_tolerance
-            or abs(math.atan2(math.sin(yaw - wanted_yaw), math.cos(yaw - wanted_yaw)))
-            > self.settings.heading_tolerance
-          ):
-            self._fail("Push entry position or heading is unsuitable")
         return self.policies[self.skill](fresh_obs(self.env))
-      if self.bridge_elapsed > self.settings.bridge_seconds + 1.0:
-        self._fail("Bridge did not hand off before its deadline")
+      if type(self.bridge) is Bridge:
+        self._fail("Push entry needs alignment; use a learned bridge")
+        return self.policies[self.skill](fresh_obs(self.env))
+      if self.bridge_elapsed > self.settings.bridge_timeout:
+        self._fail("Bridge did not reach the skill entry")
         return self.policies[self.skill](fresh_obs(self.env))
       return output.action
     if self.index == len(self.plan):
@@ -273,7 +407,7 @@ class Controller:
     direction = DIRECTIONS[instruction.action.direction]
     yaw = math.atan2(direction[1], direction[0])
     if instruction.action.skill == "walk":
-      if self.skill != "walk":
+      if self.skill not in ("walk", "turn"):
         position, heading = self._robot_pose()
         self._switch("walk", position, heading)
       else:
@@ -283,16 +417,18 @@ class Controller:
         )
         if self._walk_to(self._xy(waypoint), yaw):
           self.walk_waypoint += 1
+          self.elapsed = self.stable = 0.0
           if self.walk_waypoint > instruction.action.cells:
             self._complete()
-    elif self.skill == "walk":
+    elif self.skill in ("walk", "turn"):
       self.reason = "Align with pushing cell and box face"
       if self._walk_to(self._xy(instruction.start), yaw):
         assert instruction.box_index is not None and instruction.box_start is not None
         if not all(
-          self._box_ready(i, cell) for i, cell in enumerate(self.expected_boxes)
+          self._box_ready(i, cell, approach=True)
+          for i, cell in enumerate(self.expected_boxes)
         ):
-          self._fail("Boxes are outside their expected cells or not settled")
+          self.reason = "Wait for boxes to settle in their expected cells"
         else:
           vector = current.new_tensor([direction])
           # Lane and destination on the grid, never on the physical box
@@ -303,7 +439,8 @@ class Controller:
             self._xy(instruction.box_start),
           )
           self.prepared_index = self.index
-          self._switch("push", self._xy(instruction.start), yaw)
+          entry_xy, entry_yaw = self._push_entry(instruction)
+          self._switch("push", entry_xy, entry_yaw)
     else:
       if self.prepared_index != self.index:
         position, heading = self._robot_pose()
@@ -311,6 +448,13 @@ class Controller:
       else:
         assert instruction.box_index is not None and instruction.box_finish is not None
         self.reason = f"Push {instruction.action.cells} cells {instruction.action.direction}; wait for box to settle"
+        position, heading = self._robot_pose()
+        self.feedback = (
+          f"Robot ({float(position[0]):.2f}, {float(position[1]):.2f}), "
+          f"heading {heading:.3f} rad | Box error "
+          f"{self._push().position_error.item():.3f} m | "
+          f"Settled {self.stable:.2f}/{self.settings.settle_seconds:.2f} s"
+        )
         self.stable = (
           self.stable + self.env.step_dt
           if self._box_ready(instruction.box_index, instruction.box_finish)
@@ -319,4 +463,5 @@ class Controller:
         )
         if self.stable >= self.settings.settle_seconds:
           self._complete()
+    self.starting = False
     return self.policies[self.skill](fresh_obs(self.env))

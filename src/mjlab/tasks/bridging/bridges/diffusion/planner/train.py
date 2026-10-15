@@ -37,6 +37,7 @@ from mjlab.tasks.bridging.bridges.diffusion.planner.model import (
 )
 from mjlab.tasks.bridging.bridges.diffusion.planner.process import (
   Diffusion,
+  FootChannels,
   PathLoss,
   ProcessCfg,
 )
@@ -50,14 +51,21 @@ class TrainCfg:
   robot: RobotAlias = "g1"
   motions: tuple[str, ...] = ()
   output: Path | None = None
-  history: int = 4
-  future: int = 1
+  history: int = 50
+  """Frames up to A, one gait cycle at 50 Hz"""
+  future: int = 25
+  """Frames from B on, one step at 50 Hz"""
   min_steps: int = 15
   max_steps: int = 60
   time_scale_range: tuple[float, float] = (0.8, 1.25)
   start_xy_range: float = 0.01
   start_perturb_probability: float = 0.5
   mirror_probability: float = 0.5
+  foot_channels: bool = True
+  """Contacts and soles on the boundary frames, see PlannerLayout"""
+  history_noise: float = 0.01
+  """Joint position noise before A in rad, a stand in for simulated history"""
+  history_noise_probability: float = 0.5
   holdout: int = 8
   model: ModelCfg = field(default_factory=ModelCfg)
   process: ProcessCfg = field(default_factory=ProcessCfg)
@@ -65,6 +73,7 @@ class TrainCfg:
   foot_slip_weight: float = 1.0
   foot_contact_height: float = 0.05
   foot_contact_speed: float = 0.2
+  contact_weight: float = 1.0
   batch: int = 256
   iterations: int = 30_000
   learning_rate: float = 2e-4
@@ -92,6 +101,13 @@ def train(cfg: TrainCfg) -> Path:
   corpus = load_motions(
     motions, columns, cfg.device, "all", cfg.holdout, robot=cfg.robot
   )
+  feet = (
+    FootChannels(
+      cfg.robot, corpus.fps, cfg.foot_contact_height, cfg.foot_contact_speed
+    ).to(cfg.device)
+    if cfg.foot_channels
+    else None
+  )
   windows = Windows(
     corpus,
     cfg.history,
@@ -102,9 +118,12 @@ def train(cfg: TrainCfg) -> Path:
     cfg.start_xy_range,
     cfg.start_perturb_probability,
     cfg.mirror_probability,
+    feet,
+    cfg.history_noise,
+    cfg.history_noise_probability,
   )
   print(
-    f"[diffusion] {corpus.num_windows} windows from {len(corpus.names)} "
+    f"[diffusion] {windows.starts.numel()} windows from {len(corpus.names)} "
     f"kinematic clips at {corpus.fps:g} Hz"
   )
   with torch.no_grad():
@@ -124,6 +143,7 @@ def train(cfg: TrainCfg) -> Path:
     cfg.foot_slip_weight,
     cfg.foot_contact_height,
     cfg.foot_contact_speed,
+    cfg.contact_weight,
   ).to(cfg.device)
   optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate)
   ema = {name: value.detach().clone() for name, value in model.state_dict().items()}
@@ -145,6 +165,8 @@ def train(cfg: TrainCfg) -> Path:
         ema,
         iteration,
         cfg.robot,
+        cfg.foot_contact_height,
+        cfg.foot_contact_speed,
       ),
       checkpoint,
     )

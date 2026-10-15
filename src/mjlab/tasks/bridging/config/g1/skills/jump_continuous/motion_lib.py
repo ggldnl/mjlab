@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
@@ -69,9 +70,11 @@ FRAME_KEYS: tuple[str, ...] = (
 
 
 def trim_lead_in(
-  clip: dict[str, np.ndarray], lead_in_steps: int
+  clip: dict[str, np.ndarray],
+  lead_in_steps: int,
+  landmark: Literal["load", "crouch"] = "load",
 ) -> dict[str, np.ndarray]:
-  """Drop the stand a clip opens with, keeping lead_in_steps frames before the crouch starts.
+  """Keep lead_in_steps frames before the selected landmark through the original end.
 
   A policy that is not told the clip's clock cannot know how long a stand is meant to last,
   so on the same standing state it would be asked to both wait and jump. Cut, a standing
@@ -79,12 +82,17 @@ def trim_lead_in(
 
   The flight frames move with the cut, and the goal is measured again on what is left.
   """
+  if lead_in_steps < 0:
+    raise ValueError("lead_in_steps must be nonnegative")
   root = clip["body_pos_w"][:, 0]
   load, crouch = detect_entry_steps(root[:, 2], int(clip["takeoff_step"]))
-  start = max(load - lead_in_steps, 0)
+  entry = crouch if landmark == "crouch" else load
+  start = max(entry - lead_in_steps, 0)
   out = dict(clip)
   # The landmarks are found on the stand, which the cut removes, so they are carried over
-  out["entry_steps"] = np.array([load - start, crouch - start], dtype=np.int64)
+  out["entry_steps"] = np.array(
+    [max(load - start, 0), max(crouch - start, 0)], dtype=np.int64
+  )
   if start == 0:
     return out
   for key in FRAME_KEYS:
@@ -131,6 +139,7 @@ class MotionLibrary:
     body_indexes: torch.Tensor,
     device: str = "cpu",
     lead_in_steps: int | None = None,
+    lead_in_landmark: Literal["load", "crouch"] = "load",
   ) -> None:
     """Load the clips.
 
@@ -138,8 +147,9 @@ class MotionLibrary:
       motion_files: Converted npz clips.
       body_indexes: Tracked bodies, in the robot's body order.
       device: Torch device of every tensor.
-      lead_in_steps: Frames kept before the crouch starts. None keeps the whole clip,
+      lead_in_steps: Frames kept before lead_in_landmark. None keeps the whole clip,
         stand included. See trim_lead_in.
+      lead_in_landmark: Crop relative to crouch onset or the lowest crouched pose.
     """
     if not motion_files:
       raise ValueError("No motion files given.")
@@ -159,7 +169,7 @@ class MotionLibrary:
 
     raw = [dict(np.load(p)) for p in paths]
     if lead_in_steps is not None:
-      raw = [trim_lead_in(clip, lead_in_steps) for clip in raw]
+      raw = [trim_lead_in(clip, lead_in_steps, lead_in_landmark) for clip in raw]
     lengths = [int(d["joint_pos"].shape[0]) for d in raw]
     self.time_step_total_per_motion = torch.tensor(
       lengths, dtype=torch.long, device=device

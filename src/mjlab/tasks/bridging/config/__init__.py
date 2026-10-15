@@ -36,6 +36,8 @@ class RobotCfg:
   base_body_name: str
   foot_geom_names: tuple[str, ...]
   babel_dataset: str
+  foot_body_names: tuple[str, str] = ("left_ankle_roll_link", "right_ankle_roll_link")
+  """Left and right foot bodies, in that order."""
 
 
 ROBOTS = {
@@ -48,6 +50,7 @@ ROBOTS = {
     "pelvis",
     (r"^(left|right)_foot[1-7]_collision$",),
     "unitree_g1",
+    ("left_ankle_roll_link", "right_ankle_roll_link"),
   ),
   "t1": RobotCfg(
     T1_SKILLS,
@@ -58,6 +61,7 @@ ROBOTS = {
     "Trunk",
     (r"^(left|right)_foot_sphere.*link$",),
     "booster_t1",
+    ("left_foot_link", "right_foot_link"),
   ),
 }
 

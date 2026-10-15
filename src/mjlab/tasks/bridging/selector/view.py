@@ -1,8 +1,11 @@
-"""Show selected states side by side while reporting recorded displacement.
+"""Show the entry points of each set side by side, with their displacement and spread.
 
-Run:
+Run
 
-    uv run python -m mjlab.tasks.bridging.selector.view
+1. Build the entry points, then open the viewer for the same robot.
+
+    uv run python -m mjlab.tasks.bridging.selector --robot g1
+    uv run python -m mjlab.tasks.bridging.selector.view --robot g1
 """
 
 from __future__ import annotations
@@ -66,16 +69,18 @@ def model_for(count: int, robot: str = "g1") -> tuple[mujoco.MjModel, list[Slot]
 
 
 def markdown(entries: tuple[Entry, ...]) -> str:
-  """Selected phases and their recorded ground displacement."""
+  """Selected phases, their recorded ground displacement and the execution spread."""
   position = np.stack([entry.state[:2] for entry in entries])
   steps = np.zeros(len(entries))
   steps[1:] = np.linalg.norm(np.diff(position, axis=0), axis=1)
   return "\n".join(
     [
-      "| entry | phase | seconds | step m |",
-      "|---|---|---|---|",
+      "| entry | phase | seconds | step m | spread |",
+      "|---|---|---|---|---|",
       *[
-        f"| {entry.name} | {entry.frame} | {entry.seconds:.2f} | {step:.2f} |"
+        f"| {entry.name} | {entry.frame} | {entry.seconds:.2f} | {step:.2f} | "
+        + ("-" if entry.spread is None else f"{entry.spread:.2f}")
+        + " |"
         for entry, step in zip(entries, steps, strict=True)
       ],
     ]

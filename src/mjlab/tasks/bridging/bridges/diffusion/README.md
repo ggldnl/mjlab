@@ -81,6 +81,15 @@ The planner predicts positions only: the root and joint step per frame, and the
 root orientation. The steps are summed from A, and the gap left at B is spread
 over the path, so B is hit exactly. Velocities are computed from the positions.
 
+It is conditioned on 50 frames up to A (one gait cycle at 50 Hz) and 25 frames from
+B on (one step). Every frame also carries foot channels: a contact flag per foot,
+predicted between A and B, and the sole position and yaw, given on the boundary
+frames only. Contacts and soles come from forward kinematics, computed on the
+history and on B's continuation separately, exactly as at deployment. A loss keeps
+a sole still where the planner says it is planted. Windows of 134 frames keep about
+60% of the starts the old 4 and 1 frame context had. At deployment skill A must have
+run for 50 frames and skill B must supply 25 consecutive target states.
+
 Training stretches each demonstrated duration by 0.8 to 1.25. Every window is
 expressed in the heading frame of A, so a global rotation or translation of a
 window changes nothing. Half of the windows shift A and its history in xy by at

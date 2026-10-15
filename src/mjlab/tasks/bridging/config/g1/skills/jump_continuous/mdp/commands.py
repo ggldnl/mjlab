@@ -83,6 +83,7 @@ class JumpCommand(CommandTerm):
       self.body_indexes,
       device=self.device,
       lead_in_steps=lead_in_steps,
+      lead_in_landmark=cfg.lead_in_landmark,
     )
     print(self.motion.describe())
 
@@ -1179,12 +1180,15 @@ class JumpCommandCfg(CommandTermCfg):
   """
 
   lead_in: float | None = None
-  """Seconds of each clip kept before the crouch starts. None keeps the whole clip.
+  """Seconds kept before lead_in_landmark. None keeps the whole clip.
 
   The clips open with one to two seconds of standing. A policy that reads only the distance
   cannot tell how much of that stand is left, so on the same standing state it is asked to
   both wait and jump. Cut short, standing with distance left always means jump now. See
   motion_lib.trim_lead_in."""
+
+  lead_in_landmark: Literal["load", "crouch"] = "load"
+  """Crop before crouch onset (load) or the lowest crouched pose (crouch)."""
 
   entry_offset: int = 0
   """Frames to back the entry landmark off by, towards the start of the clip.

@@ -1,4 +1,4 @@
-"""The single clip jump environment: track one ASAP jump, end to end.
+"""Track one ASAP jump from just before the lowest crouch through the clip's end.
 
 The continuous jump's environment has two stages:
 
@@ -69,12 +69,19 @@ def g1_jump_env_cfg(
 
   Args:
     clip: The converted npz to track. Defaults to what dataset.py writes.
-    play: Start every episode at the entry landmark rather than sampling the clip, drop the
+    play: Start every episode at the cropped clip's beginning rather than sampling it, drop the
       observation noise and the pushes, and leave the reference unperturbed.
   """
   cfg = g1_jump_continuous_env_cfg(
     motion_files=(clip or str(motion_file()),), play=play
   )
+  return single_clip_env_cfg(cfg, play=play)
+
+
+def single_clip_env_cfg(
+  cfg: ManagerBasedRlEnvCfg, play: bool = False
+) -> ManagerBasedRlEnvCfg:
+  """Use a single unscaled reference, cropped before the lowest crouch, with RSI."""
 
   # One observation group, and it is the one carrying the reference. The continuous task
   # keeps two because it trains a tracker and then distils it; there is nothing to distil
@@ -94,9 +101,11 @@ def g1_jump_env_cfg(
   motion = cfg.commands["motion"]
   assert isinstance(motion, JumpCommandCfg)
   motion.scale_range = (1.0, 1.0)
-  # The whole clip, stand included. The trim is for a policy blind to the clip's clock, and
-  # this one reads it
-  motion.lead_in = None
+  # Keep two control frames before the bottom of the crouch
+  motion.lead_in = 2 * cfg.sim.mujoco.timestep * cfg.decimation
+  motion.lead_in_landmark = "crouch"
+  if play:
+    motion.sampling_mode = "start"
   # The viewer dial asks for a distance. There is one distance
   motion.gui = False
 

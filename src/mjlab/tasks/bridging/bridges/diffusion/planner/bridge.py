@@ -14,10 +14,12 @@ from mjlab.tasks.bridging.bridges.diffusion.config import planner_experiment
 from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import (
   Layout,
   Normalizer,
+  PlannerLayout,
   bridge_mask,
   decode,
-  encode,
+  encode_pose,
   integrate,
+  pose_features,
 )
 from mjlab.tasks.bridging.bridges.diffusion.planner.model import (
   Denoiser,
@@ -25,13 +27,13 @@ from mjlab.tasks.bridging.bridges.diffusion.planner.model import (
 )
 from mjlab.tasks.bridging.bridges.diffusion.planner.process import (
   Diffusion,
+  FootChannels,
   ProcessCfg,
-  RobotFootKinematics,
   pose_states,
 )
 
 EXPERIMENT = planner_experiment("g1")
-CHECKPOINT_FORMAT = "mjlab-kinematic-diffusion-v6"
+CHECKPOINT_FORMAT = "mjlab-kinematic-diffusion-v7"
 
 
 @dataclass
@@ -44,7 +46,10 @@ class GeneratedPath:
 
 
 class DiffusionBridge:
-  """Inpaint root pose and joint angles between exact A and B boundaries."""
+  """Inpaint root pose and joint angles between exact A and B boundaries.
+
+  With a PlannerLayout the boundary frames also carry foot contacts and soles.
+  """
 
   def __init__(
     self,
@@ -57,6 +62,8 @@ class DiffusionBridge:
     min_steps: int = 3,
     robot: str = "g1",
     floor_height: float | None = 0.0,
+    contact_height: float = 0.05,
+    contact_speed: float = 0.2,
   ):
     self.process = process.eval()
     self.normalizer = normalizer
@@ -68,7 +75,9 @@ class DiffusionBridge:
     self.robot = robot
     self.floor_height = floor_height
     """Lowest allowed sole height between A and B, None turns the floor off"""
-    self._feet: RobotFootKinematics | None = None
+    self.contact_height = contact_height
+    self.contact_speed = contact_speed
+    self._feet: FootChannels | None = None
 
   @property
   def max_steps(self) -> int:
@@ -84,7 +93,8 @@ class DiffusionBridge:
       raise ValueError(
         f"{checkpoint} is not a kinematic diffusion checkpoint; retrain it"
       )
-    layout = Layout(**saved["layout"])
+    kind = PlannerLayout if saved["foot_channels"] else Layout
+    layout = kind(**saved["layout"])
     history = int(saved["history"])
     future = int(saved["future"])
     cfg = ProcessCfg(**saved["process_cfg"])
@@ -110,7 +120,36 @@ class DiffusionBridge:
       float(saved["fps"]),
       int(saved["min_steps"]),
       str(saved.get("robot", "g1")),
+      contact_height=float(saved["contact_height"]),
+      contact_speed=float(saved["contact_speed"]),
     )
+
+  def foot_channels(self, device: torch.device | str) -> FootChannels:
+    """Foot channels with this checkpoint's contact thresholds."""
+    if self._feet is None:
+      self._feet = FootChannels(
+        self.robot, self.fps, self.contact_height, self.contact_speed
+      )
+    return self._feet.to(device)
+
+  def features(self, pose: torch.Tensor) -> torch.Tensor:
+    """Planner features of one contiguous pose sequence."""
+    if not isinstance(self.layout, PlannerLayout):
+      return pose_features(pose)
+    feet = self.foot_channels(pose.device)(pose)
+    return torch.cat((pose_features(pose), feet), dim=-1)
+
+  def window_features(
+    self, states: torch.Tensor, duration: torch.Tensor
+  ) -> torch.Tensor:
+    """Planner features of full state windows, A at index history - 1."""
+    pose = encode_pose(states, states[:, self.history - 1])
+    if not isinstance(self.layout, PlannerLayout):
+      return pose_features(pose)
+    feet = self.foot_channels(pose.device).window(
+      pose, self.history, self.future, duration
+    )
+    return torch.cat((pose_features(pose), feet), dim=-1)
 
   @torch.no_grad()
   def generate(
@@ -156,11 +195,13 @@ class DiffusionBridge:
     mask = bridge_mask(batch, columns, self.layout, self.history, self.future, duration)
     anchor = history[:, -1]
     values = history.new_zeros((batch, columns, self.layout.width))
-    values[:, : self.history] = encode(history, anchor)
+    values[:, : self.history] = self.features(encode_pose(history, anchor))
     rows = self.history - 1 + duration
     offsets = torch.arange(self.future, device=history.device)
     indexes = torch.arange(batch, device=history.device)[:, None]
-    values[indexes, rows[:, None] + offsets] = encode(target, anchor)
+    values[indexes, rows[:, None] + offsets] = self.features(
+      encode_pose(target, anchor)
+    )
     normalized = self.normalizer.normalize(values)
     return self.process.sample(normalized, mask, rungs, self.floor(duration))
 
@@ -176,9 +217,7 @@ class DiffusionBridge:
     if self.floor_height is None:
       return None
     floor_height = self.floor_height
-    if self._feet is None:
-      self._feet = RobotFootKinematics(self.robot).to(duration.device)
-    feet = self._feet
+    feet = self.foot_channels(duration.device).feet
     anchor = self.history - 1
     height = self.layout.root_step.start + 2
 
@@ -230,12 +269,15 @@ def checkpoint_metadata(
   ema: dict[str, torch.Tensor],
   iteration: int,
   robot: str = "g1",
+  contact_height: float = 0.05,
+  contact_speed: float = 0.2,
 ) -> dict:
   return {
     "format": CHECKPOINT_FORMAT,
     "model_cfg": asdict(model_cfg),
     "process_cfg": asdict(process_cfg),
     "layout": asdict(layout),
+    "foot_channels": isinstance(layout, PlannerLayout),
     "normalizer": {"mean": normalizer.mean.cpu(), "std": normalizer.std.cpu()},
     "history": history,
     "future": future,
@@ -245,4 +287,6 @@ def checkpoint_metadata(
     "ema": {name: value.cpu() for name, value in ema.items()},
     "iteration": iteration,
     "robot": robot,
+    "contact_height": contact_height,
+    "contact_speed": contact_speed,
   }

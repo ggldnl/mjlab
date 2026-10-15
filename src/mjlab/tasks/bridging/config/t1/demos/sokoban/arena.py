@@ -25,11 +25,12 @@ from mjlab.sensor import ContactSensorCfg
 from mjlab.tasks.bridging.config.t1.demos.sokoban.board import Board
 from mjlab.tasks.bridging.config.t1.skills.push import PUSH_TASK_ID
 from mjlab.tasks.bridging.config.t1.skills.push.command import PushCommandCfg
+from mjlab.tasks.bridging.config.t1.skills.walk import WALK_TASK_ID
 from mjlab.tasks.registry import load_env_cfg
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.utils.lab_api.string import resolve_matching_names_values
 
-WALK_TASK = "Mjlab-T1-Walk-Natural"
+WALK_TASK = WALK_TASK_ID
 
 
 def rest_pose(env: ManagerBasedRlEnv, joint_pos: dict[str, float]) -> torch.Tensor:
@@ -138,7 +139,10 @@ def reset_scene(env: ManagerBasedRlEnv, env_ids: torch.Tensor, board: Board) -> 
 
 
 def sokoban_env_cfg(
-  board: Board, walk_task: str = WALK_TASK, push_task: str = PUSH_TASK_ID
+  board: Board,
+  walk_task: str = WALK_TASK,
+  push_task: str = PUSH_TASK_ID,
+  turn_task: str | None = None,
 ) -> ManagerBasedRlEnvCfg:
   walk = load_env_cfg(walk_task, play=True)
   push = load_env_cfg(push_task, play=True)
@@ -181,6 +185,28 @@ def sokoban_env_cfg(
     rel_forward_envs=0.0,
     init_velocity_prob=0.0,
   )
+  if turn_task is not None:
+    turn = load_env_cfg(turn_task, play=True)
+    if (
+      turn.actions != walk.actions
+      or turn.decimation != walk.decimation
+      or turn.sim.mujoco.timestep != walk.sim.mujoco.timestep
+      or turn.scene.entities["robot"].init_state
+      != walk.scene.entities["robot"].init_state
+    ):
+      raise ValueError(
+        "Turn and walk must share the robot pose, actions and control rate"
+      )
+    cfg.observations["turn"] = replace(
+      copy.deepcopy(turn.observations["actor"]), enable_corruption=False
+    )
+    for name in ("command", "turn_angle"):
+      cfg.observations["turn"].terms[name].params = {"command_name": "turn"}
+    cfg.commands["turn"] = replace(
+      copy.deepcopy(turn.commands["twist"]),
+      resampling_time_range=(1.0e9, 1.0e9),
+      gui=False,
+    )
   push_cmd = push.commands["push"]
   assert isinstance(push_cmd, PushCommandCfg)
   cfg.commands["push"] = replace(

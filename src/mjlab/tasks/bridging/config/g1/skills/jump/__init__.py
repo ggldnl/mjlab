@@ -1,8 +1,10 @@
-"""A single clip jump for the Unitree G1, tracked end to end.
+"""A single clip jump for the Unitree G1, starting just before the lowest crouch.
 
-ASAP's stage one: reference state initialization over the whole clip, a dense
+ASAP's stage one: reference state initialization over the cropped clip, a dense
 per frame tracking reward, and termination the moment tracking is lost.
 The clip is jump_forward_level3, which travels 1.54 m.
+The crop keeps two frames before the lowest crouch and the original clip ending.
+Phase runs from zero to one over the retained frames. Train a fresh checkpoint.
 
 The difference from skills/jump_continuous is what the policy is asked for. That one covers
 a range of distances, this one jumps the one distance the clip jumps: the policy reads the

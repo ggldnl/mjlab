@@ -77,11 +77,8 @@ class Policies:
   jump_checkpoint: str | None = None
   kick_checkpoint: str | None = None
   selector_path: str = "data/selector/states.npz"
-  locomotion_entry_path: str = "data/soccer/g1_locomotion_entry.npz"
   speed_before_jump: float = 0.8
   speed_after_jump: float = 0.8
-  record_warmup_steps: int = 150
-  record_frames: int = 16
 
 
 @dataclass(frozen=True)
@@ -116,7 +113,7 @@ class Settings:
   controller: ControllerSettings = field(default_factory=ControllerSettings)
   walk_to_jump: Handoff = field(
     default_factory=lambda: Handoff(
-      entry_index=3,
+      entry_index=0,
       start_distance=0.6,
       duration=0.8,
       require_endpoint=False,
@@ -203,10 +200,8 @@ class Settings:
         raise ValueError(f"{name} must contain {size} finite numbers")
     for group in (self.scene, self.policies, self.controller):
       for name, value in vars(group).items():
-        if (
-          type(value) in (float, int)
-          and name != "record_warmup_steps"
-          and (not math.isfinite(value) or ("degrees" not in name and value <= 0))
+        if type(value) in (float, int) and (
+          not math.isfinite(value) or ("degrees" not in name and value <= 0)
         ):
           raise ValueError(f"{name} must be finite and positive")
     if any(not math.isfinite(value) for value in self.scene.fallen_joints.values()):
@@ -218,8 +213,6 @@ class Settings:
     )
     if any(not math.isfinite(value) or value < 0 for value in jitter):
       raise ValueError("Fallen robot jitter bounds must be finite and nonnegative")
-    if self.policies.record_warmup_steps < 0 or self.policies.record_frames < 1:
-      raise ValueError("Recording needs nonnegative warmup and positive frames")
     if self.scene.fallen_position[2] < 0:
       raise ValueError("fallen_position height must be nonnegative")
     if self.bridge.kind not in {"diffusion", "mixed", "no-op"}:
