@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -13,7 +13,7 @@ import tyro
 
 import mjlab
 from mjlab.tasks.bridging.baseline.evaluate import load_for_scene, trial
-from mjlab.tasks.bridging.baseline.model import TransitionPolicy
+from mjlab.tasks.bridging.baseline.model import TransitionPolicy, training_distance
 from mjlab.tasks.bridging.baseline.scene import SceneCfg, TransitionScene
 
 
@@ -21,22 +21,25 @@ from mjlab.tasks.bridging.baseline.scene import SceneCfg, TransitionScene
 class PlayCfg:
   checkpoint: Path
   scene: SceneCfg = field(default_factory=SceneCfg)
-  distance: float = 0.4
-  duration_s: float = 0.8
+  distance: float | None = None
+  duration_s: float = 2.0
   seed: int = 10000
   viewer: Literal["viser", "none"] = "viser"
   automatic: bool = True
 
 
 class Controller:
-  """Request a transition at the next control tick, then hand over on time."""
+  """Request a transition, then hand over on learned termination or the step cap."""
 
   def __init__(
     self, scene: TransitionScene, policy: TransitionPolicy, cfg: PlayCfg
   ) -> None:
     self.scene, self.policy, self.cfg = scene, policy, cfg
     self.automatic = cfg.automatic
-    self.distance, self.duration_s = cfg.distance, cfg.duration_s
+    self.distance, self.duration_s = (
+      cfg.distance if cfg.distance is not None else 0.4,
+      cfg.duration_s,
+    )
     self.pending_entry: int | None = None
     self.reset()
 
@@ -58,7 +61,7 @@ class Controller:
       else self.phase
     )
     return (
-      f"{active} | target {self.scene.run.distance:.2f} m | "
+      f"{active} | reference {self.scene.run.distance:.2f} m | "
       f"{self.ticks * self.scene.env.step_dt:.2f} s in phase"
     )
 
@@ -87,7 +90,7 @@ class Controller:
         self.fire = False
         self.phase, self.ticks = "transition", 0
         self.budget = max(1, round(self.duration_s / scene.env.step_dt))
-        scene.open_bridge(self.duration_s)
+        scene.run.command.stop()
         print(
           f"transition requested: seed={self.cfg.seed}, entry={scene.cfg.entry}, "
           f"distance={scene.run.distance:.3f} m, budget={self.budget} ticks"
@@ -104,9 +107,10 @@ class Controller:
 
     if self.phase == "transition":
       scene.hold_target()
-      if self.ticks < self.budget:
+      action, _, terminal = self.policy.act(scene.observe())
+      if not bool(terminal.all()) and self.ticks < self.budget - 1:
         self.ticks += 1
-        return self.policy(scene.observe())
+        return action
       errors, within = scene.endpoint()
       print(
         f"handoff to {scene.target_skill}: endpoint errors={errors[0].tolist()}, "
@@ -139,11 +143,10 @@ def panel(server, controller: Controller, entries: tuple[int, ...]) -> None:
       initial_value=controller.distance,
     )
     distance.on_update(lambda _: setattr(controller, "distance", float(distance.value)))
-    low, high = controller.scene.run.command.cfg.duration_s_range
     duration = server.gui.add_slider(
-      "Transition duration, s",
-      min=low,
-      max=high,
+      "Transition limit, s",
+      min=controller.scene.env.step_dt,
+      max=max(4.0, controller.duration_s),
       step=0.05,
       initial_value=controller.duration_s,
     )
@@ -160,19 +163,24 @@ def panel(server, controller: Controller, entries: tuple[int, ...]) -> None:
 
 def play(cfg: PlayCfg) -> None:
   if any(
-    not math.isfinite(value) or value <= 0 for value in (cfg.distance, cfg.duration_s)
+    not math.isfinite(value) or value <= 0
+    for value in (cfg.distance, cfg.duration_s)
+    if value is not None
   ):
     raise ValueError("distance and duration_s must be finite and positive")
   if cfg.viewer == "none" and not cfg.automatic:
     raise ValueError("Headless playback requires --automatic True")
   policy, scene_cfg, metadata = load_for_scene(cfg.checkpoint, cfg.scene)
+  distance = training_distance(metadata)
+  if distance is None:
+    distances = metadata["config"]["distances"]
+    distance = distances[len(distances) // 2]
+  cfg = replace(cfg, distance=distance if cfg.distance is None else cfg.distance)
   scene = TransitionScene(scene_cfg)
   server = None
   try:
-    low, high = scene.run.command.cfg.duration_s_range
-    if not low <= cfg.duration_s <= high:
-      raise ValueError(f"duration_s must be between {low:g} and {high:g}")
     if cfg.viewer == "none":
+      assert cfg.distance is not None
       print(
         json.dumps(
           trial(scene, "transition", cfg.seed, cfg.distance, cfg.duration_s, policy)

@@ -13,6 +13,7 @@ from typing import Any, Literal
 import torch
 from tensordict import TensorDict
 
+from mjlab.asset_zoo.objects.ball import BALL_RADIUS
 from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.envs.mdp.actions.actions import JointPositionAction
@@ -24,6 +25,7 @@ from mjlab.tasks.bridging.baseline.metrics import (
   WALK_CHANNELS,
   WALK_FLOORS,
 )
+from mjlab.tasks.bridging.baseline.outcome import SkillOutcome
 from mjlab.tasks.bridging.bridges import BRIDGES
 from mjlab.tasks.bridging.bridges.diffusion.config import tracker_experiment
 from mjlab.tasks.bridging.bridges.imitation.command import (
@@ -33,8 +35,13 @@ from mjlab.tasks.bridging.bridges.imitation.command import (
 from mjlab.tasks.bridging.config import get_robot
 from mjlab.tasks.bridging.config.g1 import selector as resume
 from mjlab.tasks.bridging.config.g1.demos.soccer.controller import entry_sequence
+from mjlab.tasks.bridging.config.g1.skills.kick import mdp as kick_mdp
 from mjlab.tasks.bridging.config.g1.tests.transitions.jump2walk import (
   Run as JumpWalkRun,
+)
+from mjlab.tasks.bridging.config.g1.tests.transitions.walk2kick import (
+  BALL,
+  _reference_ball,
 )
 from mjlab.tasks.bridging.config.t1.demos.sokoban.controller import place_entry
 from mjlab.tasks.bridging.selector import STATES_PATH
@@ -48,6 +55,8 @@ from mjlab.tasks.bridging.tests.stage import (
   state,
 )
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
+from mjlab.tasks.velocity.mdp import UniformVelocityCommand
+from mjlab.utils.lab_api.math import quat_apply, quat_conjugate, quat_mul, yaw_quat
 
 Pair = Literal["walk2jump", "walk2kick", "jump2walk"]
 
@@ -334,10 +343,130 @@ class TransitionScene:
       | (current[:, 2] - self.env.scene.env_origins[:, 2] < 0.25)
     )
 
-  def hold_target(self) -> None:
+  def hold_target(self, mask: torch.Tensor | None = None) -> None:
     if self.target_skill != "walk":
+      steps = self.run.motion.time_steps.clone()
+      done = self.run.motion.motion_done.clone()
       self.run._hold_motion(0)
+      if mask is not None:
+        self.run.motion.time_steps[~mask] = steps[~mask]
+        self.run.motion.motion_done[~mask] = done[~mask]
+        self.run.motion.update_relative_body_poses()
     self.run._set_walk()
+
+  @torch.no_grad()
+  def place_incoming(self, mask: torch.Tensor, ahead: float = 0.0) -> None:
+    """Place the incoming entry ahead metres in front of each masked robot.
+
+    The entry takes the robot's heading. ahead = 0 puts it on the robot, which is
+    where a skill starts when nothing is placed for it. Jump and kick move their
+    reference with the entry and hold it on the entry frame, the kick's ball moves
+    onto the reference ball. Walk has no reference, only the bridge target moves.
+    """
+    if not bool(mask.any()):
+      return
+    ids = torch.nonzero(mask).flatten()
+    entry = self.run.entries[self.run.entry_index]
+    robot = state(self.env)[ids]
+    heading = yaw_quat(robot[:, 3:7])
+    forward = quat_apply(
+      heading, robot.new_tensor([[1.0, 0.0, 0.0]]).expand(len(ids), -1)
+    )
+    spot = robot[:, :3] + ahead * forward
+    if self.target_skill == "walk":
+      clip = torch.as_tensor(
+        entry_sequence(entry, self.run.future), device=robot.device, dtype=robot.dtype
+      )
+      yaw = torch.atan2(forward[:, 1], forward[:, 0]).tolist()
+      window = torch.cat(
+        [place_entry(clip, spot[row, :2], yaw[row]) for row in range(len(ids))]
+      )
+      window[:, :, 2] += self.env.scene.env_origins[ids, None, 2]
+      self.run.target_window[ids] = window
+    else:
+      motion = self.run.motion
+      recorded = torch.as_tensor(entry.state, device=robot.device, dtype=robot.dtype)
+      reference = torch.as_tensor(
+        entry.reference, device=robot.device, dtype=robot.dtype
+      )
+      recorded = recorded[None].expand(len(ids), -1)
+      reference = reference[None].expand(len(ids), -1)
+      # Inverse of selector.place: the reference pose that puts the entry on the spot
+      rotation = quat_mul(heading, quat_conjugate(yaw_quat(recorded[:, 3:7])))
+      position = spot - quat_apply(rotation, recorded[:, :3] - reference[:, :3])
+      travel = quat_mul(rotation, yaw_quat(reference[:, 3:7]))
+      # anchor_to_robot takes the direction of travel, which differs from the pelvis
+      # heading by the clip's twist at the entry frame, so correct it once
+      motion.anchor_to_robot(ids, entry.frame, at_pos=position, at_quat=travel)
+      twist = quat_mul(travel, quat_conjugate(yaw_quat(motion.body_quat_w[ids, 0])))
+      motion.anchor_to_robot(
+        ids, entry.frame, at_pos=position, at_quat=quat_mul(twist, travel)
+      )
+      self.run.target_window[ids] = resume.target_window(
+        self.env, entry, self.run.future
+      )[ids]
+      if self.target_skill == "kick":
+        root = torch.zeros(len(ids), 13, device=robot.device)
+        root[:, :3] = _reference_ball(self.env, motion)[ids]
+        root[:, 3] = 1.0
+        self.env.scene[BALL].write_root_state_to_sim(root, env_ids=ids)
+        self.env.sim.forward()
+        kick_mdp.reset_kick_phase(self.env, ids)
+    self.run.target[ids] = self.run.target_window[ids, 0]
+    self.run.command.target[ids] = self.run.target[ids]
+
+  @torch.no_grad()
+  def park_ball(self, behind: float = 5.0) -> None:
+    """Move the kick's ball behind the robot, off the path of a straight walk."""
+    current = state(self.env)
+    backward = quat_apply(
+      yaw_quat(current[:, 3:7]),
+      current.new_tensor([[-behind, 0.0, 0.0]]).expand(len(current), -1),
+    )
+    root = torch.zeros(self.env.num_envs, 13, device=current.device)
+    root[:, :2] = current[:, :2] + backward[:, :2]
+    root[:, 2] = BALL_RADIUS
+    root[:, 3] = 1.0
+    self.env.scene[BALL].write_root_state_to_sim(root)
+    self.env.sim.forward()
+
+  def steer(self, heading: torch.Tensor) -> None:
+    """Hold the walking command on a world heading instead of the entry."""
+    twist = self.env.command_manager.get_term("twist")
+    assert isinstance(twist, UniformVelocityCommand)
+    twist.heading_target[:] = heading
+
+  def downstream_steps(self) -> torch.Tensor:
+    steps = torch.full(
+      (self.env.num_envs,),
+      max(1, round(self.cfg.post_s / self.env.step_dt)),
+      device=self.cfg.device,
+      dtype=torch.long,
+    )
+    if self.target_skill != "walk":
+      remaining = (
+        self.run.motion.motion.time_step_total_per_motion[self.run.motion.motion_ids]
+        - self.run.motion.time_steps
+      )
+      steps = (
+        remaining if self.target_skill == "kick" else torch.minimum(steps, remaining)
+      )
+    if bool((steps < 1).any()):
+      raise ValueError("Entry has no remaining reference frames")
+    return steps
+
+  def downstream_errors(self) -> torch.Tensor:
+    if self.target_skill == "walk":
+      data = self.robot.data
+      return torch.stack(
+        (
+          data.root_link_lin_vel_b[:, 0] - self.run.walk_speed,
+          data.root_link_lin_vel_b[:, 1],
+          data.root_link_ang_vel_b[:, 2],
+        ),
+        -1,
+      )
+    return torch.stack([self.run.motion.metrics[name] for name in self.channels], -1)
 
   @torch.no_grad()
   def reset(self, seed: int) -> None:
@@ -445,15 +574,12 @@ class TransitionScene:
     self.successor_observations: list[torch.Tensor] = []
     self.successor_actions: list[torch.Tensor] = []
     sums = torch.zeros(self.env.num_envs, len(self.channels), device=self.cfg.device)
-    steps = max(1, round(self.cfg.post_s / self.env.step_dt))
-    if self.target_skill != "walk":
-      remaining = (
-        self.run.motion.motion.time_step_total_per_motion[self.run.motion.motion_ids]
-        - self.run.motion.time_steps
-      )
-      steps = min(steps, int(remaining.min()))
-    if steps < 1:
-      raise ValueError("Entry has no remaining reference frames")
+    limits = self.downstream_steps()
+    outcome = SkillOutcome(self)
+    success = torch.zeros_like(self.failed)
+    incoming = ~self.failed.clone()
+    transition = torch.zeros_like(incoming)
+    steps = int(limits.max())
     for index in range(steps):
       action = first_action if index == 0 else self.skill_action(self.target_skill)
       if collect:
@@ -461,7 +587,8 @@ class TransitionScene:
         self.successor_actions.append(action.clone())
       self.step(action)
       self.post_steps += 1
-      self.failed |= self.target_failures.compute()
+      self.failed |= self.target_failures.compute() & incoming
+      outcome.update(transition, incoming)
       if self.target_skill == "walk":
         data = self.robot.data
         errors = torch.stack(
@@ -476,10 +603,14 @@ class TransitionScene:
         errors = torch.stack(
           [self.run.motion.metrics[name] for name in self.channels], -1
         )
-      sums += errors.square()
-    rms = (sums / steps).sqrt()
-    self.failed |= ~torch.isfinite(rms).all(-1)
-    return rms, ~self.failed, jump
+      sums[incoming] += errors[incoming].square()
+      completed = incoming & ((index + 1 >= limits) | self.failed)
+      success[completed] = outcome.success()[completed] & torch.isfinite(
+        sums[completed]
+      ).all(-1)
+      incoming &= ~completed
+    rms = (sums / limits[:, None]).sqrt()
+    return rms, success, jump
 
   @torch.no_grad()
   def bridge_action(self, duration: float) -> tuple[torch.Tensor, bool]:

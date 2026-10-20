@@ -1,4 +1,4 @@
-"""One scene with solid walls, movable boxes and separate skill observations.
+"""One scene with grid walls, movable boxes and separate skill observations.
 
 Walk and push hold different arm rest poses. The scene keeps the walk one, and the push
 observations and actions are shifted onto the push rest pose, so neither policy sees a
@@ -25,12 +25,13 @@ from mjlab.sensor import ContactSensorCfg
 from mjlab.tasks.bridging.config.t1.demos.sokoban.board import Board
 from mjlab.tasks.bridging.config.t1.skills.push import PUSH_TASK_ID
 from mjlab.tasks.bridging.config.t1.skills.push.command import PushCommandCfg
-from mjlab.tasks.bridging.config.t1.skills.walk import WALK_TASK_ID
+from mjlab.tasks.bridging.config.t1.skills.walk import DISTANCE_WALK_TASK_ID
 from mjlab.tasks.registry import load_env_cfg
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.utils.lab_api.string import resolve_matching_names_values
+from mjlab.utils.spec_config import GeomCfg
 
-WALK_TASK = WALK_TASK_ID
+WALK_TASK = DISTANCE_WALK_TASK_ID
 
 
 def rest_pose(env: ManagerBasedRlEnv, joint_pos: dict[str, float]) -> torch.Tensor:
@@ -143,6 +144,8 @@ def sokoban_env_cfg(
   walk_task: str = WALK_TASK,
   push_task: str = PUSH_TASK_ID,
   turn_task: str | None = None,
+  *,
+  wall_collisions: bool = True,
 ) -> ManagerBasedRlEnvCfg:
   walk = load_env_cfg(walk_task, play=True)
   push = load_env_cfg(push_task, play=True)
@@ -245,6 +248,9 @@ def sokoban_env_cfg(
     cfg.scene.entities[f"wall_{x}_{y}"] = replace(
       get_box_cfg(half_size=(0.5, 0.5, 0.5), color=(0.3, 0.35, 0.4, 1.0)),
       init_state=EntityCfg.InitialStateCfg(pos=(x + 0.5, y + 0.5, 0.5), joint_pos={}),
+      geoms=()
+      if wall_collisions
+      else (GeomCfg(geom_names_expr=(".*",), contype=0, conaffinity=0),),
     )
   cfg.scene.entities["grid"] = EntityCfg(
     spec_fn=partial(_floor_spec, board),

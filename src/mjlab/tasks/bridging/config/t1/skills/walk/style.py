@@ -19,6 +19,9 @@ the reward down. It does not push the robot anywhere, which is why the command r
 stay inside what dataset.py prints.
 
 The pairwise distance is chunked over envs. 4096 envs against 50k frames is 800 MB in one go.
+An explicit asset_cfg.joint_names selection restricts both the library and robot
+features to those joints. Distance walking uses the legs and waist, with a separate
+arm posture reward.
 """
 
 from __future__ import annotations
@@ -61,6 +64,16 @@ class motion_style:
       velocity = library["velocity"]
 
     asset: Entity = env.scene[params.get("asset_cfg", _DEFAULT_ASSET_CFG).name]
+    selection = params.get("asset_cfg", _DEFAULT_ASSET_CFG).joint_names
+    if selection is not None:
+      _, selected = asset.find_joints(selection)
+      columns = [index for index, name in enumerate(names) if name in selected]
+      if not columns:
+        raise ValueError(
+          "Style joint selection matches no joints in the motion library"
+        )
+      names = [names[index] for index in columns]
+      joint_pos, joint_vel = joint_pos[:, columns], joint_vel[:, columns]
     joint_ids, _ = asset.find_joints(names, preserve_order=True)
     self.joint_ids = torch.tensor(joint_ids, device=env.device, dtype=torch.long)
 

@@ -96,7 +96,7 @@ class Instruction:
 
 
 def compile_plan(board: Board, actions: list[Action]) -> tuple[Instruction, ...]:
-  """Check every crossed cell and merge consecutive pushes of the same box"""
+  """Check every crossed cell and merge consecutive actions in the same direction"""
   robot, boxes = board.robot, list(board.boxes)
   result: list[Instruction] = []
   for action in actions:
@@ -133,20 +133,18 @@ def compile_plan(board: Board, actions: list[Action]) -> tuple[Instruction, ...]
     )
     if (
       result
-      and action.skill == "push"
-      and result[-1].action.skill == "push"
+      and result[-1].action.skill == action.skill
       and result[-1].box_index == box_index
       and result[-1].action.direction == action.direction
     ):
-      assert box_index is not None
       previous = result.pop()
       instruction = Instruction(
-        Action("push", action.direction, previous.action.cells + action.cells),
+        Action(action.skill, action.direction, previous.action.cells + action.cells),
         previous.start,
         robot,
         box_index,
         previous.box_start,
-        boxes[box_index],
+        None if box_index is None else boxes[box_index],
       )
     result.append(instruction)
   if frozenset(boxes) != board.goals:

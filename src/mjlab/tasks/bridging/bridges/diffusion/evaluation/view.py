@@ -23,15 +23,14 @@ import tyro
 import viser
 
 import mjlab
-from mjlab.asset_zoo.robots.unitree_g1.g1_constants import get_spec
 from mjlab.tasks.bridging.bridges.dataset.view import (
   Slot,
   show,
   slot,
   tint,
 )
+from mjlab.tasks.bridging.bridges.diffusion.config import motion_patterns
 from mjlab.tasks.bridging.bridges.diffusion.dataset.motions import (
-  BABEL_EVAL_MOTIONS,
   Windows,
   load_motions,
 )
@@ -39,6 +38,7 @@ from mjlab.tasks.bridging.bridges.diffusion.planner.bridge import (
   DiffusionBridge,
   GeneratedPath,
 )
+from mjlab.tasks.bridging.config import RobotAlias, get_robot
 from mjlab.viewer.viser.scene import MjlabViserScene
 
 ROBOT = "robot/"
@@ -50,7 +50,8 @@ PLAN_COLOR = (0.1, 0.45, 1.0, 0.45)
 @dataclass
 class ViewCfg:
   checkpoint: Path
-  motions: tuple[str, ...] = BABEL_EVAL_MOTIONS
+  robot: RobotAlias = "g1"
+  motions: tuple[str, ...] = ()
   holdout: int = 8
   sample_steps: int | None = None
   device: str = "cuda:0"
@@ -115,21 +116,25 @@ def generate(
   return Plan(window.cpu(), duration, rungs, bridge.fps)
 
 
-def build_scene() -> tuple[
+def build_scene(
+  robot: str = "g1",
+) -> tuple[
   mujoco.MjModel,
   Slot,
   mujoco.MjModel,
   mujoco.MjModel,
   mujoco.MjModel,
 ]:
-  """Build one hidden G1 and three transparent ghost appearances."""
+  """Build the selected robot and three transparent ghost appearances."""
   world = mujoco.MjSpec()
   world.worldbody.add_geom(
     type=mujoco.mjtGeom.mjGEOM_PLANE,
     size=[20.0, 20.0, 0.1],
     rgba=[0.3, 0.3, 0.32, 1.0],
   )
-  world.attach(get_spec(), prefix=ROBOT, frame=world.worldbody.add_frame())
+  world.attach(
+    get_robot(robot).get_spec(), prefix=ROBOT, frame=world.worldbody.add_frame()
+  )
   model = world.compile()
   where = slot(model, ROBOT)
   ghosts = []
@@ -149,12 +154,17 @@ def ghost_qpos(model: mujoco.MjModel, where: Slot, state: np.ndarray) -> np.ndar
 
 def serve(cfg: ViewCfg) -> None:
   bridge = DiffusionBridge.load(cfg.checkpoint, cfg.device, cfg.sample_steps)
+  if bridge.robot != cfg.robot:
+    raise ValueError(
+      f"Checkpoint is for {bridge.robot}, not {cfg.robot}. Use --robot {bridge.robot}"
+    )
   corpus = load_motions(
-    cfg.motions,
+    cfg.motions or motion_patterns(cfg.robot, "val"),
     bridge.process.denoiser.columns,
     cfg.device,
     "all",
     cfg.holdout,
+    robot=cfg.robot,
   )
   if corpus.num_joints != bridge.layout.joints or corpus.fps != bridge.fps:
     raise ValueError("Motion data and checkpoint use different robot layouts or rates")
@@ -176,9 +186,9 @@ def serve(cfg: ViewCfg) -> None:
   at = 0
   plan = plans[at]
 
-  model, where, start_ghost, end_ghost, plan_ghost = build_scene()
+  model, where, start_ghost, end_ghost, plan_ghost = build_scene(cfg.robot)
   if where.joints.size != corpus.num_joints:
-    raise ValueError("Motion data and G1 model have different joint counts")
+    raise ValueError(f"Motion data and {cfg.robot} model have different joint counts")
   data = mujoco.MjData(model)
   mujoco.mj_forward(model, data)
 

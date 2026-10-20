@@ -34,12 +34,50 @@ uv run python -m mjlab.tasks.bridging.bridges.dataset.motion_capture.build --rob
 What is taken and why is in `bridges/dataset/motion_capture/filters.py`. Each output
 folder also holds `selection.jsonl`, the clips and intervals taken, and `qa.jsonl`.
 
+The default `bridge` profile is robot specific. G1 keeps its broad motion coverage,
+including fast gaits, lowered poses and short flights. T1 keeps upright, slower
+motion: torso tilt at most about 20 degrees, root height at least 0.60 m above the
+floor, horizontal speed at most 1 m/s, vertical speed 0.35 m/s, angular speed
+2 rad/s, joint speed 6 rad/s, root acceleration 6 m/s² and joint acceleration
+150 rad/s². Flights with both soles more than 3 cm above the floor for 0.04 s or
+longer are rejected. These are conservative kinematic limits, not proof of
+dynamic feasibility. Single support walking and turns remain eligible.
+
+For an existing T1 corpus, refresh the masks without retargeting:
+
+```sh
+uv run python -m mjlab.tasks.bridging.bridges.dataset.motion_capture.build --robot t1 --filter-only True
+uv run python -m mjlab.tasks.bridging.bridges.dataset.motion_graph.build --robot t1
+```
+
+This also refreshes existing T1 stitched clips, so their old masks cannot retain
+difficult transitions. Both training stages reject every window overlapping a
+rejected frame, including its history and continuation. Frames keep their original
+indices; filtering never joins the motion across a gap. Rejection counts are
+printed per criterion and may overlap. The `quality`, `locomotion` and `none`
+profiles remain explicit overrides with their existing limits.
+
+Retrain the T1 tracker and planner on these masks in new run directories. Existing
+checkpoints do not change when the data is filtered. Evaluate the new tracker on
+held-out T1 windows before testing the Sokoban handoffs. G1 data, filter limits,
+training settings and checkpoints are unaffected by the T1 command.
+
 Then join pairs of filtered clips at a look-alike frame, into `data/motion_graph/<robot>/`.
 Both stages only cut windows from these that cross the seam:
 
 ```sh
 uv run python -m mjlab.tasks.bridging.bridges.dataset.motion_graph.build --robot g1
 ```
+
+The stitch builder applies the selected robot's bridge limits again after blending,
+including velocities and accelerations introduced at the seam. Rebuild with
+`--robot t1` to generate new transitions from the more restricted source motion;
+this replaces that robot's previous stitched output.
+
+T1 stitches default to 1 s before the seam so the planner's 50-frame history fits.
+Older 0.4 s lead-ins cannot supply a seam-crossing planner window. After refreshing
+an older T1 corpus, rebuild its stitches before planner training. G1 keeps its
+existing 0.4 s default; `--before-s` remains an explicit override for either robot.
 
 Inspect any of the three corpora, as the samplers draw them:
 
@@ -76,6 +114,17 @@ uv run python -m mjlab.tasks.bridging.bridges.diffusion.tracker.evaluate --check
 ```
 
 ## Pretrain the planner
+
+Inspect a saved T1 planner checkpoint as kinematic motion in Viser:
+
+```sh
+uv run python -m mjlab.tasks.bridging.bridges.diffusion.planner.view --robot t1 --checkpoint logs/rsl_rl/t1_diffusion_kinematic_planner/<run>/model_4000.pt
+```
+
+`--robot` selects the held-out motion corpus and display model and must match the
+checkpoint. It defaults to `g1`. Custom `--motions` paths are still supported and
+their robot metadata is checked. This viewer displays generated plans without
+running the universal tracker or physics.
 
 The planner predicts positions only: the root and joint step per frame, and the
 root orientation. The steps are summed from A, and the gap left at B is spread

@@ -14,6 +14,8 @@ Needs, once:
 LAFAN is downloaded when missing. Each source lands in data/<source>_retargeted/<robot>/
 as {train,val}/<category>/*.npz, with selection.jsonl (what was taken and why) and
 qa.jsonl (floor QA per clip). A rerun keeps existing clips and refreshes the masks.
+Use --filter-only to refresh existing motion capture and stitched masks without
+selection, downloads or retargeting
 
 Run
 
@@ -26,6 +28,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -113,8 +116,10 @@ def _retarget(
 
 def _mark_valid(output_root: Path, profile: FilterProfile, robot: str) -> None:
   """Store the kinematic filter's verdict as a per-frame valid mask in every clip."""
-  cfg = motion_filter(profile)
+  cfg = motion_filter(profile, robot)
   seconds = valid_seconds = 0.0
+  rejected: Counter[str] = Counter()
+  total = 0
   for path in sorted(output_root.glob("*/*/*.npz")):
     with np.load(path, allow_pickle=False) as motion:
       values = {name: motion[name] for name in motion.files}
@@ -130,37 +135,57 @@ def _mark_valid(output_root: Path, profile: FilterProfile, robot: str) -> None:
         state, values["body_pos_w"], values["body_quat_w"], fps, cfg, robot
       )
       valid = ~np.logical_or.reduce(tuple(bad.values()))
+      rejected.update({name: int(mask.sum()) for name, mask in bad.items()})
     values["valid"] = valid
     temporary = path.with_suffix(".tmp.npz")
     np.savez(temporary, **values)
     temporary.replace(path)
     seconds += len(valid) / fps
     valid_seconds += valid.sum() / fps
-  print(f"{output_root}: {seconds / 60:.1f} min, {valid_seconds / 60:.1f} min valid")
+    total += len(valid)
+  print(
+    f"{output_root}: {robot} {profile}, "
+    f"{seconds / 60:.1f} min, {valid_seconds / 60:.1f} min valid"
+  )
+  for reason, count in rejected.most_common():
+    if count:
+      print(f"  {reason}: {count}/{total} frames ({count / total:.1%})")
 
 
 def main(
   robot: RobotAlias = "g1",
   profile: FilterProfile = "bridge",
   device: str = "cuda:0",
+  filter_only: bool = False,
 ) -> None:
   """Select, retarget, ground, QA and filter every BABEL and LAFAN clip."""
   selected = get_robot(robot)
   name = selected.robot_name
+  babel_root = Path("data/babel_retargeted") / selected.babel_dataset
+  lafan_root = Path("data/lafan_retargeted") / name
+  if filter_only:
+    roots = [babel_root, lafan_root]
+    for root in roots:
+      if not any(root.glob("*/*/*.npz")):
+        raise FileNotFoundError(f"No retargeted clips under {root}")
+    stitched_root = Path("data/motion_graph") / name
+    if any(stitched_root.glob("*/*/*.npz")):
+      roots.append(stitched_root)
+    for root in roots:
+      _mark_valid(root, profile, name)
+    return
 
   babel = select_babel(BABEL_LABELS)
   missing = extract([entry["source"] for entry in babel], AMASS_TARBALLS, AMASS_SOURCES)
   if missing:
     print(f"Not in the AMASS archives, dropped: {missing}")
     babel = [entry for entry in babel if entry["source"] not in missing]
-  babel_root = Path("data/babel_retargeted") / selected.babel_dataset
   _retarget(_babel_clips(babel), babel, name, AMASS_SOURCES, babel_root, device)
   _mark_valid(babel_root, profile, name)
 
   if not any(LAFAN_RAW.glob("*.bvh")):
     lafan_download.main()
   lafan = select_lafan(LAFAN_RAW)
-  lafan_root = Path("data/lafan_retargeted") / name
   _retarget(_lafan_clips(lafan), lafan, name, LAFAN_RAW, lafan_root, device)
   _mark_valid(lafan_root, profile, name)
 

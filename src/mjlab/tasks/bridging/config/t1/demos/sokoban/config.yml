@@ -1,0 +1,33 @@
+# Durations are seconds and distances are metres
+# Entry indices select a row within the incoming skill's selector set
+# Every bridge transfers control at its duration, regardless of endpoint error
+
+turn:
+  # Radians where the turn command becomes standing
+  command_deadzone: 0.01
+  # Angular speed command per radian of heading error, capped at the skill's limit
+  heading_gain: 3.0
+
+walk_to_turn:
+  # The turn direction selects the turn_left or turn_right entry set
+  entry_index: 0
+  duration: 1.0
+  # Place the entry this far ahead of the robot along its current heading
+  start_distance: 0.0
+
+turn_to_walk:
+  entry_index: 0
+  duration: 1.0
+  start_distance: 0.0
+
+walk_to_push:
+  entry_index: 0
+  duration: 1.0
+  # Stop walking this far behind the push entry, then bridge to that entry
+  # The push entry remains controller.push_standoff metres from the box centre
+  start_distance: 0.0
+
+push_to_walk:
+  entry_index: 0
+  duration: 1.0
+  start_distance: 0.0

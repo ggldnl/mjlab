@@ -6,11 +6,12 @@ import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+import torch
 from rsl_rl.utils.logger import Logger
 
 from mjlab.rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
 from mjlab.tasks.bridging.baseline.evaluate import load_for_scene
-from mjlab.tasks.bridging.baseline.model import TransitionPolicy
+from mjlab.tasks.bridging.baseline.model import TransitionPolicy, training_distance
 from mjlab.tasks.bridging.baseline.play import Controller, PlayCfg
 from mjlab.tasks.bridging.baseline.scene import (
   Pair,
@@ -28,6 +29,68 @@ class TransitionRunnerCfg(RslRlBaseRunnerCfg):
   max_iterations: int = 1000
   save_interval: int = 25
   transition: LearningCfg = field(default_factory=LearningCfg)
+
+
+class TransitionPlayback(Controller):
+  """Task supplied playback information for the generic viewer's Info panel."""
+
+  def reset(self) -> None:
+    super().reset()
+    self.request_distance: float | None = None
+    self.handoff_s: float | None = None
+
+  def __call__(self, obs) -> torch.Tensor:
+    previous_phase, previous_ticks = self.phase, self.ticks
+    distance = self.scene.run.distance
+    action = super().__call__(obs)
+    if previous_phase == "source" and self.phase in ("transition", "incoming skill"):
+      self.request_distance = distance
+    if previous_phase != "incoming skill" and self.phase == "incoming skill":
+      self.handoff_s = (
+        previous_ticks * self.scene.env.step_dt
+        if previous_phase == "transition"
+        else 0.0
+      )
+    return action
+
+  def get_info(self, env_idx: int) -> str:
+    scene = self.scene
+    active = (
+      scene.source
+      if self.phase == "source"
+      else scene.target_skill
+      if self.phase == "incoming skill"
+      else "none (execution failed)"
+      if self.phase == "failed"
+      else "transition"
+    )
+    gap = float(
+      torch.linalg.vector_norm(
+        scene.run.target[env_idx, :2] - scene.robot.data.root_link_pos_w[env_idx, :2]
+      )
+    )
+    request = (
+      "waiting" if self.request_distance is None else f"{self.request_distance:.2f} m"
+    )
+    elapsed = (
+      self.ticks * scene.env.step_dt if self.phase == "transition" else self.handoff_s
+    )
+    transition = "not started" if elapsed is None else f"{elapsed:.2f} s"
+    placement = (
+      f"<br/><strong>Reference anchor:</strong> {scene.cfg.placement_distance:.2f} m ahead at reset"
+      if scene.cfg.pair == "walk2jump"
+      else ""
+    )
+    return (
+      f"{active}<br/><strong>Phase time:</strong> {self.ticks * scene.env.step_dt:.2f} s"
+      f"<br/><strong>Ghost:</strong> nominal {scene.target_skill} entry {scene.cfg.entry}, fixed in world"
+      f"{placement}<br/><strong>Ghost gap now (XY):</strong> {gap:.2f} m"
+      f"<br/><strong>Gap at switch request (XY):</strong> {request}"
+      f"<br/><strong>Automatic trigger:</strong> {self.distance:.2f} m"
+      f"<br/><strong>Transition time:</strong> {transition} (limit {self.duration_s:.2f} s)"
+      "<br/><strong>Transition inputs:</strong> physical state and next skill; no target state"
+      "<br/><strong>Handoff:</strong> learned stop or maximum length; no requirement to reach the ghost"
+    )
 
 
 class TransitionRunner:
@@ -139,7 +202,7 @@ class TransitionRunner:
       learn_time=record["learn_s"],
       loss_dict={"ppo": record["ppo_loss"], "proximity": record["proximity_loss"]},
       learning_rate=self.settings.learning_rate,
-      action_std=model.log_std.detach().clamp(-5, 1).exp(),
+      action_std=model.log_std.detach().exp(),
       rnd_weight=None,
     )
 
@@ -192,15 +255,19 @@ class TransitionRunner:
     if self.model is None or self.scene is None:
       raise ValueError("Load a transition checkpoint before playback")
     self.env.unwrapped.manager_visualizers["transition_target"] = self.scene.run
-    return Controller(
+    distance = training_distance(self.metadata)
+    if distance is None:
+      distances = self.metadata["config"]["distances"]
+      distance = distances[len(distances) // 2]
+    return TransitionPlayback(
       self.scene,
       self.model,
       PlayCfg(
         checkpoint=self.checkpoint,
         scene=self.scene.cfg,
         seed=self.cfg["seed"],
-        distance=self.settings.distances[len(self.settings.distances) // 2],
-        duration_s=self.settings.durations[len(self.settings.durations) // 2],
+        distance=distance,
+        duration_s=self.settings.max_transition_steps * self.scene.env.step_dt,
       ),
     )
 

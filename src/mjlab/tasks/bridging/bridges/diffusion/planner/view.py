@@ -4,6 +4,8 @@ Run:
 
     uv run python -m mjlab.tasks.bridging.bridges.diffusion.planner.view \
       --checkpoint logs/rsl_rl/g1_diffusion_kinematic_planner/<run>/model_30000.pt
+
+    Add --robot t1 for a T1 checkpoint, motion corpus and display model
 """
 
 import tyro

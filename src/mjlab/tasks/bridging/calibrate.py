@@ -221,13 +221,17 @@ def tracking_quality(
 
 
 def translate_history(
-  history: torch.Tensor, target: torch.Tensor, distance: float
+  history: torch.Tensor, target: torch.Tensor, distance: float | torch.Tensor
 ) -> torch.Tensor:
   """Place the outgoing state exactly distance metres before a fixed entry"""
-  forward = quat_apply(yaw_quat(target[:, 3:7]), target.new_tensor([[1.0, 0.0, 0.0]]))
+  forward = quat_apply(
+    yaw_quat(target[:, 3:7]),
+    target.new_tensor([[1.0, 0.0, 0.0]]).expand(len(target), -1),
+  )
   reference = history[:, -1, :7]
   placed = torch.cat((reference[:, :3].clone(), yaw_quat(target[:, 3:7])), dim=-1)
-  placed[:, :2] = target[:, :2] - distance * forward[:, :2]
+  offset = distance[:, None] if isinstance(distance, torch.Tensor) else distance
+  placed[:, :2] = target[:, :2] - offset * forward[:, :2]
   return torch.stack(
     [resume.place(frame, reference, placed) for frame in history.unbind(1)], dim=1
   )

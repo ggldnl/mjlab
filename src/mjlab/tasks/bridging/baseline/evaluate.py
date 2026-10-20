@@ -20,7 +20,11 @@ from mjlab.tasks.bridging.baseline.metrics import (
   quality,
   summarize,
 )
-from mjlab.tasks.bridging.baseline.model import TransitionPolicy, fingerprint
+from mjlab.tasks.bridging.baseline.model import (
+  TransitionPolicy,
+  fingerprint,
+  training_distance,
+)
 from mjlab.tasks.bridging.baseline.scene import SceneCfg, TransitionScene
 
 Method = Literal["transition", "direct", "diffusion", "mixed", "imitation", "cvae"]
@@ -66,9 +70,9 @@ def load_for_scene(
 class EvalCfg:
   checkpoint: Path
   scene: SceneCfg = field(default_factory=SceneCfg)
-  methods: tuple[Method, ...] = ("transition", "direct", "diffusion")
-  distances: tuple[float, ...] = (0.2, 0.4, 0.6)
-  durations: tuple[float, ...] = (0.4, 0.8, 1.2)
+  methods: tuple[Method, ...] = ("transition", "direct")
+  distances: tuple[float, ...] | None = None
+  durations: tuple[float, ...] = (2.0,)
   seeds: tuple[int, ...] = tuple(range(10000, 10030))
   bridge_checkpoint: Path | None = None
   tracker_checkpoint: Path | None = None
@@ -80,6 +84,8 @@ class EvalCfg:
     if not self.seeds or len(set(self.seeds)) != len(self.seeds) or min(self.seeds) < 0:
       raise ValueError("seeds must be nonempty, nonnegative and unique")
     for values in (self.distances, self.durations):
+      if values is None:
+        continue
       if (
         not values
         or len(set(values)) != len(values)
@@ -112,7 +118,11 @@ def trial(
   if method == "nominal":
     scene.nominal()
   elif method != "direct":
-    scene.open_bridge(duration)
+    if method == "transition":
+      scene.hold_target()
+      scene.run.command.stop()
+    else:
+      scene.open_bridge(duration)
     budget = max(1, round(duration / scene.env.step_dt))
     for tick in range(budget + 1):
       if bool(scene.failed.any()):
@@ -121,11 +131,12 @@ def trial(
       if method == "transition":
         if policy is None:
           raise ValueError("transition requires a policy")
-        if tick == budget:
-          handoff, reason = True, "fixed_budget"
-          break
         scene.hold_target()
-        action, handoff = policy(scene.observe()), False
+        action, _, terminal = policy.act(scene.observe())
+        if bool(terminal.all()) or tick == budget - 1:
+          handoff = True
+          reason = "learned_termination" if bool(terminal.all()) else "transition_limit"
+          break
       else:
         action, handoff = scene.bridge_action(duration)
       if handoff:
@@ -173,9 +184,22 @@ def evaluate(cfg: EvalCfg) -> dict:
   policy, scene_cfg, metadata = load_for_scene(cfg.checkpoint, cfg.scene)
   # Keep the evaluation seeds separate from every training and bootstrap episode
   train_cfg = metadata["config"]
+  distance = training_distance(metadata)
+  distances = cfg.distances or (
+    (distance,) if distance is not None else tuple(train_cfg["distances"])
+  )
+  if (
+    distance is not None
+    and "transition" in cfg.methods
+    and any(not math.isclose(value, distance) for value in distances)
+  ):
+    raise ValueError("Transition evaluation must use the fixed training distance")
   used = range(
     train_cfg["seed"],
-    train_cfg["seed"] + train_cfg["bootstrap_batches"] + train_cfg["iterations"],
+    metadata.get(
+      "training_seed_end",
+      train_cfg["seed"] + train_cfg["bootstrap_batches"] + train_cfg["iterations"],
+    ),
   )
   if any(seed in used for seed in cfg.seeds):
     raise ValueError("Evaluation seeds overlap training seeds")
@@ -187,7 +211,7 @@ def evaluate(cfg: EvalCfg) -> dict:
   scene = TransitionScene(scene_cfg)
   try:
     channels, floors = scene.channels, scene.floors
-    for distance in cfg.distances:
+    for distance in distances:
       for seed in cfg.seeds:
         row = trial(scene, "nominal", seed, distance, 0.0)
         if not row["success"]:
@@ -211,7 +235,7 @@ def evaluate(cfg: EvalCfg) -> dict:
         name: {"path": path, "sha256": fingerprint(Path(path))}
         for name, path in scene.comparison_checkpoints.items()
       }
-      for distance in cfg.distances:
+      for distance in distances:
         for duration in cfg.durations:
           cell = []
           for seed in cfg.seeds:
@@ -261,8 +285,8 @@ def evaluate(cfg: EvalCfg) -> dict:
     "comparison_artifacts": comparison_artifacts,
     "channels": channels,
     "floors": floors.cpu().tolist(),
-    "protocol_version": 2,
-    "protocol": "Native bridge termination within budget; metrics conditional on successful matched runs",
+    "protocol_version": 3,
+    "protocol": "Learned transition termination with upstream forced cap; native bridge termination within budget; matched successful metrics",
     "handoff_discontinuity_unit": "rad",
     "target_error_channels": list(scene.run.command.error_names),
     "nominal": list(nominal.values()),

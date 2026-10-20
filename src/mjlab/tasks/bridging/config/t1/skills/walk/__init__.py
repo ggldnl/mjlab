@@ -1,6 +1,12 @@
-"""T1 walking defaults to the stock flat velocity task via WALK_TASK_ID.
+"""T1 continuous walking and walking a requested distance followed by a stop.
 
-Mjlab-T1-Walk-Natural remains available as an optional LAFAN style variant.
+Sokoban uses Mjlab-T1-Walk-Distance, logging under t1_walk_distance. It adds
+remaining distance, lateral error and heading error to the observations.
+Train it fresh with uv run train Mjlab-T1-Walk-Distance --env.scene.num-envs 4096.
+Continuous checkpoints cannot be resumed into the distance task.
+
+WALK_TASK_ID still names the stock flat velocity task. Mjlab-T1-Walk-Natural
+remains the continuous LAFAN style variant.
 
 The stock velocity task walks, but mechanically: its reward only asks for the commanded
 velocity and some regularity, so PPO settles on the cheapest gait that satisfies it. Here a
@@ -39,13 +45,17 @@ from __future__ import annotations
 from dataclasses import replace
 
 from mjlab.rl import RslRlOnPolicyRunnerCfg
-from mjlab.tasks.bridging.config.t1.skills.walk.walk_env_cfg import t1_walk_env_cfg
+from mjlab.tasks.bridging.config.t1.skills.walk.walk_env_cfg import (
+  t1_walk_distance_env_cfg,
+  t1_walk_env_cfg,
+)
 from mjlab.tasks.registry import register_mjlab_task
 from mjlab.tasks.velocity.config.t1.rl_cfg import booster_t1_ppo_runner_cfg
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 
 WALK_TASK_ID = "Mjlab-Velocity-Flat-Booster-T1"
 NATURAL_WALK_TASK_ID = "Mjlab-T1-Walk-Natural"
+DISTANCE_WALK_TASK_ID = "Mjlab-T1-Walk-Distance"
 
 
 def walk_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
@@ -58,5 +68,13 @@ register_mjlab_task(
   env_cfg=t1_walk_env_cfg(),
   play_env_cfg=t1_walk_env_cfg(play=True),
   rl_cfg=walk_ppo_runner_cfg(),
+  runner_cls=VelocityOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id=DISTANCE_WALK_TASK_ID,
+  env_cfg=t1_walk_distance_env_cfg(),
+  play_env_cfg=t1_walk_distance_env_cfg(play=True),
+  rl_cfg=replace(walk_ppo_runner_cfg(), experiment_name="t1_walk_distance"),
   runner_cls=VelocityOnPolicyRunner,
 )

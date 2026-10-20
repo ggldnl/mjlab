@@ -1,18 +1,44 @@
 # T1 Sokoban
 
-The T1 uses three skills: standard flat walking, conditioned turns in place,
-and forward pushing. The controller requests only forward speed from walking;
-direction changes use the turn policy. Train the predefined mjlab flat task:
+The T1 uses three skills: walking a requested distance and stopping, conditioned
+turns in place, and forward pushing. Walking observes its remaining distance,
+lateral error and heading error so it can learn braking and a settled stop.
+Direction changes use the turn policy. Train the distance walking task:
 
 ```sh
-uv run train Mjlab-Velocity-Flat-Booster-T1 --env.scene.num-envs 4096 --agent.run-name sokoban_flat --agent.logger tensorboard
+uv run train Mjlab-T1-Walk-Distance --env.scene.num-envs 4096 --agent.logger tensorboard --eval-video True --eval-video-interval 500 --eval-video-length 600
 ```
 
-Standard walks log under `logs/rsl_rl/t1_velocity`. This is the stock task,
-including its rewards, command ranges and velocity curriculum, without the
-LAFAN style reward. The natural variant remains available through the explicit
-`--walk-task Mjlab-T1-Walk-Natural` override. Other stock T1 velocity tasks share
-the `t1_velocity` experiment, so pin the flat checkpoint when recording and running.
+This is a fresh training run: the new goal observations make continuous walking
+checkpoints incompatible. New runs log under `logs/rsl_rl/t1_walk_distance`.
+The task samples distances from 0.25 to 4 m, plus standing episodes, and trains
+both moving and holding the final position. Tune the range with
+`--env.commands.twist.distance-range '(0.25, 4.0)'`. It retains the natural walking
+style library at `data/t1_walk_style/frames.npz`; build it with
+`uv run python -m mjlab.tasks.bridging.config.t1.skills.walk.dataset` if absent.
+
+Distance walking matches the motion library only on the legs and waist. A
+separate arm posture reward keeps shoulders and elbows near their home pose,
+allowing small arm swings without rewarding the extended pushing posture.
+The gait rewards target 6 cm foot clearance, reward supported swings and useful
+airtime, and penalize sliding and both feet leaving the ground together.
+These changes affect only `Mjlab-T1-Walk-Distance`.
+
+Existing distance walk checkpoints can resume with these revised rewards;
+observations, actions and the home pose are unchanged. Restart a running training
+process to load them. Check the new gait after training and rebuild the walk
+selector set from the checkpoint selected for the demo.
+
+The demo selects the latest distance walking checkpoint by default. Pin one
+with `--walk-checkpoint`. The continuous `Mjlab-T1-Walk-Natural` and stock
+`Mjlab-Velocity-Flat-Booster-T1` tasks remain available with `--walk-task`.
+G1 policies and bridge training are unchanged.
+
+To play a fixed 2 m walk followed by a stop:
+
+```powershell
+uv run play Mjlab-T1-Walk-Distance --env.commands.twist.distance-range '(2.0, 2.0)' --env.commands.twist.rel-standing-envs 0.0
+```
 
 The turn policy observes a scalar remaining angle in radians, plus the requested
 angular speed. Training targets cover minus 180 to plus 180 degrees. Heading and
@@ -38,16 +64,20 @@ refuses sets recorded with another task, or with another checkpoint when one is
 pinned. Old `data/sokoban/*_entries.npz` files are no longer read.
 
 ```powershell
-$walk = "logs/rsl_rl/t1_velocity/<flat-run>/model_29999.pt"
+$walk = "logs/rsl_rl/t1_walk_distance/<trained-run>/model_29999.pt"
 $turn = "logs/rsl_rl/t1_turn/<tested-run>/model_3000.pt"
 $push = "logs/rsl_rl/t1_push/<tested-run>/model_1200.pt"
 uv run python -m mjlab.tasks.bridging.selector --robot t1 --checkpoints walk $walk turn_left $turn turn_right $turn push $push
 uv run python -m mjlab.tasks.bridging.config.t1.demos.sokoban.run --level example --walk-checkpoint $walk --turn-checkpoint $turn --push-checkpoint $push --bridge diffusion --viewer viser
 ```
 
-Both commands choose the latest checkpoints in the registered experiments.
-For repeatable runs, pin the same paths in both. The selector records 32 future
-states after every entry point.
+Pin the same paths in both commands. The selector records 32 future states after
+every entry point. Rebuild the entry points after changing the walking task or checkpoint.
+To replace only walking while keeping the existing turn and push entries:
+
+```powershell
+uv run python -m mjlab.tasks.bridging.selector --robot t1 --sets "('walk',)" --checkpoints walk $walk
+```
 
 `--robot g1` selects `Mjlab-G1-Walk-Straight`, `Mjlab-G1-Turn` and `Mjlab-G1-Push`.
 Only `--bridge no-op` works on the G1 for now: the selector's G1 table holds no
@@ -61,6 +91,38 @@ uv run python -m mjlab.tasks.bridging.config.t1.demos.sokoban.run --robot g1 --l
 ```
 
 `--walk-task` and `--turn-task` override the defaults.
+
+## Bridge switches
+
+Edit [config.yml](config.yml) to select the entry point, bridge duration and
+distance for each switch: `walk_to_turn`, `turn_to_walk`, `walk_to_push` and
+`push_to_walk`. Supply `--config path/to/config.yml` to use another file.
+Omitted switches or fields keep the defaults.
+
+```yaml
+turn_to_walk:
+  entry_index: 0
+  duration: 1.0
+  start_distance: 0.0
+```
+
+`entry_index` is a zero based index within the incoming skill's selector set.
+The turn direction selects `turn_left` or `turn_right`. `duration` is seconds;
+rounded to the nearest control step, normally 0.02 s. The demo transfers control
+to the incoming skill at that deadline regardless of
+endpoint accuracy. The endpoint check remains diagnostic and never delays or
+advances the handoff. The `no-op` bridge still transfers immediately.
+
+`start_distance` is metres between the bridge's start and target along the entry
+heading. For `walk_to_push`, the controller approaches a point this far behind
+the push entry before bridging to it. For other switches, the entry is placed
+this far ahead of the robot when the switch starts. Zero preserves an entry at
+the current position. The push entry stays `--controller.push-standoff` metres
+from the box centre, default 1 m. Other walking and settling settings remain
+available through `--controller.*`.
+
+The console prints all four switch settings at startup. Invalid entry indices
+and durations outside the selected planner's range are rejected before playback.
 
 ## Levels and plans
 
@@ -107,6 +169,28 @@ uv run train Mjlab-T1-Diffusion-Universal-Tracker --agent.run-name sokoban
 uv run python -m mjlab.tasks.bridging.bridges.diffusion.planner.train --robot t1 --output logs/rsl_rl/t1_diffusion_kinematic_planner/sokoban
 ```
 
+The default bridge filter now uses T1 limits for tilt, height, root and joint
+speed, acceleration and short flights. G1 keeps its original broad filter.
+If the T1 corpus already exists, refresh all its masks, including existing
+stitched clips, without retargeting:
+
+```powershell
+uv run python -m mjlab.tasks.bridging.bridges.dataset.motion_capture.build --robot t1 --filter-only True
+uv run python -m mjlab.tasks.bridging.bridges.dataset.motion_graph.build --robot t1
+uv run train Mjlab-T1-Diffusion-Universal-Tracker --agent.run-name sokoban_filtered
+uv run python -m mjlab.tasks.bridging.bridges.diffusion.planner.train --robot t1 --output logs/rsl_rl/t1_diffusion_kinematic_planner/sokoban_filtered
+```
+
+The T1 stitch builder now leaves 1 s before the seam, enough for the planner's
+50-frame history. Old 0.4 s lead-ins supplied no stitched planner windows, so
+rebuild the T1 stitches once after refreshing the masks.
+
+Use fresh tracker and planner runs, then pin both new checkpoints in the demo.
+Filtering does not update old checkpoints. Evaluate the new tracker on held-out
+T1 windows before running the puzzle; kinematic filtering alone cannot guarantee
+that the robot can execute every retained motion. See the
+[filter limits and workflow](../../../../bridges/diffusion/README.md).
+
 The corpus builder needs the local BABEL labels, AMASS CMU/KIT tarballs and
 SMPL-X body model described in its module docstring. It downloads LAFAN if
 missing and keeps existing retargeted clips. See the
@@ -120,16 +204,20 @@ uv run python -m mjlab.tasks.bridging.selector --robot t1
 uv run python -m mjlab.tasks.bridging.config.t1.demos.sokoban.run --level six_boxes --bridge diffusion --bridge-checkpoint logs/rsl_rl/t1_diffusion_kinematic_planner/sokoban/model_30000.pt --viewer viser
 ```
 
-The selector and demo select the newest local `t1_velocity`, `t1_turn` and `t1_push`
-checkpoints. The demo selects the newest T1 universal tracker checkpoint.
+Walking uses the newest local `t1_walk_distance` checkpoint by default;
+turn and push use the newest local `t1_turn` and `t1_push` checkpoints.
+The demo selects the newest T1 universal tracker checkpoint.
 To pin a run, supply `--walk-checkpoint`, `--turn-checkpoint`, `--push-checkpoint`, and, on the demo,
 `--tracker-checkpoint`, and pin the same skill checkpoints on the selector.
 Open the local Viser URL printed at startup to watch the T1.
 
 To test the policies before training the bridge, run the same map and plan with
 `--bridge no-op`; no entry points or diffusion checkpoints are needed.
-The grid solution does not guarantee physical completion: this puzzle includes
-1 m corridors around 1 m boxes, with no geometric clearance.
+The T1 demo uses visual walls with collisions disabled, allowing small box and
+robot offsets to overlap the corridor boundaries. Robot, box and floor contacts
+remain physical. G1 retains solid walls. The grid planner still treats walls as
+blocked cells. This demonstrates plan following with relaxed wall constraints;
+it does not establish physical feasibility in corridors with solid walls.
 
 Train the push skill:
 
@@ -179,9 +267,10 @@ The solver is supplied externally. Its adapter takes a `Board` and returns
 [{"skill": "push", "direction": "E", "cells": 3}]
 ```
 
-Directions are E, W, N, S. Walks may span multiple cells but are executed with
-cell waypoints. Consecutive forward pushes of the same box are merged into one
-variable distance push. The plan is checked against every crossed cell and
+Directions are E, W, N, S. Consecutive walks in the same direction are merged
+into one straight segment, without stops at intermediate cells. Consecutive
+forward pushes of the same box are merged into one variable distance push.
+The plan is checked against every crossed cell and
 must put every box on a goal before simulation starts. Boxes keep their index
 in `Board.boxes` throughout execution.
 
@@ -241,7 +330,7 @@ velocities, with the ground at height zero. The controller rotates and translate
 them to the required position; it does not reset or teleport the robot during
 handoffs.
 
-The walk checkpoint defaults to `Mjlab-T1-Walk-Natural`; change `--walk-task`
+The walk task defaults to `Mjlab-T1-Walk-Distance`; change `--walk-task`
 if needed. The shared scene preserves its actor observation contract in
 `walk`, the turn contract in `turn`, and the push contract in `push`.
 Only push reads the selected box. All policies must use identical joint actions
@@ -251,41 +340,56 @@ Walking stops and hands off to the turn skill when a direction change is needed.
 At startup, a standing robot runs the turn policy directly if the first action
 needs a different heading. There is no walk to turn bridge before any walking
 has occurred. Later skill handoffs still use the selected bridge.
-After turning settles, it hands back to straight walking. Walk never receives a
-sideways or angular command. If heading drifts outside tolerance, it stops before
-using the turn skill again. Outside the arrival tolerance, the controller turns
-toward the measured waypoint bearing and walks forward. This corrects lateral
-drift and overshoots without sideways or backward walking. Once it arrives, it
-turns to the plan's cardinal heading before completing the waypoint. A turn
-target stays latched while the robot rotates, even if position drift changes the
-waypoint bearing. This is local correction within the planned cell route, not
-obstacle replanning. Each waypoint requires position, heading and
-low measured linear and angular speed for ``--controller.settle-seconds``.
-Cell arrival defaults to 0.25 m position error and 0.20 rad heading error,
-with 0.15 m/s settling speed and 0.2 seconds of settling.
-The display includes robot position, target errors and speeds.
-``--controller.position-gain`` controls the position correction strength. Increase
-it if a walking checkpoint stands still at small commanded velocities near a cell
-center; ``walk-speed`` caps the requested forward velocity.
+Consecutive walks in the same direction are merged into one straight segment.
+For example, north 1 m followed by north 1 m becomes one north 2 m segment.
+The controller turns once towards the plan's cardinal heading, then walks to
+the final cell centre without stopping at intermediate cells or turning to
+correct drift. The walk policy receives one latched destination. Remaining distance is
+measured along the planned axis from the observed robot position; it is not
+estimated from elapsed time or commanded speed.
 
-Learned bridge handoffs require the observed skill entry tolerances. The planned
-``--controller.bridge-seconds`` sets the generated path length, not the handoff
-time. If the path ends before the robot reaches its entry, the tracker keeps
-correcting toward the endpoint until ``--controller.bridge-timeout`` expires.
-``--controller.action-timeout`` is a safety limit for each cell waypoint or push,
+After the turn settles, the bridge targets the segment's starting cell centre
+and planned heading, rather than preserving errors left by the turn. Bridge
+handoff still occurs at its deadline, whatever the resulting pose. Walking
+then continues for the straight segment without corrective turns. The learned
+distance task owns braking and completion: it must remain within 0.04 m and
+0.05 rad of the target with linear and angular speed below 0.08 for 0.4 s.
+The controller waits for that settled completion signal. It does not repeatedly
+change the goal or cut the velocity command when crossing a distance threshold.
+Large misses time out instead of starting a corrective route or claiming success.
+The display shows remaining distance, lateral error, heading error and speed.
+
+Turn completion requires 0.02 rad heading error, 0.15 m/s linear speed and
+0.15 rad/s yaw speed for `--controller.settle-seconds`, default 0.2 s.
+The `turn` section of `config.yml` sets the T1 command's standing deadzone to
+0.01 rad and heading gain to 3, retaining the skill's 0.5 rad/s speed limit.
+These are demo settings and do not change turn training or G1 soccer.
+`--controller.position-gain`, `--controller.walk-speed` and
+`--controller.walk-position-tolerance` apply to continuous walking overrides.
+For the distance task, training and deployment share the command's speed,
+braking profile and completion tolerances.
+
+Learned bridges run for the switch's configured duration and then hand control
+to the incoming skill, including when the endpoint was missed. The tracker does
+not keep correcting after the deadline. `Within endpoint` in the display reports
+accuracy without controlling handoff. The old `--controller.bridge-seconds` and
+`--controller.bridge-timeout` options are replaced by each switch's `duration`
+in `config.yml`.
+``--controller.action-timeout`` is a safety limit for each straight segment or push,
 not a delay before issuing the next action.
 
-The walk only needs to arrive near the pushing cell. The push entry is placed
+The walk approaches the configured distance behind the push entry. That entry is placed
 relative to the physical box center and its nearest pushing face, one metre behind
 it by default (`--controller.push-standoff`). The bridge corrects the remaining
-position, heading and posture error. Push starts only when bridge feedback is ready
-and measured box relative errors meet `--controller.entry-position-tolerance`
-(0.08 m) and `--controller.entry-heading-tolerance` (0.10 rad).
-Wider cell tolerances do not weaken these handoff checks. The no-op baseline cannot
-perform this correction and fails if alignment is required.
+position, heading and posture error. Push starts at the bridge deadline regardless
+of the remaining error. The no-op baseline transfers immediately from its current pose.
 The controller advances only when the box is aligned and
 settled at the requested grid destination. Placement errors and timeouts stop
 execution and are reported. It does not silently snap boxes to cells or replan.
+Once walking reaches the next push approach, the controller starts its bridge
+without waiting for all boxes to realign with the grid. Stationary offsets do
+not correct themselves. The entry follows the selected box's actual position
+and face angle; the push destination remains on the planned grid.
 The Viser view shows active skill, bridge phase, plan progress and the current
 completion condition. A translucent cyan robot shows the bridge's full target
 state, with the recorded root height, orientation and joint pose, as in the
@@ -298,8 +402,6 @@ They are also shown in the native viewer. If hidden in
 Viser, turn on Debug Viz > Enabled in the scene display settings.
 Native and headless modes are also available.
 
-Exactly 1 m boxes in exactly 1 m corridors have no geometric clearance. Start
-with open puzzles while tuning lateral and orientation precision, then test
-narrow corridors. Symbolic solvability alone does not establish physical
-feasibility for a humanoid walking around a box.
+Exactly 1 m boxes in exactly 1 m corridors have no geometric clearance. With
+visual walls, the T1 demo tolerates overlap rather than testing that clearance.
 

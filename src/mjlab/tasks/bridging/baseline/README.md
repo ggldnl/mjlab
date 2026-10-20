@@ -1,422 +1,244 @@
-# Dedicated transition baseline
+# Transition policies: Lee et al. (ICLR 2019)
 
-Train one transition policy for one ordered pair of frozen skills, then compare
-it with the general bridge under the same initial conditions and deadline.
-The supplied scene adapter supports G1 `walk2jump`, `walk2kick` and `jump2walk`.
-Training, inference and evaluation live here; a named viewer entry point also
-lives alongside the existing G1 transition scripts. Existing skills and bridge
-implementations are reused without changes.
+This package ports the default **TP with dense proximity reward** architecture
+and transition learning code from
+[youngwoon/transition](https://github.com/youngwoon/transition), commit
+`79ab8e412b21df47779c97b4bef796d5be4a7660`, to PyTorch and the existing G1 skills.
+The upstream MIT notice is retained in `LICENSE.upstream`.
 
-## Literature and architecture
+The earlier adapted baseline has been replaced. Its goal conditioning, sigmoid
+predictor, larger networks, fixed duration handoff, measured success reward
+bonus and actor warm start are removed. **Old checkpoints require retraining.**
 
-The thesis explicitly selects **Lee et al., Composing Complex Skills by Learning
-Transition Policies, ICLR 2019**, in chapter 3, “Transition and Setup Policies”,
-and chapter 7, “Baselines”. See the [paper and project](https://youngwoon.github.io/transition/)
-and the authors' [description of proximity reward induction](https://sites.google.com/view/transitions-iclr2019).
+## What the controller learns
 
-This is an adaptation to the thesis protocol, rather than a reproduction of the
-original experiments:
+Given the physical state and the identity of the next primitive, the transition
+policy outputs a joint action and a stop/continue decision. It learns to enter
+any state from which the frozen next primitive succeeds. There is no requested
+endpoint in the policy or predictor inputs, no endpoint loss and no explicit
+state selector. The proximity predictor supplies rewards during training; the
+actor and its termination head control execution at inference.
 
-* The source and destination policies stay frozen
-* The actor, value network and proximity predictor are separate MLPs with hidden
-  sizes 256 and 128 and ELU activations
-* Inputs are the current root pose, root velocities, joint positions and
-  velocities, and previous action. Root position is relative to the scene origin,
-  so the actor can learn the fixed arena geometry. No target state, entry index,
-  future motion, reference features, or deadline enters these networks
-* The actor outputs joint position actions in the same convention as the skills
-* Initial predictor examples come from actual destination executions, starting
-  at nominal entries, perturbed entries, and direct source interruptions
-* Successful transition endpoints receive proximity 1; earlier states of that
-  transition receive `0.95 ** steps_remaining`. Failed attempts receive 0.
-  The predictor uses balanced regression minibatches and retains bootstrap
-  examples while adding recent on policy attempts
-* PPO receives `D(next_state) - D(state)` plus a terminal measured success bonus
-  of 1. Full finite episode returns use discount 1, preserving the telescoping
-  proximity reward. The predictor stays fixed during each PPO collection/update
-* The controller hands over at the requested deadline. There is no learned
-  termination network or action blending
+The primitive sequence is supplied by the environment, corresponding to the
+upstream `meta_oracle=True` default. This package does not learn a meta policy.
+One destination controller is trained in each pair experiment. It is not
+conditioned on predecessor identity; broader predecessor distributions can
+reuse that destination controller architecture.
 
-The original transition actor has two 32 unit tanh layers, a Gaussian action
-output, and a two class softmax output for learned termination. Its separate
-proximity predictor has two 96 unit ReLU layers. Lee et al. already train the
-transition policies with PPO. They share one transition policy across all
-predecessors of a destination skill, rather than specializing to an ordered pair.
-See appendix B.4 and B.5 of the [paper](https://openreview.net/forum?id=rygrBhC5tQ).
+## Architecture and source mapping
 
-The larger networks, terminal measured success bonus, per pair specialization,
-and external deadline control are adaptation choices. The proximity approach comes from Lee et al.; this is
-not the discriminator and Q network architecture of Byun and Perrault or the
-target value reward of Tidd et al. The predictor is a training signal, not a
-calibrated estimate of the probability that a skill will succeed.
+| Local implementation | Upstream reference |
+| --- | --- |
+| `model.py`: action/termination trunk | `rl/transition_policy.py`, `_build`: two 32-unit tanh layers, shared by action and stop heads |
+| `model.py`: action output | Gaussian mean head, learned state independent log standard deviation initialized to zero |
+| `model.py`: termination output | Two-class categorical softmax head; sample in training, argmax at evaluation |
+| `model.py`: value network | Separate two 32-unit tanh layers and scalar output |
+| `model.py`: initialization | Per-output normalized Gaussian weights, scale 1 for hidden/value layers and 0.01 for action/termination heads |
+| `model.py`: predictor | `rl/proximity_predictor.py`: two 96-unit ReLU layers, linear scalar output, Xavier initialization |
+| `model.py`: statistics | `baselines/common/mpi_running_mean_std.py`: independent policy/predictor running sums, squared sums, epsilon 0.01, variance floor 0.01, normalized inputs clipped to [-5, 5] |
+| `learning.py`: PPO | `rl/trainer.py`, `policy_loss_ppo` and `_update_one_trans_policy` |
+| `learning.py`: replay/predictor | `rl/proximity_predictor.py`, `Replay`; `rl/trainer.py`, `_update_one_proximity_predictor_network` |
+| `rollout.py`: action and handoff timing | `rl/rollouts.py`, `traj_segment_generator` |
+| `model.py`: rewards, labels, GAE | `rl/rollouts.py` and `rl/trainer.py` |
 
-By default, one actor trains across **all selected entries of its destination
-skill**. Use `--entries "(0,)"` for a fixed entry ablation. Each batch samples one
-entry, trigger distance, and duration. Source states come from executing the
-source policy, not from the bridge's motion corpus. Small initial joint position
-and velocity perturbations provide repeatable differences between seeds.
+Predictor training uses **raw linear outputs**, with the sum of the separate
+success and failure mean squared losses. Outputs are clipped to [0, 1] only
+when used for rewards. The predictor has no primitive one-hot input; each
+predictor belongs to one destination primitive. The actor and critic append
+the destination identity after normalizing physical observations.
 
-## Prerequisites
+## Exact transition timing and rewards
 
-Run from the repository root with the repository's existing environment. A CUDA
-GPU, trained source/destination policies, their motion assets and a selector
-table are required. If necessary, build the table first:
+The implementation follows the supplied code's default behavior, including
+its details that a simplified next-state potential formula would miss:
 
-```sh
-uv run python -m mjlab.tasks.bridging.selector --robot g1
-```
+1. At each decision, evaluate proximity on the **current, pre-action state**
+2. Sample the Gaussian action and categorical termination decision
+3. If termination is chosen, record it and hand over **without applying that
+   sampled transition action**
+4. Otherwise apply the action and record current proximity minus previous
+   proximity; previous proximity starts at zero for every transition
+5. Add the final current proximity as a terminal bonus, as enabled by upstream
+   `proximity_dense_diff_rew_final_bonus=True`
 
-Policies default to the newest checkpoints in their existing experiment folders.
-For a controlled experiment, pin `--scene.source-checkpoint` and
-`--scene.target-checkpoint` when training. Their resolved paths and SHA256 hashes,
-and the selector table's hash, are saved. Evaluation reloads those same skills
-and rejects changed files or incompatible scene settings.
+There is **no measured downstream success bonus in PPO rewards**. Measured
+success labels predictor examples after executing the incoming frozen skill.
+The predictor remains unchanged throughout collection.
 
-## Train
+The upstream maximum is 100 decision records. The last record is forced to
+terminate, so at most 99 transition actions are applied. This is a maximum,
+not a scheduled handover time. At 50 Hz, it permits at most 1.98 s of transition
+motion. Simulator failure after an action also closes the trace.
 
-Use the standard mjlab launchers:
+Successful terminal states get label 1. The upstream label loop gives the
+immediately preceding action state label 1 as well, then 0.95, 0.95 squared,
+and so on backward. Failed traces receive zero. Success and failure have
+separate buffers, each bounded to one million online states. Successful
+primitive demonstrations remain in a permanent initiation buffer. Success
+sampling splits equally between collected and online states when both exist.
+
+## Optimization defaults
+
+Defaults follow `rl/config.py`:
+
+* PPO learning rate 1e-4, clip 0.2, Gaussian entropy coefficient 1e-3
+* 10 PPO epochs, minibatches of 64, up to 256 minibatches per epoch
+* Transition GAE with gamma 0.99 and lambda 0.98; value loss coefficient 1
+* PPO probability ratio includes termination; action probability is ignored
+  for terminal records. Categorical entropy is not added to the objective
+* Policy statistics update before copying the PPO reference distribution
+* Predictor learning rate 1e-4, 5 epochs, one success and one failure minibatch
+  per step, gradient norm limit 10 for both optimizers
+* Adam epsilon placement matches the authors' MpiAdam; missing minibatches
+  advance Adam with zero gradients as in the reference
+* 10,000 simulator steps per collection, rounded up to complete G1 batches
+
+`--lr-decay True` follows the configuration default. The authors' Walker
+`ours` launch script overrides it to False; use `--lr-decay False` for that
+experiment setting. Bootstrap collection, iteration count and checkpoint/log
+frequency are operational G1 settings rather than claims about paper results.
+
+## G1 environment adaptation
+
+The supported scenes are `walk2jump`, `walk2kick` and `jump2walk`. They load
+existing frozen G1 checkpoints and reuse the existing robot action convention.
+Physical observations contain root pose and world velocities, joint positions
+and velocities, and the previous action. Root position is relative to the
+scene origin. Quaternions are WXYZ. These are G1 observations, not a claim to
+reproduce Walker2d/Jaco observation vectors or their acceleration channels.
+
+The existing entry table initializes successful demonstration executions and
+sets the incoming reference phase and scene geometry required by G1 tracking
+skills. Its endpoint state is also retained for **evaluation diagnostics** and
+for competing goal-driven bridges. It is never fed to the transition networks.
+The incoming reference is held until handoff, then the unchanged frozen skill
+executes it. This reference setup is part of the G1 environment; the transition
+policy does not search the entry table or choose a reference phase.
+
+Training keeps that reference, and the kick's ball, fixed in the world for the
+whole episode. Scoring keeps that scene only for walk2kick, where the ball
+decides where the kick must start. The walk2jump and jump2walk transitions are
+scored with the incoming reference placed on the robot when they hand over
+(`TransitionScene.place_incoming`), the same as an instant switch.
+
+Training supports independent handoff times in a batch. Once an environment
+hands over, its incoming reference progresses while the other environments
+continue their transitions. Success is checked over the configured downstream
+horizon using falls and the incoming skill's native termination conditions.
+Walk and jump use two seconds or the remaining reference, whichever is shorter.
+Kick uses the full remaining reference and also requires foot–ball contact after
+handoff and peak forward ball speed greater than 0.5 m/s. Contact before handoff,
+a missed ball, a weak or backward strike, or a native failure produces a failure
+label. The same predicate labels bootstrap demonstrations and online transitions.
+These binary outcomes train the proximity predictor; ball speed is not added to
+the PPO reward. The threshold matches the scoring package's effective kick rule.
+
+This is a source-based port of the default transition architecture and learner,
+not a reproduction of the original full-task experiments. It uses PyTorch,
+single-host vector simulation, G1 scenes and their success signals instead of
+TensorFlow 1, MPI, Walker2d and Jaco. It implements the default softmax/LSGAN/dense
+configuration, not the upstream optional sigmoid, WGAN, sparse reward or learned
+meta-controller ablations. Initial random draws are not bitwise identical across
+frameworks. These differences must be reported with experimental results.
+
+## Train and play
+
+Use the repository environment and existing G1 assets. The entry table can be
+built with `uv run python -m mjlab.tasks.bridging.selector --robot g1`.
 
 ```sh
 uv run train Mjlab-G1-Walk2Jump-Transition
 uv run train Mjlab-G1-Walk2Kick-Transition
 uv run train Mjlab-G1-Jump2Walk-Transition
-```
-
-These registered tasks use the existing proximity reward PPO trainer through a
-custom runner, with the standard RSL logger, W&B, timestamped experiment folders,
-saved configuration and numbered checkpoints. The PPO objective and actor
-inputs are unchanged. The auxiliary proximity predictor still needs its own
-bootstrap and updates; this is not an unmodified RSL PPO runner.
-
-The defaults are now **1000 iterations**, 64 environments and a checkpoint every
-25 iterations. For a shorter experiment:
-
-```sh
-uv run train Mjlab-G1-Walk2Jump-Transition --agent.max-iterations 100 --agent.run-name quick
-```
-
-Training writes to `logs/rsl_rl/g1_walk2jump_transition/<timestamp>/` and logs
-to the configured W&B project, `mjlab` by default. Set `--agent.wandb-project`
-and `--agent.run-name` as for other tasks. `--agent.logger tensorboard` works
-without W&B. Algorithm and scene options live under `--agent.transition`, for
-example `--agent.transition.warm-start-updates 2000` or
-`--agent.transition.scene.source-checkpoint PATH`. Set parallelism with
-`--env.scene.num-envs`.
-
-Inspect these curves:
-
-| Curve | Meaning |
-| --- | --- |
-| `Transition/success_rate` | Fraction of the training batch with valid downstream execution |
-| `Train/mean_reward` | Transition return, averaged over recent batches |
-| `Loss/ppo`, `Loss/proximity` | PPO objective and predictor fit; low loss alone does not establish successful transitions |
-| `Transition/handoff_jump_rad` | Mean RMS joint command change at handoff |
-| `Target/*` | Eight endpoint error channels |
-| `Downstream/*` | Incoming tracking or walking goal RMS errors |
-| `Perf/*` | Collection time, update time and throughput |
-
-The console reports bootstrap progress, each iteration and an ETA after the
-first update. Bootstrap cost is paid once and does not decrease with the
-iteration limit. A shorter run is a time budget, not a convergence guarantee.
-Use separate evaluation seeds for the final comparison.
-
-Watch the newest checkpoint with the standard player:
-
-```sh
 uv run play Mjlab-G1-Walk2Jump-Transition --viewer viser
 ```
 
-Or choose a checkpoint explicitly, including an older baseline checkpoint:
+On Windows, run both walk2kick and jump2walk sequentially overnight:
 
-```sh
-uv run play Mjlab-G1-Walk2Jump-Transition --checkpoint-file logs/baseline/walk2jump/seed_0/model.pt --viewer viser
+```powershell
+.\scripts\train_transitions_overnight.ps1
 ```
 
-Standard playback runs walk, transition and jump automatically using the saved
-scene, trigger distances and durations. Its checkpoint selector can load newer
-saves while training continues. The manual viewer in the next section remains
-available for interruptions at arbitrary walking phases. `train --video` and
-`play --video` use the standard recorders; `--eval-video` is not supported by
-this scene bound controller. Training currently uses one GPU per run.
-Checkpoints contain inference weights and provenance, not optimizer and replay
-state, so `--agent.resume` is rejected explicitly.
+Defaults are 1000 iterations per task, 64 environments and seed 0. Override with
+`-Iterations 1000 -NumEnvs 64 -Seed 0`. Training uses TensorBoard logging and the
+usual task checkpoint directories under `logs/rsl_rl`. Console logs also go to
+`logs/overnight`. The second job runs even if the first exits with an error.
+Keep the terminal open and disable automatic sleep while training.
 
-The standalone trainer remains compatible:
+The standard player's Info panel shows the active walk, transition or jump
+policy, the gap at the switch request, the current XY gap and the transition
+time. The nominal jump ghost stays fixed in the world. Its reference is anchored
+3 m ahead at reset by default; it is not moved when the switch is requested.
+Walking requests the switch at the configured gap (typically 0.4 m). The ghost
+is not a state input or a required endpoint of the transition policy.
+
+Standard training defaults to 64 environments, 1000 updates and saves every
+25 updates. The default keeps one incoming reference phase, `scene.entry`,
+fixed, so the G1 tracker setup does not change behind the state-only actor.
+The request distance is also fixed at 0.4 m throughout a run. Use
+`--agent.transition.distance 0.6` with the standard launcher, or `--distance 0.6`
+with the standalone trainer, to choose another fixed distance before training.
+Initial state perturbations remain enabled. The distance is saved in the
+checkpoint and used for automatic playback and scoring; it is not an actor input.
+The simulator triggers at control steps, and batched training uses the first
+robot's trigger time, so individual measured gaps can differ slightly.
+Use separate runs to compare different phases. Explicit `--entries` can change
+the sampled reference distribution, but does not add phase inputs to the actor.
+Standalone training exposes the same learner:
 
 ```sh
 uv run python -m mjlab.tasks.bridging.baseline.train --scene.pair walk2jump
-uv run python -m mjlab.tasks.bridging.baseline.train --scene.pair walk2kick
-uv run python -m mjlab.tasks.bridging.baseline.train --scene.pair jump2walk
 ```
 
-Defaults: 64 parallel environments, 1000 PPO updates, distances 0.2/0.4/0.6 m,
-durations 0.4/0.8/1.2 s, straight walking at 0.8 m/s. Bootstrap collection runs at
-least two batches per entry. Walking after a jump must use the velocity recorded
-with its selector entries; change `--scene.walk-speed` if your entries differ.
+Pin `--scene.source-checkpoint`, `--scene.target-checkpoint` and
+`--scene.selector-path` for experiments. Prefix these with `--agent.transition`
+when using the standard train launcher. Successful primitive trajectories are
+collected first; `--initiation-start` and `--initiation-end` select the portion
+retained as initiation examples. Their defaults are 0 and 1, matching the
+upstream configuration. The original Walker script uses skill-specific ends,
+including 0.4 for jumping; this requires validation for the G1 motions.
 
-The default output for the first command is
-`logs/baseline/walk2jump/seed_0/model.pt`, with `config.json` and `training.jsonl`
-alongside it. Run multiple training seeds, for example `--seed 1000` and
-`--seed 2000`, using distinct evaluation seeds. A new launch refuses to overwrite
-an existing run. Checkpoints contain inference weights and provenance, not
-optimizer/replay state for resuming interrupted training.
-
-For a standalone run already in progress, inspect its live records in PowerShell:
-
-```powershell
-Get-Content logs/baseline/walk2jump/seed_0/training.jsonl -Tail 10 -Wait
-```
-
-The old process keeps its original iteration budget and has no W&B logger.
-Changes to defaults apply to new runs. Its saved model can still be watched
-with either player. New standalone records also include reward, timing,
-downstream errors and handoff diagnostics.
-
-For a short pipeline check, not a trained research baseline:
+A short pipeline smoke run, not a trained baseline:
 
 ```sh
-uv run python -m mjlab.tasks.bridging.baseline.train --entries "(0,)" --num-envs 2 --iterations 2 --bootstrap-batches 2 --proximity-updates 2 --ppo-epochs 1 --output logs/baseline/smoke/model.pt
+uv run python -m mjlab.tasks.bridging.baseline.train --entries "(0,)" --num-envs 2 --iterations 1 --bootstrap-batches 1 --num-rollouts 1 --num-trans-batches 1 --ppo-epochs 1 --proximity-epochs 1 --max-transition-steps 10 --output logs/baseline/faithful_smoke/model.pt
 ```
 
-Look for improving measured `success_rate` in the training log, then choose
-hyperparameters on a separate validation seed set. Predictor loss alone is not
-evidence of a useful transition. The launch fails if bootstrap collection finds
-no successful or no failed destination execution, because the initiation
-boundary would otherwise be unidentifiable.
+Standalone runs refuse to overwrite existing outputs. Checkpoints include
+network/statistics state, primitive identity, source revision, configuration,
+training seed range and skill/table hashes. They support inference, not optimizer
+and replay resume. Old version 1 adapted checkpoints are rejected explicitly.
+Previous walk2kick checkpoints trained with a distance distribution or kick
+tracking-only labels must be retrained. Earlier version 2 walk2jump and jump2walk
+checkpoints trained at multiple distances remain valid for playback and scoring.
+Their automatic playback uses the middle training distance; the scorer retains
+the nine-distance evaluation grid. No fixed-distance retraining is required for
+those two pairs.
 
-If training never finds a successful transition, an optional initialization uses
-only successful frozen destination executions collected during bootstrap:
+## Evaluate
 
 ```sh
-uv run python -m mjlab.tasks.bridging.baseline.train --scene.pair jump2walk --entries "(0,)" --distances "(0.6,)" --warm-start-updates 2000 --output logs/baseline/jump2walk_initialized/model.pt
+uv run python -m mjlab.tasks.bridging.baseline.evaluate --checkpoint logs/baseline/walk2jump/seed_0/model.pt --methods "('transition','direct')" --output data/baseline/walk2jump.json
 ```
 
-This fits the actor to the incoming skill's actions over those successful
-trajectories before PPO starts. It uses no bridge demonstrations. The default
-is zero initialization updates, preserving existing training behavior. Record
-this choice when comparing trained baselines. Low predictor loss with zero
-measured transition success is not a working baseline.
+By default, evaluation uses a 2 s maximum and held-out seeds 10000–10029.
+To compare diffusion, use `--methods "('transition','direct','diffusion')"`
+and pin its planner and tracker checkpoints. Choose `--durations` within that
+bridge's supported range, for example `"(0.4,0.8,1.2)"`. Shorter limits are
+explicit evaluation interventions; the standard training limit remains 100
+records. Training seeds, including all collected episodes, cannot overlap the
+evaluation seeds.
 
-## Use
+Methods replay the same source request and scene. The transition chooses its
+own endpoint and early handoff; the bridge receives the externally selected
+endpoint. Consequently, **endpoint error is a diagnostic, not the transition
+policy's training objective or success criterion**. Report that information
+difference when comparing methods.
 
-Watch the trained walk to jump transition with a manual switch button:
-
-```sh
-uv run python -m mjlab.tasks.bridging.config.g1.tests.transitions.walk2jump_transition
-```
-
-This loads `logs/baseline/walk2jump/seed_0/model.pt`; override `--checkpoint`
-for another training run. Open the Viser address printed in the terminal. The
-viewer starts paused: press **Play**, then **Start transition** at any walking
-phase. The next control tick uses the transition actor without resetting or
-teleporting the robot. The jump reference waits at the selected entry until
-the transition budget expires, then the frozen jump policy takes control.
-There is no learned termination signal. The target ghost and status display
-show the requested entry and the active controller. Use the viewer's **Reset**
-button to repeat with the same seed. Changing the incoming entry restarts the
-trial on the next simulation tick; only trained entries are offered.
-
-For the same automatic distance trigger as the bridge viewer:
-
-```sh
-uv run python -m mjlab.tasks.bridging.config.g1.tests.transitions.walk2jump_transition --automatic True --distance 0.4 --duration-s 0.8 --seed 10000
-```
-
-The controls accept manual interruptions at any walking phase, but the actor's
-training still samples specific interruption distances. Requests outside that
-distribution are robustness tests, not guaranteed successful transitions. The
-target placement and walking command remain those used for training. A fair
-numerical comparison replays the exact same source state and target to both
-methods, as the evaluator below does; visually clicking at roughly the same
-time does not establish matched conditions.
-
-The generic player supports every baseline pair and defaults to automatic
-triggering:
-
-```sh
-uv run python -m mjlab.tasks.bridging.baseline.play --checkpoint logs/baseline/walk2jump/seed_0/model.pt --distance 0.4 --duration-s 0.8
-```
-
-Use `--viewer none` to run a single headless trial. For another pair, add
-`--scene.pair walk2kick` or `--scene.pair jump2walk`. Choose a trained destination
-entry with `--scene.entry 1`. Any changed training scene settings must also be
-supplied at playback/evaluation.
-
-For another controller, `TransitionPolicy.load(path, device)` returns the actor
-and its metadata. Call the actor on a batch consisting of the 13 root state
-values, all joint positions, all joint velocities, and the last raw action, in
-the same joint order as the skills. Quaternions are WXYZ; velocities are in world
-coordinates; subtract the scene origin from root position. The actor returns
-the deterministic mean action. Keep the actor's saved normalization and give
-control to the destination skill when the external deadline expires. Reference
-placement and destination phase remain the controller's responsibility.
-
-## Evaluate numerically
-
-This evaluates the transition policy, direct switch, and diffusion bridge on a
-matched grid, including a nominal destination rollout for every seed/distance:
-
-```sh
-uv run python -m mjlab.tasks.bridging.baseline.evaluate --checkpoint logs/baseline/walk2jump/seed_0/model.pt --output data/baseline/walk2jump_entry0.json
-```
-
-Defaults use entry 0, 30 seeds (10000 through 10029), three distances and three
-durations. For the thesis's original three seed grid:
-
-```sh
-uv run python -m mjlab.tasks.bridging.baseline.evaluate --checkpoint logs/baseline/walk2jump/seed_0/model.pt --seeds "(10000,10001,10002)" --output data/baseline/walk2jump_entry0_three_seeds.json
-```
-
-For publication results, pin `--bridge-checkpoint` and `--tracker-checkpoint`.
-When omitted, the existing bridge loaders choose their newest checkpoints;
-the evaluator records the resolved paths and SHA256 hashes. Embedded tracker
-checkpoints are supported. To compare another bridge, use for example
-`--methods "('transition','direct','mixed')"` and its checkpoint. Learned
-`imitation` and `cvae` bridges are also supported. When supplying one explicit
-bridge checkpoint, compare one bridge architecture per invocation.
-
-Without a trained bridge checkpoint, test just the baseline and direct switch:
-
-```sh
-uv run python -m mjlab.tasks.bridging.baseline.evaluate --checkpoint logs/baseline/walk2jump/seed_0/model.pt --methods "('transition','direct')" --output data/baseline/walk2jump_direct.json
-```
-
-Repeat with `--scene.entry 1`, etc., and for each skill pair and independent
-training seed. Keep the same evaluation seeds for every comparison. Training
-and bootstrap seeds cannot overlap evaluation seeds. The entry must have been
-included in the baseline training set.
-
-JSON contains all trials, nominal references, per cell summaries, paired
-differences, and empirical reachability. Before the switch request, every method
-is initialized from the same captured robot state, actions, recent history and
-object states. `request_state` and `requested_target` make this matching auditable.
-A CSV with the same stem contains the
-individual trials, including raw error vectors. Existing results are never
-silently replaced. Channel order and physical floors are stored in the JSON.
-
-## Scores and interpretation
-
-After handover, run the destination for two seconds, or until the remaining
-reference ends. A switch fails if the source times out, the robot falls during
-the source/transition/destination execution, or any of the destination skill's
-native failure conditions fires. Failure is sticky; recovering later does not
-erase it. Tracking reference completion is not failure. Nonfinite simulation
-states stop the experiment instead of producing misleading scores.
-
-For jump and kick, record RMS errors for torso position/orientation, mean body
-position/orientation, and joint position/velocity. Use the existing tracking
-command's error definitions, including its vector norms for joint errors. For
-walking, use RMS errors in forward/lateral velocity and yaw rate instead.
-
-On successful executions, the thesis quality score is:
-
-```text
-Q = 1 / mean_c(max(error[c], floor[c]) / max(nominal[c], floor[c]))
-```
-
-Tracking floors are 0.01 m, 0.02 rad, 0.01 m, 0.02 rad, 0.05 rad, 0.1 rad/s.
-Walking floors are 0.05 m/s, 0.05 m/s, 0.05 rad/s. `Q = 1` matches nominal
-execution; `Q = 0.5` means twice the average normalized error. Q can exceed one.
-Each nominal rollout uses the same seed as its paired switch; nominal failure
-stops evaluation so that a broken reference cannot distort the denominator.
-
-Read these quantities together:
-
-| Output | Meaning |
-| --- | --- |
-| `quality_mean`, `quality_std` | Quality conditional on that method's successful executions |
-| `overall` | Per method successful execution diagnostics; use `paired` for comparisons |
-| `success_rate`, `success_rate_ci95` | Survival/tracking success and Wilson 95% interval |
-| `endpoint_errors`, `endpoint_rate` | Eight physical handoff channels and fraction within twice the training tolerances |
-| `duration_mean_s` | Actual time between request and handover |
-| `action_jump_mean_rad` | RMS change in the applied joint position command, after action scaling, offsets and clipping |
-| `action_jump_max_mean_rad` | Largest absolute command change, averaged over retained executions |
-| `target_error_mean` | Mean of each of the eight physical target error channels |
-| `downstream_rms_mean` | Mean of each downstream tracking or velocity goal error |
-| `paired` | Both methods' three metrics on exactly the same successful matched cases, plus paired differences |
-| `matched_successes`, `attempted_pairs`, `retained_fraction` | Which fraction of the attempted cases contributes to the conditional comparison |
-| `reachable` | Tested cells in which every seed succeeds; an empirical set, not a guarantee |
-| `reach` | Largest tested successful distance per method and duration, or null if none |
-
-The comparison uses only cases where both methods terminate in time and the
-incoming skill remains valid for the same evaluation horizon. Failed attempts
-and missing bridge terminations stay in `trials`, but do not enter the three
-conditional metrics. An empty matched set has null metrics, not zero quality.
-This selection does not establish comparative reliability. The retained seeds
-and counts are reported for every cell and for the overall paired comparison.
-
-The three quantities are taken from the same selected pairs, not from separate
-successful subsets for each method. A completed reference counts as valid; a
-missing bridge termination, a fall or a native skill failure does not. Target
-box membership is not used for selection. This is the protocol in thesis
-section 6.2.5. Reports with `protocol_version: 2` measure command changes in
-radians; older reports used raw action differences and should not be mixed with
-these results.
-
-Endpoint error is useful for
-the bridge's target reaching task, but a transition policy can enter a different
-successful state and should not be declared a failure for missing the target box.
-Survival/tracking success for kicking is not a separate measurement of ball
-contact or goal scoring.
-
-## Scope of the experiment
-
-The policy specializes to a pair and the fixed scene/entry distribution used
-for training. It does not generalize to arbitrary moved targets merely because
-the general bridge does. Training batches synchronize their interruption time
-to the first robot; their physical source states differ through initial noise.
-Numerical evaluation uses one environment per trial, so the distance trigger is
-individual and its actual distance is recorded.
-
-All methods use a hard deadline with no capture grace. The transition policy
-uses the full budget; a bridge may hand over earlier. At the deadline its native
-termination signal is queried without taking another physics step. If it still
-does not terminate, no incoming execution is forced and that attempt cannot
-qualify. Direct switching has zero transition duration, so its
-results are repeated across duration cells for alignment of the comparison grid.
-
-Testing unseen skill pairs is the general bridge's generalization experiment;
-this specialized baseline must be retrained for each pair. To test the premise
-about corpus coverage, report the comparison separately for covered and poorly
-covered transitions using a split defined before evaluation. This package does
-not claim to estimate dataset coverage from a rollout.
-
-## Feasibility pilot
-
-A small jump to walk pilot completed on 2026-10-15 with the first walk entry,
-a 0.6 m trigger distance, durations 0.4/0.8 s and test seeds 20000/20001/20002.
-All six pairs qualified. Their recorded source states match exactly. The
-baseline actor was initialized with 2000 supervised updates on successful
-frozen walk executions and then received one PPO update. This checks that the
-study can run; it is not a converged baseline or a final comparison of methods.
-
-The report and trial CSV are `data/baseline/study_jump2walk_matched.json` and
-`data/baseline/study_jump2walk_matched.csv`. Its preserved baseline is
-`logs/baseline/study_jump2walk/model.pt`. At a duration of 0.8 s:
-
-| Conditional mean over three matched seeds | Dedicated policy | Diffusion bridge |
-| --- | ---: | ---: |
-| Downstream velocity goal quality Q | 0.688 | 0.762 |
-| RMS joint command discontinuity, rad | 0.067 | 0.154 |
-| Target root position error, m | 0.116 | 0.025 |
-
-The report contains all eight target errors and all downstream error channels.
-In this pilot, better target accuracy does not imply a smaller handoff command
-change. No benchmark conclusion should be drawn from these three seeds or from
-this briefly trained baseline. The checked walk to jump checkpoint had zero
-successful executions in its three test runs and therefore supplies no matched
-comparison yet.
-
-To repeat the feasibility comparison with new test seeds and a new output name:
-
-```sh
-uv run python -m mjlab.tasks.bridging.baseline.evaluate --checkpoint logs/baseline/study_jump2walk/model.pt --scene.pair jump2walk --methods "('transition','diffusion')" --distances "(0.6,)" --durations "(0.4,0.8)" --seeds "(20010,20011,20012)" --output data/baseline/jump2walk_repeat.json
-```
-
-Run the focused checks with:
-
-```sh
-uv run pytest tests/test_transition_baseline.py
-uv run ty check src/mjlab/tasks/bridging/baseline
-uv run pyright src/mjlab/tasks/bridging/baseline
-```
+The evaluator retains raw JSON/CSV trials, downstream success rates and Wilson
+intervals, physical endpoint errors, joint command discontinuities in radians,
+actual transition duration and downstream RMS errors. Quality normalizes errors
+against a paired nominal frozen-skill execution. Paired conditional metrics
+retain only cases where both methods succeed and report the retained seeds;
+interpret them alongside unconditional success rates. Protocol version 3 uses
+learned termination and must not be pooled with earlier fixed-duration results.

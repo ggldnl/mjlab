@@ -434,7 +434,7 @@ def select_lafan(
 
 @dataclass(frozen=True)
 class MotionFilterCfg:
-  """Optional limits applied to retargeted G1 kinematics."""
+  """Optional limits applied to retargeted robot kinematics."""
 
   min_root_up: float | None = None
   min_root_height: float | None = None
@@ -445,6 +445,9 @@ class MotionFilterCfg:
   max_foot_penetration: float | None = 0.06
   min_airborne_time_s: float = 0.04
   """Only flights at least this long are rejected, and then all of their frames."""
+  max_joint_speed: float | None = None
+  max_root_acceleration: float | None = None
+  max_joint_acceleration: float | None = None
 
 
 QUALITY_MOTION_FILTER = MotionFilterCfg(
@@ -460,7 +463,7 @@ LOCOMOTION_MOTION_FILTER = MotionFilterCfg(
   max_root_angular_speed=5.0,
   max_airborne_foot_height=0.05,
 )
-# Kinematic windows for the bridge: crouch, squat, hop, fast gaits and the
+# G1 bridge windows: crouch, squat, hop, fast gaits and the
 # accelerating and braking phases around a jump are all kept.
 # Flights of 0.25 s or longer (jumps, leaps) are cut; running strides
 # (p90 0.16 to 0.21 s) and hops or skips (p90 0.24 s) are not.
@@ -471,14 +474,28 @@ BRIDGE_MOTION_FILTER = MotionFilterCfg(
   max_airborne_foot_height=0.05,
   min_airborne_time_s=0.25,
 )
+T1_BRIDGE_MOTION_FILTER = MotionFilterCfg(
+  min_root_up=0.94,
+  min_root_height=0.60,
+  max_root_xy_speed=1.0,
+  max_root_z_speed=0.35,
+  max_root_angular_speed=2.0,
+  max_joint_speed=6.0,
+  max_root_acceleration=6.0,
+  max_joint_acceleration=150.0,
+  max_airborne_foot_height=0.03,
+  min_airborne_time_s=0.04,
+)
 DEFAULT_MOTION_FILTER = BRIDGE_MOTION_FILTER
 FilterProfile = Literal["bridge", "quality", "locomotion", "none"]
 
 
-def motion_filter(profile: FilterProfile) -> MotionFilterCfg | None:
-  """Return the named filter profile."""
+def motion_filter(
+  profile: FilterProfile, robot: str = "unitree_g1"
+) -> MotionFilterCfg | None:
+  """Return the named profile, with gentler bridge motion for the T1."""
   if profile == "bridge":
-    return BRIDGE_MOTION_FILTER
+    return T1_BRIDGE_MOTION_FILTER if robot == "booster_t1" else BRIDGE_MOTION_FILTER
   if profile == "quality":
     return QUALITY_MOTION_FILTER
   if profile == "locomotion":
@@ -504,10 +521,13 @@ def motion_bad_frames(
   body_pos: np.ndarray,
   body_quat: np.ndarray,
   fps: float,
-  cfg: MotionFilterCfg = DEFAULT_MOTION_FILTER,
+  cfg: MotionFilterCfg | None = None,
   robot: str = "unitree_g1",
 ) -> dict[str, np.ndarray]:
   """Mark bad frames once so every kinematic consumer uses the same cuts."""
+  if cfg is None:
+    cfg = motion_filter("bridge", robot)
+    assert cfg is not None
   if fps <= 0 or cfg.min_airborne_time_s <= 0:
     raise ValueError("fps and airborne time must be positive")
   if len(state) != len(body_pos) or len(state) != len(body_quat):
@@ -540,6 +560,30 @@ def motion_bad_frames(
         np.linalg.vector_norm(state[:, 10:13], axis=-1) > cfg.max_root_angular_speed
       )
     bad_frames["fast_root"] = fast
+  joints = (state.shape[1] - 13) // 2
+  joint_vel = state[:, 13 + joints :]
+  if cfg.max_joint_speed is not None:
+    bad_frames["fast_joints"] = np.asarray(
+      (np.abs(joint_vel) > cfg.max_joint_speed).any(axis=1), dtype=bool
+    )
+  if cfg.max_root_acceleration is not None:
+    acceleration = (
+      np.gradient(state[:, 7:10], axis=0) * fps
+      if len(state) > 1
+      else np.zeros_like(state[:, 7:10])
+    )
+    bad_frames["root_acceleration"] = (
+      np.linalg.vector_norm(acceleration, axis=-1) > cfg.max_root_acceleration
+    )
+  if cfg.max_joint_acceleration is not None:
+    acceleration = (
+      np.gradient(joint_vel, axis=0) * fps
+      if len(state) > 1
+      else np.zeros_like(joint_vel)
+    )
+    bad_frames["joint_acceleration"] = np.asarray(
+      (np.abs(acceleration) > cfg.max_joint_acceleration).any(axis=1), dtype=bool
+    )
   if cfg.max_airborne_foot_height is not None:
     event_frames = max(1, round(cfg.min_airborne_time_s * fps))
     airborne = foot_height.min(axis=1) > cfg.max_airborne_foot_height
@@ -555,7 +599,7 @@ def filter_window_starts(
   body_quat: np.ndarray,
   columns: int,
   fps: float,
-  cfg: MotionFilterCfg = DEFAULT_MOTION_FILTER,
+  cfg: MotionFilterCfg | None = None,
   robot: str = "unitree_g1",
 ) -> tuple[np.ndarray, dict[str, int]]:
   """Return window starts accepted by the selected kinematic limits."""

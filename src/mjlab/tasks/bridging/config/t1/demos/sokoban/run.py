@@ -30,6 +30,7 @@ from mjlab.tasks.bridging.config.t1.demos.sokoban.board import (
   Board,
   compile_plan,
 )
+from mjlab.tasks.bridging.config.t1.demos.sokoban.config import CONFIG_PATH, Handoffs
 from mjlab.tasks.bridging.config.t1.demos.sokoban.controller import (
   Controller,
   Policy,
@@ -37,6 +38,7 @@ from mjlab.tasks.bridging.config.t1.demos.sokoban.controller import (
 )
 from mjlab.tasks.bridging.config.t1.skills.push import PUSH_TASK_ID
 from mjlab.tasks.bridging.config.t1.skills.turn import TURN_TASK_ID
+from mjlab.tasks.bridging.config.t1.skills.turn.command import TurnCommandCfg
 from mjlab.tasks.bridging.selector import paths
 from mjlab.tasks.bridging.selector.table import EntryTable
 from mjlab.tasks.bridging.tests.stage import load_policy
@@ -48,6 +50,7 @@ PLANS = Path(__file__).with_name("plans")
 
 @dataclass
 class Config:
+  config: Path = CONFIG_PATH
   robot: Literal["t1", "g1"] = "t1"
   level: str | None = None
   map: Path | None = None
@@ -66,6 +69,9 @@ class Config:
   viewer: Literal["viser", "native", "none"] = "viser"
   steps: int = 15000
   device: str | None = None
+  seed: int = 0
+  result_path: Path | None = None
+  result_seeds: tuple[int, ...] = ()
   dry: bool = False
   controller: Settings = field(default_factory=Settings)
 
@@ -174,18 +180,22 @@ def selector_entries(
   width = 13 + 2 * len(env.scene["robot"].joint_names)
   entries = {}
   for key, name in sets.items():
-    entry = table.of(name)[0]
-    if entry.future_states is None or entry.future_mask is None:
-      raise ValueError(f"The selector's {name} set has no future states")
-    clip = np.concatenate((entry.state[None], entry.future_states), axis=0)[:future]
-    if (
-      len(clip) < future
-      or not entry.future_mask[: future - 1].all()
-      or clip.shape[1] != width
-      or not np.isfinite(clip).all()
-    ):
-      raise ValueError(f"The selector's {name} set needs {future} finite states")
-    entries[key] = torch.as_tensor(clip, device=env.device, dtype=torch.float32)
+    clips = []
+    for entry in table.of(name):
+      if entry.future_states is None or entry.future_mask is None:
+        raise ValueError(f"The selector's {name} set has no future states")
+      clip = np.concatenate((entry.state[None], entry.future_states), axis=0)[:future]
+      if (
+        len(clip) < future
+        or not entry.future_mask[: future - 1].all()
+        or clip.shape[1] != width
+        or not np.isfinite(clip).all()
+      ):
+        raise ValueError(f"The selector's {name} set needs {future} finite states")
+      clips.append(clip)
+    entries[key] = torch.as_tensor(
+      np.stack(clips), device=env.device, dtype=torch.float32
+    )
   return entries
 
 
@@ -193,15 +203,21 @@ def main(cfg: Config) -> None:
   from mjlab import tasks as _tasks
 
   del _tasks
+  handoffs = Handoffs.load(cfg.config)
   board = Board.parse(level_path(cfg).read_text(encoding="utf-8"))
   plan = compile_plan(board, read_plan(cfg, board))
   for index, instruction in enumerate(plan, 1):
     print(
       f"{index}: {instruction.action.skill} {instruction.action.direction} {instruction.action.cells} cells"
     )
+  for name, handoff in handoffs.switches.items():
+    print(
+      f"{name}: entry index={handoff.entry_index}, distance={handoff.start_distance:g} m, duration={handoff.duration:g} s"
+    )
   if cfg.dry:
     return
   device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+  torch.manual_seed(cfg.seed)
   assert cfg.walk_task is not None
   push_task = PUSH_TASK_ID
   if cfg.robot == "g1":
@@ -223,9 +239,31 @@ def main(cfg: Config) -> None:
       },
       skills,
     )
-  env = ManagerBasedRlEnv(
-    sokoban_env_cfg(board, cfg.walk_task, push_task, cfg.turn_task), device=device
+    for name, handoff in handoffs.switches.items():
+      incoming = name.split("_to_")[1]
+      names = ("turn_left", "turn_right") if incoming == "turn" else (incoming,)
+      for entry_set in names:
+        if entry_set not in sets:
+          continue
+        count = len(table.of(sets[entry_set]))
+        if handoff.entry_index >= count:
+          raise ValueError(
+            f"{name}.entry_index {handoff.entry_index} is outside the {count} {entry_set} entries"
+          )
+  env_cfg = sokoban_env_cfg(
+    board,
+    cfg.walk_task,
+    push_task,
+    cfg.turn_task,
+    wall_collisions=cfg.robot == "g1",
   )
+  env_cfg.seed = cfg.seed
+  if cfg.robot == "t1" and cfg.turn_task is not None:
+    turn_cfg = env_cfg.commands["turn"]
+    assert isinstance(turn_cfg, TurnCommandCfg)
+    turn_cfg.heading_tolerance = handoffs.turn.command_deadzone
+    turn_cfg.heading_control_stiffness = handoffs.turn.heading_gain
+  env = ManagerBasedRlEnv(env_cfg, device=device)
   wrapped = RslRlVecEnvWrapper(env)
   try:
     policies: dict[str, Policy] = {
@@ -258,8 +296,16 @@ def main(cfg: Config) -> None:
         checkpoint=cfg.bridge_checkpoint or latest_planner_checkpoint(cfg.robot),
       )
       planner = diffusion.load(device)
-      if planner.robot != cfg.robot:
-        raise ValueError(f"Sokoban requires a {cfg.robot.upper()} bridge checkpoint")
+      if planner.robot != cfg.robot or not np.isclose(planner.fps, 1.0 / env.step_dt):
+        raise ValueError(
+          f"Sokoban requires a {cfg.robot.upper()} bridge checkpoint at {1.0 / env.step_dt:g} Hz"
+        )
+      for name, handoff in handoffs.switches.items():
+        ticks = round(handoff.duration * planner.fps)
+        if not planner.min_steps <= ticks <= planner.max_steps:
+          raise ValueError(
+            f"{name}.duration is outside the planner range {planner.min_steps / planner.fps:g} to {planner.max_steps / planner.fps:g} seconds"
+          )
       tracker = LearnedTrackerExecutor.load(
         env, cfg.tracker_checkpoint, robot=cfg.robot
       )
@@ -271,7 +317,15 @@ def main(cfg: Config) -> None:
     if table is not None:
       entries = selector_entries(table, sets, env, future)
     controller = Controller(
-      env, board, plan, policies, runtime, entries, history_length, cfg.controller
+      env,
+      board,
+      plan,
+      policies,
+      runtime,
+      entries,
+      history_length,
+      cfg.controller,
+      handoffs,
     )
     environment_visualizers = env.update_visualizers
 
@@ -281,6 +335,26 @@ def main(cfg: Config) -> None:
 
     env.update_visualizers: Callable[[DebugVisualizer], None] = draw_scene
     if cfg.viewer == "none":
+      if cfg.result_path is not None:
+        from mjlab.tasks.bridging.demo_metrics import run, trials
+        from mjlab.tasks.bridging.evaluate import save
+
+        if cfg.result_seeds:
+          trials(
+            wrapped,
+            controller,
+            cfg.steps,
+            "sokoban",
+            cfg.result_path,
+            cfg.bridge,
+            cfg.result_seeds,
+          )
+          return
+        result = run(wrapped, controller, cfg.steps, "sokoban")
+        result.update(seed=cfg.seed, method=cfg.bridge, level=cfg.level or "default")
+        save(cfg.result_path, result)
+        print(result)
+        return
       obs = wrapped.get_observations()
       for _ in range(cfg.steps):
         if controller.done:

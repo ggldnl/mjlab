@@ -10,8 +10,8 @@
    is dropped, not split.
 
 The loaders only cut windows that cross the seam from these clips (motions.crosses_seam),
-so a window always holds a transition the recorded clips do not. The defaults leave room
-for the longest window of the planner and the tracker, with their history and future.
+so a window always holds a transition the recorded clips do not. The T1 defaults leave
+room for the longest planner and tracker windows, with their history and future.
 
 Output: data/motion_graph/<robot>/{train,val}/stitched/*.npz, the BABEL and LAFAN layout
 plus stitch_seams (first frame of the second piece), stitch_pieces (the two source clips)
@@ -42,7 +42,6 @@ import tyro
 
 import mjlab
 from mjlab.tasks.bridging.bridges.dataset.motion_capture.filters import (
-  BRIDGE_MOTION_FILTER,
   motion_bad_frames,
 )
 from mjlab.tasks.bridging.bridges.dataset.motion_graph import clips, graph
@@ -62,8 +61,8 @@ class BuildCfg:
   robot: str = "g1"
   train_clips: int = 10000
   val_clips: int = 2000
-  before_s: float = 0.4
-  """First clip, up to the seam. Covers a window opening 0.3 s before it, plus history."""
+  before_s: float | None = None
+  """First clip up to the seam. Defaults to 1 s for T1, 0.4 s for G1."""
   after_s: float = 2.7
   """Second clip, from the seam. Covers a 2 s window, plus the tracker's 32 step future."""
   blend_s: float = 0.2
@@ -152,7 +151,7 @@ def finish(
     ],
     axis=-1,
   )
-  bad = motion_bad_frames(state, body_pos, body_quat, fps, BRIDGE_MOTION_FILTER, robot)
+  bad = motion_bad_frames(state, body_pos, body_quat, fps, robot=robot)
   if np.logical_or.reduce(tuple(bad.values())).any():
     return None
   arrays = {
@@ -173,7 +172,8 @@ def build_split(cfg: BuildCfg, split: str, count: int, rng: np.random.Generator)
   files += clips.corpus_files("LAFAN", cfg.robot, split)
   corpus = clips.load(files)
   fps = corpus.fps
-  before = round(cfg.before_s * fps)
+  before_s = 1.0 if cfg.robot == "t1" else 0.4
+  before = round((before_s if cfg.before_s is None else cfg.before_s) * fps)
   after = round(cfg.after_s * fps)
 
   f = graph.frames(corpus, cfg.device)

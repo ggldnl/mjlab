@@ -1,4 +1,4 @@
-"""Execute a validated solver plan with guarded skill handoffs."""
+"""Execute a validated solver plan with timed bridge handoffs."""
 
 from __future__ import annotations
 
@@ -22,8 +22,10 @@ from mjlab.tasks.bridging.config.t1.demos.sokoban.board import (
   Board,
   Instruction,
 )
+from mjlab.tasks.bridging.config.t1.demos.sokoban.config import Handoff, Handoffs
 from mjlab.tasks.bridging.config.t1.skills.push.command import PushCommand
 from mjlab.tasks.bridging.config.t1.skills.turn.command import TurnCommand
+from mjlab.tasks.bridging.config.t1.skills.walk.distance import WalkDistanceCommand
 from mjlab.tasks.bridging.tests.stage import fresh_obs, state
 from mjlab.tasks.velocity.mdp import UniformVelocityCommand
 from mjlab.utils.lab_api.math import quat_apply, quat_mul, wrap_to_pi
@@ -35,16 +37,13 @@ Policy = Callable[[TensorDict], torch.Tensor]
 @dataclass(frozen=True)
 class Settings:
   position_tolerance: float = 0.25
-  heading_tolerance: float = 0.20
-  entry_position_tolerance: float = 0.08
-  entry_heading_tolerance: float = 0.10
+  heading_tolerance: float = 0.02
+  walk_position_tolerance: float = 0.05
   push_standoff: float = 1.0
   box_tolerance: float = 0.04
   box_yaw_tolerance: float = 0.04
   settled_speed: float = 0.15
   settle_seconds: float = 0.2
-  bridge_seconds: float = 1.0
-  bridge_timeout: float = 10.0
   action_timeout: float = 60.0
   walk_speed: float = 0.5
   position_gain: float = 3.0
@@ -82,6 +81,7 @@ class Controller:
     entries: dict[str, torch.Tensor] | None = None,
     history_length: int = 30,
     settings: Settings | None = None,
+    handoffs: Handoffs | None = None,
   ) -> None:
     if env.num_envs != 1 or history_length < 1:
       raise ValueError(
@@ -90,6 +90,7 @@ class Controller:
     self.env, self.board, self.plan = env, board, plan
     self.policies, self.bridge = policies, bridge
     self.entries, self.settings = entries or {}, settings or Settings()
+    self.handoffs = handoffs or Handoffs()
     self.history: deque[torch.Tensor] = deque(maxlen=history_length)
     self.entry_ghost: mujoco.MjModel | None = None
     self.reset()
@@ -106,10 +107,15 @@ class Controller:
     self.entering = "walk"
     self.prepared_index = -1
     self.expected_boxes = list(self.board.boxes)
-    self.walk_waypoint = 1
+    self.walk_aligned = False
+    self.walk_commanded = False
+    self.walk_target: torch.Tensor | None = None
+    self.walk_heading = 0.0
     self.starting = True
     self.feedback = ""
-    self._twist().vel_command_b.zero_()
+    self.handoff = Handoff()
+    self.bridge_duration = self.handoff.duration
+    self._hold_walk()
     if "turn" in self.policies:
       self._turn().set_angle(torch.zeros(1, device=self.env.device))
     for policy in self.policies.values():
@@ -170,7 +176,27 @@ class Controller:
   def _fail(self, reason: str) -> None:
     self.phase, self.reason = "failed", f"{reason}; {self.feedback}"
     self.skill = "walk"
-    self._twist().vel_command_b.zero_()
+    self._hold_walk()
+
+  def _hold_walk(self) -> None:
+    command = self._twist()
+    if isinstance(command, WalkDistanceCommand):
+      command.set_distance(command.heading_target.new_zeros(self.env.num_envs))
+      self.walk_commanded = False
+    else:
+      command.vel_command_b.zero_()
+
+  def _start_distance_walk(self) -> None:
+    command = self._twist()
+    if (
+      isinstance(command, WalkDistanceCommand)
+      and not self.walk_commanded
+      and self.walk_target is not None
+    ):
+      command.set_goal(
+        self.walk_target[None], self.walk_target.new_tensor([self.walk_heading])
+      )
+      self.walk_commanded = True
 
   def _twist(self) -> UniformVelocityCommand:
     command = self.env.command_manager.get_term("twist")
@@ -199,25 +225,27 @@ class Controller:
 
   def _walk_to(self, target: torch.Tensor, yaw: float) -> bool:
     position, heading = self._robot_pose()
-    delta = target - position
     twist = self._twist()
-    twist.vel_command_b.zero_()
-    distance = float(delta.norm())
-    travel_yaw = (
-      math.atan2(float(delta[1]), float(delta[0]))
-      if distance > self.settings.position_tolerance
-      else yaw
-    )
-    yaw_error = float(wrap_to_pi(delta.new_tensor(travel_yaw - heading)))
+    if isinstance(twist, WalkDistanceCommand) and self.walk_commanded:
+      target, yaw = twist.target_xy[0], float(twist.heading_target[0])
+    else:
+      self.walk_target, self.walk_heading = target.clone(), yaw
+    if not isinstance(twist, WalkDistanceCommand):
+      twist.vel_command_b.zero_()
+    delta = target - position
+    axis = delta.new_tensor([math.cos(yaw), math.sin(yaw)])
+    remaining = float(delta @ axis)
+    lateral = float(delta[0] * axis[1] - delta[1] * axis[0])
+    yaw_error = float(wrap_to_pi(delta.new_tensor(yaw - heading)))
     robot = self.env.scene["robot"].data
     speed = float(robot.root_link_lin_vel_w[0, :2].norm())
     turn_rate = abs(float(robot.root_link_ang_vel_w[0, 2]))
     if self.skill == "turn":
-      # Finish the latched rotation even if turning shifts the target bearing
+      # Finish the one turn requested for this straight segment
       yaw_error = float(self._turn().remaining[0])
     self.feedback = (
       f"Robot ({float(position[0]):.2f}, {float(position[1]):.2f}) | "
-      f"Target error {distance:.3f} m, heading {yaw_error:.3f} rad | "
+      f"Remaining {remaining:.3f} m, lateral error {lateral:.3f} m, heading {yaw_error:.3f} rad | "
       f"Speed {speed:.3f} m/s, turn {turn_rate:.3f} rad/s"
     )
     if self.skill == "turn":
@@ -229,9 +257,10 @@ class Controller:
       self.stable = self.stable + self.env.step_dt if ready else 0.0
       self.reason = f"Turn in place; heading error {yaw_error:.3f} rad"
       if self.stable >= self.settings.settle_seconds:
-        self._switch("walk", position, heading)
+        self.walk_aligned = True
+        self._switch("walk", self._xy(self.plan[self.index].start), yaw)
       return False
-    if abs(yaw_error) > self.settings.heading_tolerance:
+    if not self.walk_aligned and abs(yaw_error) > self.settings.heading_tolerance:
       self.stable = 0.0
       if "turn" not in self.policies:
         raise ValueError("Direction changes require a trained turn skill")
@@ -239,34 +268,49 @@ class Controller:
         speed <= self.settings.settled_speed
         and turn_rate <= self.settings.settled_speed
       ):
-        self._turn().set_heading(delta.new_tensor([travel_yaw]))
+        self._turn().set_heading(delta.new_tensor([yaw]))
         if self.starting:
           self.skill = self.entering = "turn"
           self.reason = "Start turning from standing"
         else:
           self._switch("turn", position, heading)
       return False
-    if (
-      turn_rate <= self.settings.settled_speed
-      and distance > self.settings.position_tolerance
-    ):
-      forward = self.settings.position_gain * (
-        math.cos(heading) * float(delta[0]) + math.sin(heading) * float(delta[1])
+    self.walk_aligned = True
+    self.reason = "Walk straight to segment end"
+    if isinstance(twist, WalkDistanceCommand):
+      self._start_distance_walk()
+      return bool(twist.arrived[0])
+    if remaining > self.settings.walk_position_tolerance:
+      twist.vel_command_b[0, 0] = min(
+        self.settings.walk_speed, self.settings.position_gain * remaining
       )
-      twist.vel_command_b[0, 0] = max(0.0, min(self.settings.walk_speed, forward))
     ready = (
-      distance <= self.settings.position_tolerance
-      and abs(yaw_error) <= self.settings.heading_tolerance
+      remaining <= self.settings.walk_position_tolerance
       and speed <= self.settings.settled_speed
       and turn_rate <= self.settings.settled_speed
     )
     self.stable = self.stable + self.env.step_dt if ready else 0.0
-    return self.stable >= self.settings.settle_seconds
+    if self.stable < self.settings.settle_seconds:
+      return False
+    if float(delta.norm()) > self.settings.walk_position_tolerance:
+      self._fail(
+        "Straight segment missed its destination; inspect turn and walk accuracy"
+      )
+      return False
+    return True
 
   def _switch(self, skill: str, xy: torch.Tensor, yaw: float) -> None:
     if skill == self.skill:
       return
-    self._twist().vel_command_b.zero_()
+    self.handoff = self.handoffs.switches[f"{self.skill}_to_{skill}"]
+    self.bridge_duration = (
+      round(self.handoff.duration / self.env.step_dt) * self.env.step_dt
+    )
+    if skill != "push":
+      xy = (
+        xy + xy.new_tensor([math.cos(yaw), math.sin(yaw)]) * self.handoff.start_distance
+      )
+    self._hold_walk()
     self.bridge.reset()
     self.entering = skill
     self.bridge_elapsed = 0.0
@@ -287,7 +331,12 @@ class Controller:
         name = "turn_left" if left else "turn_right"
       if name not in self.entries:
         raise ValueError(f"A recorded {name} entry is required for the learned bridge")
-      self.target = place_entry(self.entries[name], xy, yaw)
+      clips = self.entries[name]
+      if not 0 <= self.handoff.entry_index < len(clips):
+        raise ValueError(
+          f"{self.reason}: entry_index {self.handoff.entry_index} is outside the {len(clips)} {name} entries"
+        )
+      self.target = place_entry(clips[self.handoff.entry_index], xy, yaw)
       if self.target.shape[-1] != state(self.env).shape[-1]:
         raise ValueError("Entry joint layout does not match the robot")
       self.target[:, :, 2] += self.env.scene.env_origins[0, 2]
@@ -307,16 +356,6 @@ class Controller:
     )
     axis = box.root_link_pos_w.new_tensor([math.cos(yaw), math.sin(yaw)])
     return box.root_link_pos_w[0, :2] - self.settings.push_standoff * axis, yaw
-
-  def _push_entry_ready(self) -> bool:
-    assert self.target is not None
-    position, yaw = self._robot_pose()
-    target_xy, target_yaw = self._push_entry(self.plan[self.index])
-    return (
-      float((position - target_xy).norm()) <= self.settings.entry_position_tolerance
-      and abs(math.atan2(math.sin(yaw - target_yaw), math.cos(yaw - target_yaw)))
-      <= self.settings.entry_heading_tolerance
-    )
 
   def _box_ready(
     self, index: int, destination: tuple[int, int], approach: bool = False
@@ -347,7 +386,9 @@ class Controller:
       self.expected_boxes[instruction.box_index] = instruction.box_finish
     self.index += 1
     self.elapsed = self.stable = 0.0
-    self.walk_waypoint = 1
+    self.walk_aligned = False
+    self.walk_commanded = False
+    self.walk_target = None
     self.reason = "Action complete"
 
   @torch.no_grad()
@@ -361,7 +402,7 @@ class Controller:
     if self.done:
       return self.policies[self.skill](fresh_obs(self.env))
     self.elapsed += self.env.step_dt
-    if self.elapsed > self.settings.action_timeout:
+    if self.phase != "bridge" and self.elapsed > self.settings.action_timeout:
       self._fail("Action timed out; inspect placement or provide a new plan")
       return self.policies[self.skill](fresh_obs(self.env))
     if self.phase == "bridge":
@@ -369,29 +410,24 @@ class Controller:
       output = self.bridge(
         torch.stack(tuple(self.history), dim=1),
         self.target,
-        current.new_tensor(
-          [max(0.0, self.settings.bridge_seconds - self.bridge_elapsed)]
-        ),
+        current.new_tensor([max(0.0, self.bridge_duration - self.bridge_elapsed)]),
       )
-      self.bridge_elapsed += self.env.step_dt
       self.feedback = (
         f"Robot ({float(current[0, 0]):.2f}, {float(current[0, 1]):.2f}) | "
         f"Entry position error {float((current[0, :2] - self.target[0, 0, :2]).norm()):.3f} m | "
-        f"Entry ready: {bool(output.within_endpoint_box[0])} | "
-        f"Elapsed {self.bridge_elapsed:.2f} s"
+        f"Within endpoint: {bool(output.within_endpoint_box[0])} | "
+        f"Elapsed {self.bridge_elapsed:.2f}/{self.bridge_duration:.2f} s"
       )
-      entry_ready = self.entering != "push" or self._push_entry_ready()
       if (
-        type(self.bridge) is Bridge or bool(output.within_endpoint_box[0])
-      ) and entry_ready:
+        type(self.bridge) is Bridge
+        or self.bridge_elapsed + 1e-9 >= self.bridge_duration
+      ):
         self.skill, self.phase = self.entering, "execute"
+        self.elapsed = 0.0
+        if self.skill == "walk":
+          self._start_distance_walk()
         return self.policies[self.skill](fresh_obs(self.env))
-      if type(self.bridge) is Bridge:
-        self._fail("Push entry needs alignment; use a learned bridge")
-        return self.policies[self.skill](fresh_obs(self.env))
-      if self.bridge_elapsed > self.settings.bridge_timeout:
-        self._fail("Bridge did not reach the skill entry")
-        return self.policies[self.skill](fresh_obs(self.env))
+      self.bridge_elapsed += self.env.step_dt
       return output.action
     if self.index == len(self.plan):
       if self.skill != "walk":
@@ -399,7 +435,7 @@ class Controller:
         self._switch("walk", position, yaw)
       elif all(self._box_ready(i, cell) for i, cell in enumerate(self.expected_boxes)):
         self.phase, self.reason = "done", "All boxes settled on goals"
-        self._twist().vel_command_b.zero_()
+        self._hold_walk()
       else:
         self._fail("Final box configuration differs from the plan")
       return self.policies[self.skill](fresh_obs(self.env))
@@ -411,36 +447,28 @@ class Controller:
         position, heading = self._robot_pose()
         self._switch("walk", position, heading)
       else:
-        waypoint = (
-          instruction.start[0] + direction[0] * self.walk_waypoint,
-          instruction.start[1] + direction[1] * self.walk_waypoint,
-        )
-        if self._walk_to(self._xy(waypoint), yaw):
-          self.walk_waypoint += 1
-          self.elapsed = self.stable = 0.0
-          if self.walk_waypoint > instruction.action.cells:
-            self._complete()
+        if self._walk_to(self._xy(instruction.finish), yaw):
+          self._complete()
     elif self.skill in ("walk", "turn"):
       self.reason = "Align with pushing cell and box face"
-      if self._walk_to(self._xy(instruction.start), yaw):
+      entry_xy, entry_yaw = self._push_entry(instruction)
+      approach = (
+        entry_xy
+        - entry_xy.new_tensor([math.cos(entry_yaw), math.sin(entry_yaw)])
+        * self.handoffs.walk_to_push.start_distance
+      )
+      if self._walk_to(approach, entry_yaw):
         assert instruction.box_index is not None and instruction.box_start is not None
-        if not all(
-          self._box_ready(i, cell, approach=True)
-          for i, cell in enumerate(self.expected_boxes)
-        ):
-          self.reason = "Wait for boxes to settle in their expected cells"
-        else:
-          vector = current.new_tensor([direction])
-          # Lane and destination on the grid, never on the physical box
-          self._push().set_goal(
-            box_names(self.board)[instruction.box_index],
-            instruction.action.cells,
-            vector,
-            self._xy(instruction.box_start),
-          )
-          self.prepared_index = self.index
-          entry_xy, entry_yaw = self._push_entry(instruction)
-          self._switch("push", entry_xy, entry_yaw)
+        vector = current.new_tensor([direction])
+        # Lane and destination on the grid, never on the physical box
+        self._push().set_goal(
+          box_names(self.board)[instruction.box_index],
+          instruction.action.cells,
+          vector,
+          self._xy(instruction.box_start),
+        )
+        self.prepared_index = self.index
+        self._switch("push", entry_xy, entry_yaw)
     else:
       if self.prepared_index != self.index:
         position, heading = self._robot_pose()

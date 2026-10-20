@@ -53,7 +53,7 @@ CHANNELS = (
 
 def upper_body_mask(names: tuple[str, ...], device: str | torch.device) -> torch.Tensor:
   """Return the arm joint mask. The torso remains in the supporting chain."""
-  pattern = re.compile(r"shoulder|elbow|wrist")
+  pattern = re.compile(r"shoulder|elbow|wrist", re.IGNORECASE)
   return torch.tensor(
     [bool(pattern.search(name)) for name in names], device=device, dtype=torch.bool
   )

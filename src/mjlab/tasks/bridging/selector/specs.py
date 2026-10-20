@@ -41,7 +41,10 @@ from mjlab.tasks.bridging.config.t1.skills.push import PUSH_TASK_ID as T1_PUSH_T
 from mjlab.tasks.bridging.config.t1.skills.push.command import PushCommandCfg
 from mjlab.tasks.bridging.config.t1.skills.turn import TURN_TASK_ID as T1_TURN_TASK_ID
 from mjlab.tasks.bridging.config.t1.skills.turn.command import TurnCommandCfg
-from mjlab.tasks.bridging.config.t1.skills.walk import WALK_TASK_ID as T1_WALK_TASK_ID
+from mjlab.tasks.bridging.config.t1.skills.walk import (
+  DISTANCE_WALK_TASK_ID as T1_WALK_TASK_ID,
+)
+from mjlab.tasks.bridging.config.t1.skills.walk.distance import WalkDistanceCommandCfg
 from mjlab.tasks.bridging.selector import Window
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 
@@ -100,6 +103,19 @@ def turn_by(angle: float) -> Condition:
   return condition
 
 
+def walk_distance(distance: float) -> Condition:
+  """Hold one finite walk distance while recording the entry set"""
+
+  def condition(cfg: ManagerBasedRlEnvCfg) -> None:
+    twist = cfg.commands["twist"]
+    assert isinstance(twist, WalkDistanceCommandCfg)
+    twist.distance_range = (distance, distance)
+    twist.rel_standing_envs = 0.0
+    twist.initial_heading_error = twist.initial_lateral_error = 0.0
+
+  return condition
+
+
 def push_cells(cells: int) -> Condition:
   """Push the box a fixed number of cells."""
 
@@ -135,8 +151,8 @@ SPECS: dict[str, dict[str, Spec]] = {
     "punch_combo": Spec(MARTIAL_TASK_IDS["punch_combo"], 27, 55, 4),
   },
   "t1": {
-    # Sokoban enters walking at rest and commands the speed after the handover
-    "walk": Spec(T1_WALK_TASK_ID, 50, 51, 1, walk_at(0.0)),
+    # Sokoban enters at rest and latches the segment's distance after the handover
+    "walk": Spec(T1_WALK_TASK_ID, 50, 51, 1, walk_distance(0.0)),
     # A few steps in, standing with the turn just started
     "turn_left": Spec(T1_TURN_TASK_ID, 5, 10, 1, turn_by(math.pi / 2)),
     "turn_right": Spec(T1_TURN_TASK_ID, 5, 10, 1, turn_by(-math.pi / 2)),

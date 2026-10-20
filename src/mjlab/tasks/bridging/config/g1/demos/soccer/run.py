@@ -34,6 +34,8 @@ class Config:
   seed: int = 0
   dry: bool = False
   diagnostics: Path | None = None
+  result_path: Path | None = None
+  result_seeds: tuple[int, ...] = ()
 
 
 def main(config: Config) -> None:
@@ -152,6 +154,26 @@ def main(config: Config) -> None:
 
     env.update_visualizers: Callable[[DebugVisualizer], None] = draw_scene
     if config.viewer == "none":
+      if config.result_path is not None:
+        from mjlab.tasks.bridging.demo_metrics import run, trials
+        from mjlab.tasks.bridging.evaluate import save
+
+        if config.result_seeds:
+          trials(
+            wrapped,
+            controller,
+            config.steps,
+            "soccer",
+            config.result_path,
+            settings.bridge.kind,
+            config.result_seeds,
+          )
+          return
+        result = run(wrapped, controller, config.steps, "soccer")
+        result.update(seed=config.seed, method=settings.bridge.kind)
+        save(config.result_path, result)
+        print(result)
+        return
       obs = wrapped.get_observations()
       for _ in range(config.steps):
         if controller.done:
